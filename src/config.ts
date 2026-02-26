@@ -56,12 +56,29 @@ export const config = {
         // Extract hostname and check if it has an IDN mapping
         try {
           const url = new URL(origin);
-          const hostname = url.hostname;
+          const hostname = url.hostname; // This is already in punycode
 
+          // Check mapping for the parsed hostname (which is punycode)
           if (idnMappings[hostname]) {
             const alternateHostname = idnMappings[hostname];
             const alternateOrigin = `${url.protocol}//${alternateHostname}${url.port ? ':' + url.port : ''}`;
             allOrigins.add(alternateOrigin);
+          }
+
+          // Also check if the original origin string contains Thai characters
+          // If it does, the URL parser converted it to punycode, so we need to add the Thai version
+          const originalHostnameMatch = origin.match(/:\/\/([^/:]+)/);
+          if (originalHostnameMatch) {
+            const originalHostname = originalHostnameMatch[1];
+            // If original hostname has non-ASCII chars and differs from parsed hostname
+            if (originalHostname !== hostname && /[^\x00-\x7F]/.test(originalHostname)) {
+              // Original had Thai chars, parsed version is punycode
+              // Add the Thai version since it's not already there
+              allOrigins.add(origin);
+              // And add the punycode version explicitly
+              const punycodeOrigin = `${url.protocol}//${hostname}${url.port ? ':' + url.port : ''}`;
+              allOrigins.add(punycodeOrigin);
+            }
           }
         } catch {
           // If URL parsing fails, just use the original
