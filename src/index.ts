@@ -5,7 +5,8 @@ import { config, configErrors } from './config';
 
 console.log('[STARTUP] Starting Horo API...');
 console.log('[STARTUP] Attempting to listen on port:', config.port);
-console.log('[STARTUP] CORS allowed origins:', config.cors.allowedOrigins.join(', '));
+console.log('[STARTUP] CORS allowed origins:');
+config.cors.allowedOrigins.forEach(origin => console.log('[STARTUP]   -', origin));
 
 // Import auth and routes lazily to avoid blocking on database connection
 let auth: any;

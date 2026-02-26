@@ -34,9 +34,42 @@ export const config = {
   },
 
   cors: {
-    allowedOrigins: process.env.CORS_ALLOWED_ORIGINS
-      ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
-      : ['http://localhost:3000'],
+    allowedOrigins: (() => {
+      const origins = process.env.CORS_ALLOWED_ORIGINS
+        ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+        : ['http://localhost:3000'];
+
+      // Expand origins to include punycode versions
+      // Browsers convert international domain names (IDN) to punycode in Origin headers
+      // E.g., https://สายมู.com becomes https://xn--y3cbx6azb.com
+      const allOrigins = new Set<string>();
+
+      // Known IDN mappings (add more as needed)
+      const idnMappings: Record<string, string> = {
+        'สายมู.com': 'xn--y3cbx6azb.com',
+        'xn--y3cbx6azb.com': 'สายมู.com',
+      };
+
+      origins.forEach(origin => {
+        allOrigins.add(origin);
+
+        // Extract hostname and check if it has an IDN mapping
+        try {
+          const url = new URL(origin);
+          const hostname = url.hostname;
+
+          if (idnMappings[hostname]) {
+            const alternateHostname = idnMappings[hostname];
+            const alternateOrigin = `${url.protocol}//${alternateHostname}${url.port ? ':' + url.port : ''}`;
+            allOrigins.add(alternateOrigin);
+          }
+        } catch {
+          // If URL parsing fails, just use the original
+        }
+      });
+
+      return Array.from(allOrigins);
+    })(),
   },
 };
 
