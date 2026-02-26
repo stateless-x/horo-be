@@ -17,6 +17,7 @@ export const user = pgTable('user', {
   image: text('image'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+  onboardingCompleted: boolean('onboardingCompleted').notNull().default(false),
 });
 
 export const session = pgTable('session', {
