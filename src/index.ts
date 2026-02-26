@@ -5,6 +5,7 @@ import { config, configErrors } from './config';
 
 console.log('[STARTUP] Starting Horo API...');
 console.log('[STARTUP] Attempting to listen on port:', config.port);
+console.log('[STARTUP] CORS allowed origins:', config.cors.allowedOrigins.join(', '));
 
 // Import auth and routes lazily to avoid blocking on database connection
 let auth: any;
@@ -13,7 +14,7 @@ let inviteRoutes: any;
 
 const app = new Elysia()
   .use(cors({
-    origin: config.frontend.url,
+    origin: config.cors.allowedOrigins,
     credentials: true,
   }))
   .use(cookie())

@@ -3,6 +3,7 @@ console.log('[CONFIG] Loading configuration...');
 console.log('[CONFIG] PORT:', process.env.PORT);
 console.log('[CONFIG] NODE_ENV:', process.env.NODE_ENV);
 console.log('[CONFIG] DATABASE_URL:', process.env.DATABASE_URL ? 'SET' : 'MISSING');
+console.log('[CONFIG] CORS_ALLOWED_ORIGINS:', process.env.CORS_ALLOWED_ORIGINS || 'NOT SET (using default)');
 
 export const config = {
   port: parseInt(process.env.PORT || '3001'),
@@ -30,6 +31,12 @@ export const config = {
 
   frontend: {
     url: process.env.FRONTEND_URL || 'http://localhost:3000',
+  },
+
+  cors: {
+    allowedOrigins: process.env.CORS_ALLOWED_ORIGINS
+      ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+      : ['http://localhost:3000'],
   },
 };
 
