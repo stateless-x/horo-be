@@ -14,12 +14,13 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "better-auth": "^1.2.4",
-    "elysia": "^1.1.31",
-    "@elysiajs/cors": "^1.2.0",
     "@elysiajs/cookie": "^0.8.0",
+    "@elysiajs/cors": "^1.2.0",
     "@google/generative-ai": "^0.21.0",
+    "better-auth": "^1.2.4",
     "drizzle-orm": "^0.37.0",
+    "elysia": "^1.1.31",
+    "ioredis": "^5.9.3",
     "postgres": "^3.4.5",
     "zod": "^3.24.1"
   },

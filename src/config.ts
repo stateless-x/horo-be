@@ -88,6 +88,39 @@ export const config = {
       return Array.from(allOrigins);
     })(),
   },
+
+  /**
+   * Rate Limiting Configuration
+   *
+   * Protects LLM endpoints from spam and abuse
+   * - IP-based limits for public endpoints (e.g., /fortune/teaser)
+   * - User-based limits for authenticated endpoints
+   * - Configurable via environment variables for production tuning
+   *
+   * Current limits (per hour):
+   * - Teaser (public): 3 requests per IP
+   * - Daily reading: 5 requests per user
+   * - Chart reading: 3 requests per user
+   * - Compatibility: 5 requests per user
+   */
+  rateLimit: {
+    teaser: {
+      windowMs: parseInt(process.env.RATE_LIMIT_TEASER_WINDOW_MS || '3600000'), // 1 hour
+      maxRequests: parseInt(process.env.RATE_LIMIT_TEASER_MAX || '3'),
+    },
+    daily: {
+      windowMs: parseInt(process.env.RATE_LIMIT_DAILY_WINDOW_MS || '3600000'), // 1 hour
+      maxRequests: parseInt(process.env.RATE_LIMIT_DAILY_MAX || '5'),
+    },
+    chart: {
+      windowMs: parseInt(process.env.RATE_LIMIT_CHART_WINDOW_MS || '3600000'), // 1 hour
+      maxRequests: parseInt(process.env.RATE_LIMIT_CHART_MAX || '3'),
+    },
+    compatibility: {
+      windowMs: parseInt(process.env.RATE_LIMIT_COMPAT_WINDOW_MS || '3600000'), // 1 hour
+      maxRequests: parseInt(process.env.RATE_LIMIT_COMPAT_MAX || '5'),
+    },
+  },
 };
 
 // Validate required environment variables (non-blocking)

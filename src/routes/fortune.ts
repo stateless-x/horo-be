@@ -12,6 +12,25 @@ import {
   buildCompatibilityPrompt,
   SYSTEM_PROMPT
 } from '../lib/prompts';
+import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
+import { validateSessionFromRequest } from '../lib/session';
+
+/**
+ * Helper function to extract client IP from request
+ */
+function getClientIP(request: Request): string {
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (forwardedFor) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  const realIP = request.headers.get('x-real-ip');
+  if (realIP) {
+    return realIP;
+  }
+
+  return 'unknown';
+}
 
 /**
  * Fortune calculation and reading routes
@@ -20,7 +39,34 @@ import {
 export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
   // Generate teaser result (BEFORE auth)
-  .post('/teaser', async ({ body, set }) => {
+  .post('/teaser', async ({ body, set, request }) => {
+    // Rate limiting for guest users (by IP)
+    const clientIP = getClientIP(request);
+    const rateLimitResult = await checkRateLimit(clientIP, RATE_LIMITS.teaser);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers to successful requests
+    set.headers = {
+      'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
+
     try {
       const profile = BirthProfileSchema.parse(body);
 
@@ -58,10 +104,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
   })
 
   // Save birth profile (AFTER auth, in onboarding)
-  .post('/profile', async ({ body, cookie, set }) => {
-    const sessionToken = cookie.session.value;
+  .post('/profile', async ({ body, cookie, set, request }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
 
-    if (!sessionToken) {
+    if (!session) {
       set.status = 401;
       return { error: 'Not authenticated' };
     }
@@ -71,9 +118,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       const birthDate = new Date(profile.birthDate);
       const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
 
-      // Get user from session
-      // TODO: Extract user from session token
-      const userId = 'temp-user-id'; // Replace with actual user ID
+      const userId = session.userId;
 
       // Save birth profile
       const [savedProfile] = await db.insert(birthProfiles).values({
@@ -122,17 +167,43 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
   })
 
   // Get daily reading (requires auth)
-  .get('/daily', async ({ cookie, set, query }) => {
-    const sessionToken = cookie.session.value;
+  .get('/daily', async ({ cookie, set, query, request }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
 
-    if (!sessionToken) {
+    if (!session) {
       set.status = 401;
       return { error: 'Not authenticated' };
     }
 
+    // Rate limiting for authenticated users (by user ID)
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.daily);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers
+    set.headers = {
+      'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
+
     try {
-      // TODO: Extract user ID from session token
-      const userId = 'temp-user-id'; // Replace with actual session validation
+      const userId = session.userId;
 
       // Get user's birth profile
       const [profile] = await db
@@ -206,17 +277,43 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
   })
 
   // Get full chart reading (requires auth)
-  .get('/chart', async ({ cookie, set }) => {
-    const sessionToken = cookie.session.value;
+  .get('/chart', async ({ cookie, set, request }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
 
-    if (!sessionToken) {
+    if (!session) {
       set.status = 401;
       return { error: 'Not authenticated' };
     }
 
+    // Rate limiting for authenticated users (by user ID)
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers
+    set.headers = {
+      'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
+
     try {
-      // TODO: Extract user ID from session token
-      const userId = 'temp-user-id';
+      const userId = session.userId;
 
       // Get user's birth profile
       const [profile] = await db
@@ -303,13 +400,40 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
   })
 
   // Calculate compatibility between two people
-  .post('/compatibility', async ({ body, cookie, set }) => {
-    const sessionToken = cookie.session.value;
+  .post('/compatibility', async ({ body, cookie, set, request }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
 
-    if (!sessionToken) {
+    if (!session) {
       set.status = 401;
       return { error: 'Not authenticated' };
     }
+
+    // Rate limiting for authenticated users (by user ID)
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.compatibility);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers
+    set.headers = {
+      'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
 
     try {
       const { partnerBirthDate, partnerGender, partnerBirthTime } = body as {
@@ -321,8 +445,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
         };
       };
 
-      // TODO: Get current user's profile
-      const userId = 'temp-user-id';
+      const userId = session.userId;
       const [userProfile] = await db
         .select()
         .from(birthProfiles)
