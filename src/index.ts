@@ -12,6 +12,7 @@ config.cors.allowedOrigins.forEach(origin => console.log('[STARTUP]   -', origin
 let auth: any;
 let fortuneRoutes: any;
 let inviteRoutes: any;
+let onboardingRoutes: any;
 
 const app = new Elysia()
   .use(cors({
@@ -57,12 +58,16 @@ if (configErrors.length === 0) {
     const inviteModule = await import('./routes/invite');
     inviteRoutes = inviteModule.inviteRoutes;
 
+    const onboardingModule = await import('./routes/onboarding');
+    onboardingRoutes = onboardingModule.onboardingRoutes;
+
     app
       .all('/api/auth/*', async ({ request }) => {
         return auth.handler(request);
       })
       .use(fortuneRoutes)
-      .use(inviteRoutes);
+      .use(inviteRoutes)
+      .use(onboardingRoutes);
 
     console.log('[STARTUP] Auth and routes loaded successfully');
   } catch (error) {

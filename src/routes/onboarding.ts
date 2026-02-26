@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
 import { user } from '../../lib/db/schema';
 import { eq } from 'drizzle-orm';
+import { validateSessionFromRequest } from '../lib/session';
 
 /**
  * Onboarding Routes
@@ -11,35 +12,49 @@ import { eq } from 'drizzle-orm';
 export const onboardingRoutes = new Elysia({ prefix: '/api/onboarding' })
   .post(
     '/complete',
-    async ({ request }) => {
+    async ({ request, set }) => {
       try {
-        // Get session from Better Auth headers
-        const sessionToken = request.headers.get('cookie')?.match(/better-auth\.session_token=([^;]+)/)?.[1];
+        // Validate session and get user ID
+        const session = await validateSessionFromRequest(request);
 
-        if (!sessionToken) {
+        if (!session) {
+          set.status = 401;
           return {
-            error: 'Unauthorized - No session token',
+            error: 'Unauthorized - Invalid or expired session',
             code: 'UNAUTHORIZED',
           };
         }
 
-        // TODO: Validate session with Better Auth and get user ID
-        // For now, we'll extract user ID from the session
-        // This is a simplified version - Better Auth handles this automatically
-        // when using their session helpers
+        // Update user's onboarding status
+        const [updatedUser] = await db
+          .update(user)
+          .set({
+            onboardingCompleted: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(user.id, session.userId))
+          .returning();
 
-        // Get user ID from session (you'll need to query the session table)
-        // For now, we need the actual Better Auth session validation
-        // This is a placeholder that needs to be replaced with actual auth check
+        if (!updatedUser) {
+          set.status = 404;
+          return {
+            error: 'User not found',
+            code: 'USER_NOT_FOUND',
+          };
+        }
+
+        console.log(`[Onboarding] User ${session.userId} completed onboarding`);
 
         return {
-          error: 'Not implemented - Use Better Auth session validation',
-          code: 'NOT_IMPLEMENTED',
+          success: true,
+          onboardingCompleted: true,
+          userId: session.userId,
         };
       } catch (error) {
         console.error('[Onboarding] Error completing onboarding:', error);
+        set.status = 500;
         return {
-          error: 'Failed to complete onboarding',
+          error: error instanceof Error ? error.message : 'Failed to complete onboarding',
           code: 'INTERNAL_ERROR',
         };
       }
