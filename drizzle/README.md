@@ -7,7 +7,7 @@ This directory contains Drizzle Kit generated migrations tracked by version cont
 ### 0000_organic_mindworm.sql
 Initial schema creation with all tables and constraints.
 
-### 0001_mature_dakota_north.sql ⭐ NEW
+### 0001_mature_dakota_north.sql
 Adds performance indexes to all tables (16 total indexes).
 
 **Indexes Added:**
@@ -15,6 +15,12 @@ Adds performance indexes to all tables (16 total indexes).
 - Profile tables: 3 indexes (birth_profiles, bazi_charts, thai_astrology_data)
 - Reading tables: 4 indexes (daily_readings, compatibility)
 - Invite tables: 3 indexes (compatibility_invite)
+
+### 0002_dry_black_widow.sql ⭐ NEW
+Adds missing `createdAt` field to verification table required by Better Auth.
+
+**Changes:**
+- Adds `createdAt` timestamp column with default value to verification table
 
 ## How to Apply Migrations
 

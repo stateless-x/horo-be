@@ -54,6 +54,7 @@ export const verification = pgTable('verification', {
   identifier: text('identifier').notNull(),
   value: text('value').notNull(),
   expiresAt: timestamp('expiresAt').notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
 }, (table) => ({
   identifierIdx: index('verification_identifier_idx').on(table.identifier),
   expiresAtIdx: index('verification_expires_at_idx').on(table.expiresAt),
