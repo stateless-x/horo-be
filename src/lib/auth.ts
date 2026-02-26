@@ -2,6 +2,7 @@ import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { db } from './db';
 import { config } from '../config';
+import * as schema from '../../lib/db/schema';
 
 /**
  * Better Auth Configuration
@@ -18,6 +19,7 @@ import { config } from '../config';
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
     provider: 'pg',
+    schema,
   }),
   socialProviders: {
     google: {
@@ -32,5 +34,5 @@ export const auth = betterAuth({
   // Base URL for OAuth callbacks
   baseURL: config.oauth.baseUrl,
   // Trust proxy headers (needed for production behind reverse proxy)
-  trustedOrigins: [config.frontend.url],
+  trustedOrigins: config.cors.allowedOrigins,
 });
