@@ -6,7 +6,7 @@
  * Tone: mysterious, sacred, slightly unsettling - like entering a temple at midnight.
  */
 
-import type { BaziChart, ThaiAstrology } from '../../lib/shared';
+import type { BaziChart, ThaiAstrology } from "../../lib/shared";
 
 /**
  * Generate teaser reading (Step 6 in onboarding - BEFORE auth)
@@ -16,12 +16,12 @@ export function buildTeaserPrompt(
   name: string,
   birthDate: Date,
   baziChart: BaziChart,
-  thaiAstrology: ThaiAstrology
+  thaiAstrology: ThaiAstrology,
 ): string {
-  const dateStr = birthDate.toLocaleDateString('th-TH', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
+  const dateStr = birthDate.toLocaleDateString("th-TH", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
   return `คุณเป็นหมอดูไทยผู้ลึกลับ ที่ผสมผสานโหราศาสตร์จีน (ซื้อซี่) และโหราศาสตร์ไทยเข้าด้วยกัน
@@ -43,7 +43,7 @@ export function buildTeaserPrompt(
 - เลขมงคล: ${thaiAstrology.luckyNumber}
 
 คำสั่ง:
-เขียนคำทำนายแบบย่อ 3-4 ประโยค เพื่อให้คนอ่านติดใจและอยากรู้เพิ่มเติม
+เขียนคำทำนายแบบย่อเพื่อให้คนอ่านติดใจและอยากรู้เพิ่มเติม
 - ใช้คำสรรพนาม "เจ้า" (thou) เพื่อเรียกผู้อ่าน (ห้ามใช้ "คุณ")
 - บอกเกี่ยวกับนิสัยหลักที่น่าสนใจ 1 อย่าง
 - บอกเกี่ยวกับโชคลาภหรือเรื่องสำคัญวันนี้
@@ -66,19 +66,19 @@ export function buildDailyReadingPrompt(
   birthDate: Date,
   today: Date,
   baziChart: BaziChart,
-  thaiAstrology: ThaiAstrology
+  thaiAstrology: ThaiAstrology,
 ): string {
-  const birthDateStr = birthDate.toLocaleDateString('th-TH', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
+  const birthDateStr = birthDate.toLocaleDateString("th-TH", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
-  const todayStr = today.toLocaleDateString('th-TH', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
+  const todayStr = today.toLocaleDateString("th-TH", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
   return `คุณเป็นหมอดูไทยผู้ชำนาญการ ที่ใช้ทั้งโหราศาสตร์จีนและไทย
@@ -91,7 +91,7 @@ export function buildDailyReadingPrompt(
 โหราศาสตร์จีน (Bazi):
 - องค์ประกอบหลัก: ${baziChart.element}
 - เจ้าวัน: ${baziChart.dayMaster}
-- เสาสี่ที่: ${baziChart.yearPillar.stem}${baziChart.yearPillar.branch} (ปี), ${baziChart.monthPillar.stem}${baziChart.monthPillar.branch} (เดือน), ${baziChart.dayPillar.stem}${baziChart.dayPillar.branch} (วัน)${baziChart.hourPillar ? `, ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch} (ชั่วโมง)` : ''}
+- เสาสี่ที่: ${baziChart.yearPillar.stem}${baziChart.yearPillar.branch} (ปี), ${baziChart.monthPillar.stem}${baziChart.monthPillar.branch} (เดือน), ${baziChart.dayPillar.stem}${baziChart.dayPillar.branch} (วัน)${baziChart.hourPillar ? `, ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch} (ชั่วโมง)` : ""}
 
 โหราศาสตร์ไทย:
 - วัน: ${thaiAstrology.day}
@@ -103,23 +103,23 @@ export function buildDailyReadingPrompt(
 คำสั่ง:
 เขียนคำทำนายประจำวันแบบเต็ม โดยครอบคลุม:
 
-1. **โชคลาภโดยรวมวันนี้** (2-3 ประโยค)
+1. **โชคลาภโดยรวมวันนี้**
    - วิเคราะห์ดวงของวันนี้จากมุมมองทั้งสองระบบ
    - บอกว่าวันนี้เหมาะกับการทำอะไร
 
-2. **การงาน/การเงิน** (2 ประโยค)
+2. **การงาน/การเงิน**
    - โอกาสและอุปสรรค
    - คำแนะนำ
 
-3. **ความรัก/ความสัมพันธ์** (2 ประโยค)
+3. **ความรัก/ความสัมพันธ์**
    - พลังงานด้านความสัมพันธ์วันนี้
    - คำแนะนำ
 
-4. **สุขภาพ/พลังงาน** (1-2 ประโยค)
+4. **สุขภาพ/พลังงาน**
    - ระวังอะไร
    - ควรดูแลอย่างไร
 
-5. **คำแนะนำพิเศษ** (1 ประโยค)
+5. **คำแนะนำพิเศษ**
    - สิ่งที่ควรทำหรือหลีกเลี่ยงวันนี้
 
 รูปแบบการเขียน:
@@ -141,12 +141,12 @@ export function buildFullChartPrompt(
   birthDate: Date,
   baziChart: BaziChart,
   thaiAstrology: ThaiAstrology,
-  currentAge: number
+  currentAge: number,
 ): string {
-  const birthDateStr = birthDate.toLocaleDateString('th-TH', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
+  const birthDateStr = birthDate.toLocaleDateString("th-TH", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
   return `คุณเป็นหมอดูผู้เชี่ยวชาญที่ผสมผสานโหราศาสตร์จีน (Bazi) และโหราศาสตร์ไทย
@@ -163,7 +163,7 @@ export function buildFullChartPrompt(
   * ปี: ${baziChart.yearPillar.stem}${baziChart.yearPillar.branch}
   * เดือน: ${baziChart.monthPillar.stem}${baziChart.monthPillar.branch}
   * วัน: ${baziChart.dayPillar.stem}${baziChart.dayPillar.branch}
-  ${baziChart.hourPillar ? `* ชั่วโมง: ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch}` : '* ชั่วโมง: ไม่ทราบ'}
+  ${baziChart.hourPillar ? `* ชั่วโมง: ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch}` : "* ชั่วโมง: ไม่ทราบ"}
 
 โหราศาสตร์ไทย:
 - วันเกิด: ${thaiAstrology.day}
@@ -177,43 +177,43 @@ export function buildFullChartPrompt(
 คำสั่ง:
 เขียนการดูดวงแบบลึกซึ้งและครบถ้วน แบ่งออกเป็น:
 
-**1. บทนำ: ภาพรวมชีวิต** (3-4 ประโยค)
+**1. บทนำ: ภาพรวมชีวิต**
 - สรุปลักษณะโดยรวมของชะตาชีวิต
 - จุดเด่นที่สำคัญที่สุด
 
-**2. บุคลิกภาพและจุดแข็ง** (4-5 ประโยค)
+**2. บุคลิกภาพและจุดแข็ง**
 - วิเคราะห์นิสัยหลักจากทั้งสองระบบ
 - จุดแข็งที่เจ้ามี
 - ทักษะพิเศษหรือพรสวรรค์
 
-**3. จุดอ่อนและสิ่งที่ต้องระวัง** (3-4 ประโยค)
+**3. จุดอ่อนและสิ่งที่ต้องระวัง**
 - จุดอ่อนที่ควรพัฒนา
 - อุปสรรคที่อาจพบเจอ
 - คำแนะนำในการรับมือ
 
-**4. การงานและเส้นทางชีวิต** (4-5 ประโยค)
+**4. การงานและเส้นทางชีวิต**
 - อาชีพที่เหมาะสม
 - ช่วงเวลาที่ดีในชีวิตการงาน
 - แนวทางการพัฒนา
 
-**5. ความรักและความสัมพันธ์** (3-4 ประโยค)
+**5. ความรักและความสัมพันธ์**
 - รูปแบบความรัก
 - คนที่เหมาะสม (องค์ประกอบที่ลงตัว)
 - คำแนะนำด้านความสัมพันธ์
 
-**6. การเงินและทรัพย์สิน** (2-3 ประโยค)
+**6. การเงินและทรัพย์สิน**
 - ดวงการเงิน
 - วิธีเก็บเงินที่เหมาะสม
 
-**7. สุขภาพ** (2-3 ประโยค)
+**7. สุขภาพ**
 - จุดอ่อนด้านสุขภาพ
 - สิ่งที่ควรดูแล
 
-**8. วงจรชีวิต 10 ปี** (ถ้ามีข้อมูล)
+**8. วงจรชีวิต 10 ปี**
 - วิเคราะห์ช่วงอายุที่สำคัญ
 - คำแนะนำตามวัย
 
-**9. คำแนะนำสรุป** (2-3 ประโยค)
+**9. คำแนะนำสรุป**
 - แก่นแท้ของชะตาชีวิต
 - สิ่งสำคัญที่สุดที่ควรจดจำ
 
@@ -244,13 +244,13 @@ export function buildCompatibilityPrompt(
     birthDate: Date;
     baziChart: BaziChart;
     thaiAstrology: ThaiAstrology;
-  }
+  },
 ): string {
   return `คุณเป็นหมอดูผู้เชี่ยวชาญด้านดวงคู่และความเข้ากันได้
 
 คน A:
 ชื่อ: ${person1.name}
-วันเกิด: ${person1.birthDate.toLocaleDateString('th-TH')}
+วันเกิด: ${person1.birthDate.toLocaleDateString("th-TH")}
 เจ้าวัน: ${person1.baziChart.dayMaster}
 องค์ประกอบ: ${person1.baziChart.element}
 วันไทย: ${person1.thaiAstrology.day}
@@ -258,7 +258,7 @@ export function buildCompatibilityPrompt(
 
 คน B:
 ชื่อ: ${person2.name}
-วันเกิด: ${person2.birthDate.toLocaleDateString('th-TH')}
+วันเกิด: ${person2.birthDate.toLocaleDateString("th-TH")}
 เจ้าวัน: ${person2.baziChart.dayMaster}
 องค์ประกอบ: ${person2.baziChart.element}
 วันไทย: ${person2.thaiAstrology.day}
@@ -268,40 +268,40 @@ export function buildCompatibilityPrompt(
 วิเคราะห์ความเข้ากันได้ของทั้งสองคน โดยครอบคลุม:
 
 **1. คะแนนความเข้ากัน**
-- ให้คะแนนจาก 0-100 พร้อมเหตุผล (1 ประโยค)
+- ให้คะแนนจาก 0-100 พร้อมเหตุผล
 
-**2. ภาพรวมความสัมพันธ์** (3-4 ประโยค)
+**2. ภาพรวมความสัมพันธ์**
 - ลักษณะของความสัมพันธ์นี้
 - จุดเด่นของคู่นี้
 - พลังงานที่เกิดขึ้นเมื่ออยู่ด้วยกัน
 
-**3. ด้านบวก - จุดแข็งของความสัมพันธ์** (3-4 ประโยค)
+**3. ด้านบวก - จุดแข็งของความสัมพันธ์**
 - สิ่งที่ช่วยเสริมกัน
 - จุดที่ลงตัว
 - สิ่งดีๆ ที่จะเกิดขึ้น
 
-**4. ด้านลบ - สิ่งที่ต้องระวัง** (3-4 ประโยค)
+**4. ด้านลบ - สิ่งที่ต้องระวัง**
 - จุดที่อาจขัดแย้ง
 - ความท้าทายที่อาจเจอ
 - ความเสี่ยง
 
-**5. คำแนะนำเพื่อความสัมพันธ์ที่ดี** (3-4 ประโยค)
+**5. คำแนะนำเพื่อความสัมพันธ์ที่ดี**
 - สิ่งที่คน A ควรทำ
 - สิ่งที่คน B ควรทำ
 - แนวทางการปรับตัว
 
-**6. คำทำนายระยะยาว** (2-3 ประโยค)
+**6. คำทำนายระยะยาว**
 - แนวโน้มความสัมพันธ์
 - สิ่งที่จะเกิดขึ้นถ้าดูแลกันดี
 
-**7. สรุป** (1-2 ประโยค)
+**7. สรุป**
 - ข้อคิดสำคัญ
 - คำอวยพร
 
 รูปแบบ:
 - ใช้ "ทั้งสองท่าน" หรือเรียกชื่อโดยตรง
 - ตรงไปตรงมาแต่นุ่มนวล
-- ให้ทั้งด้านบวกและด้านลบ (เพื่อความน่าเชื่อถือ)
+- ให้ทั้งด้านบวกและด้านลบ
 - ห้ามใช้อิโมจิ
 - เขียนในน้ำเสียงของที่ปรึกษา ไม่ใช่ผู้พิพากษา
 

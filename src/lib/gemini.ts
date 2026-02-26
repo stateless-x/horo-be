@@ -1,6 +1,6 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { config } from '../config';
-import { SYSTEM_PROMPT } from './prompts';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { config } from "../config";
+import { SYSTEM_PROMPT } from "./prompts";
 
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 
@@ -14,10 +14,10 @@ const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
  */
 export async function generateFortuneReading(
   prompt: string,
-  maxTokens: number = 500
+  maxTokens: number = 500,
 ): Promise<string> {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: "gemini-2.5-flash",
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       maxOutputTokens: maxTokens,
@@ -30,7 +30,7 @@ export async function generateFortuneReading(
   const text = response.text();
 
   if (!text) {
-    throw new Error('Empty response from Gemini');
+    throw new Error("Empty response from Gemini");
   }
 
   return text;
