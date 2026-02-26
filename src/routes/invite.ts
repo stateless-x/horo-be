@@ -1,7 +1,7 @@
 import Elysia, { t } from 'elysia';
 import { db } from '../lib/db';
 import { auth } from '../lib/auth';
-import { compatibilityInvites, birthProfiles, users } from '../../lib/db';
+import { compatibilityInvites, birthProfiles, user } from '../../lib/db';
 import { eq, and, gt } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 

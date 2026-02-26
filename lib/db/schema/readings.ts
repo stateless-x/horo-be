@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, date } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, date, index } from 'drizzle-orm/pg-core';
 import { birthProfiles } from './profiles';
 
 export const dailyReadings = pgTable('daily_readings', {
@@ -15,7 +15,9 @@ export const dailyReadings = pgTable('daily_readings', {
   elementEnergy: varchar('element_energy', { length: 500 }),
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  profileDateIdx: index('daily_readings_profile_date_idx').on(table.profileId, table.date),
+}));
 
 export const compatibility = pgTable('compatibility', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -33,4 +35,8 @@ export const compatibility = pgTable('compatibility', {
   shareToken: varchar('share_token', { length: 100 }).unique(), // For shareable links
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  profileAIdx: index('compatibility_profile_a_idx').on(table.profileAId),
+  profileBIdx: index('compatibility_profile_b_idx').on(table.profileBId),
+  shareTokenIdx: index('compatibility_share_token_idx').on(table.shareToken),
+}));

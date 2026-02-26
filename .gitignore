@@ -16,5 +16,5 @@ bun.lockb
 .DS_Store
 *.log
 
-# Database
-drizzle/
+# Database - track migrations but ignore temporary files
+# drizzle/

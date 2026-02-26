@@ -1,9 +1,9 @@
-import { pgTable, uuid, varchar, text, timestamp, integer, boolean } from 'drizzle-orm/pg-core';
-import { users } from './users';
+import { pgTable, uuid, varchar, text, timestamp, integer, boolean, index } from 'drizzle-orm/pg-core';
+import { user } from './users';
 
 export const birthProfiles = pgTable('birth_profiles', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: text('user_id').references(() => users.id).notNull(),
+  userId: text('user_id').references(() => user.id).notNull(),
   birthDate: timestamp('birth_date').notNull(),
   birthHour: integer('birth_hour'), // 0-23, null if unknown
   birthTimePeriod: varchar('birth_time_period', { length: 50 }), // Thai time period name
@@ -11,7 +11,9 @@ export const birthProfiles = pgTable('birth_profiles', {
   isTimeUnknown: boolean('is_time_unknown').default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index('birth_profiles_user_id_idx').on(table.userId),
+}));
 
 export const baziCharts = pgTable('bazi_charts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -30,7 +32,9 @@ export const baziCharts = pgTable('bazi_charts', {
   elementStrength: varchar('element_strength', { length: 500 }).notNull(),
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  profileIdIdx: index('bazi_charts_profile_id_idx').on(table.profileId),
+}));
 
 export const thaiAstrologyData = pgTable('thai_astrology_data', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -45,4 +49,6 @@ export const thaiAstrologyData = pgTable('thai_astrology_data', {
   luckyDirection: varchar('lucky_direction', { length: 100 }).notNull(),
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  profileIdIdx: index('thai_astrology_profile_id_idx').on(table.profileId),
+}));
