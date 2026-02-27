@@ -44,7 +44,12 @@ export const account = pgTable('account', {
   refreshToken: text('refreshToken'),
   idToken: text('idToken'),
   expiresAt: timestamp('expiresAt'),
+  accessTokenExpiresAt: timestamp('accessTokenExpiresAt'),
+  refreshTokenExpiresAt: timestamp('refreshTokenExpiresAt'),
+  scope: text('scope'),
   password: text('password'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 }, (table) => ({
   userIdIdx: index('account_user_id_idx').on(table.userId),
   providerIdx: index('account_provider_idx').on(table.providerId, table.accountId),

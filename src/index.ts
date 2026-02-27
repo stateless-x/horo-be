@@ -30,10 +30,11 @@ const app = new Elysia()
     credentials: true,
   }))
   .use(cookie({
-    // Configure cookies for cross-origin OAuth
-    // CRITICAL: SameSite=None required for cross-origin auth flow
+    // Configure cookies for subdomain OAuth
+    // Using SameSite=lax since we're on same parent domain
+    domain: config.env === 'production' ? '.สายมู.com' : undefined,
     secure: config.env === 'production',
-    sameSite: config.env === 'production' ? 'none' : 'lax',
+    sameSite: 'lax',
     httpOnly: true,
   }))
   .get('/', () => ({
@@ -78,8 +79,19 @@ if (configErrors.length === 0) {
     onboardingRoutes = onboardingModule.onboardingRoutes;
 
     app
-      .all('/api/auth/*', async ({ request }) => {
-        return auth.handler(request);
+      .all('/api/auth/*', async ({ request, set }) => {
+        // Debug logging for OAuth requests
+        const url = new URL(request.url);
+        console.log('[AUTH]', request.method, url.pathname);
+        console.log('[AUTH] Headers:', Object.fromEntries(request.headers.entries()));
+
+        const response = await auth.handler(request);
+
+        // Debug logging for OAuth responses
+        console.log('[AUTH] Response status:', response.status);
+        console.log('[AUTH] Response headers:', Object.fromEntries(response.headers.entries()));
+
+        return response;
       })
       .use(fortuneRoutes)
       .use(inviteRoutes)

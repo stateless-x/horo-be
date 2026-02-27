@@ -33,13 +33,16 @@ export const auth = betterAuth({
   },
   // Base URL for OAuth callbacks (backend)
   baseURL: config.oauth.baseUrl,
+  // Base path where auth is mounted in the app
+  basePath: '/api/auth',
   // Trust proxy headers (needed for production behind reverse proxy)
   trustedOrigins: config.cors.allowedOrigins,
-  // Cookie configuration for cross-origin OAuth
-  // CRITICAL: SameSite=None required for cross-origin auth between domains
+  // Cookie configuration for subdomain OAuth
+  // Using SameSite=lax now since we're on the same parent domain
   cookie: {
     name: 'better-auth',
-    sameSite: config.env === 'production' ? 'none' : 'lax',
+    domain: config.env === 'production' ? '.สายมู.com' : undefined,
+    sameSite: 'lax',
     secure: config.env === 'production',
     httpOnly: true,
     path: '/',
@@ -56,5 +59,8 @@ export const auth = betterAuth({
       enabled: true,
       maxAge: 5 * 60, // 5 minutes
     },
+    // Use database for OAuth state storage instead of cookies
+    // This is more reliable for cross-origin scenarios
+    storeSessionInDatabase: true,
   },
 });
