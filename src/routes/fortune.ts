@@ -113,6 +113,32 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       return { error: 'Not authenticated' };
     }
 
+    // Rate limiting for profile saves
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.profileSave);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers
+    set.headers = {
+      'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
+
     try {
       const profile = BirthProfileSchema.parse(body);
       const birthDate = new Date(profile.birthDate);

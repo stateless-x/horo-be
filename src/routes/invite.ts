@@ -30,6 +30,33 @@ export const inviteRoutes = new Elysia({ prefix: '/invite' })
     const userId = session.user.id;
     const userName = session.user.name;
 
+    // Rate limiting (import at top of file)
+    const { checkRateLimit, RATE_LIMITS } = await import('../lib/rate-limit');
+    const rateLimitResult = await checkRateLimit(userId, RATE_LIMITS.inviteCreate);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        'X-RateLimit-Limit': RATE_LIMITS.inviteCreate.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'สร้างลิงก์เชิญมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers
+    set.headers = {
+      'X-RateLimit-Limit': RATE_LIMITS.inviteCreate.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
+
     try {
       // Get user's birth profile
       const profile = await db.query.birthProfiles.findFirst({
