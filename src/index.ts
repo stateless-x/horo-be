@@ -1,6 +1,5 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { cookie } from '@elysiajs/cookie';
 import { config, configErrors } from './config';
 import { getRedisClient } from './lib/redis';
 
@@ -29,14 +28,9 @@ const app = new Elysia()
     origin: config.cors.allowedOrigins,
     credentials: true,
   }))
-  .use(cookie({
-    // Configure cookies for subdomain OAuth
-    // Using SameSite=lax since we're on same parent domain
-    domain: config.env === 'production' ? '.สายมู.com' : undefined,
-    secure: config.env === 'production',
-    sameSite: 'lax',
-    httpOnly: true,
-  }))
+  // NOTE: Cookie middleware removed - Better Auth manages its own cookies
+  // The Elysia cookie middleware was interfering with Better Auth's cookie settings,
+  // causing authentication failures due to domain mismatch
   .get('/', () => ({
     message: 'Horo API',
     version: '0.1.0',

@@ -53,11 +53,13 @@ export const auth = betterAuth({
   advanced: {
     useSecureCookies: config.env === 'production',
     // Enable cross-subdomain cookies for proper session sharing
-    // between api.สายมู.com and สายมู.com
+    // IMPORTANT: Use punycode domain (xn--y3cbx6azb.com) instead of Thai (สายมู.com)
+    // Browsers automatically convert Thai domains to punycode, so cookies must use punycode
+    // Otherwise, cookie domain won't match and authentication will fail with 401 errors
     crossSubDomainCookies: {
       enabled: config.env === 'production',
-      // Domain without leading dot (Better Auth adds it automatically)
-      domain: 'สายมู.com',
+      // Domain in punycode format without leading dot (Better Auth adds it automatically)
+      domain: 'xn--y3cbx6azb.com',
     },
   },
   // Session configuration
