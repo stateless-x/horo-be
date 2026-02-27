@@ -308,9 +308,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     const session = await validateSessionFromRequest(request);
 
     if (!session) {
+      console.log('[Fortune] GET /chart - 401 Unauthorized: No valid session found');
       set.status = 401;
-      return { error: 'Not authenticated' };
+      return { error: 'Not authenticated', code: 'UNAUTHORIZED' };
     }
+
+    console.log('[Fortune] GET /chart - Authenticated user:', session.userId);
 
     // Rate limiting for authenticated users (by user ID)
     const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);

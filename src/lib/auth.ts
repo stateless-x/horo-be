@@ -56,8 +56,12 @@ export const auth = betterAuth({
     // IMPORTANT: Use punycode domain (xn--y3cbx6azb.com) instead of Thai (สายมู.com)
     // Browsers automatically convert Thai domains to punycode, so cookies must use punycode
     // Otherwise, cookie domain won't match and authentication will fail with 401 errors
+    //
+    // NOTE: crossSubDomainCookies is only needed if frontend and backend are on different subdomains
+    // If both are on the same domain (e.g., both on xn--y3cbx6azb.com), this should be disabled
+    // to allow browser default cookie behavior (cookies set without explicit domain work better)
     crossSubDomainCookies: {
-      enabled: config.env === 'production',
+      enabled: false, // Disabled for now - enable only if using different subdomains
       // Domain in punycode format without leading dot (Better Auth adds it automatically)
       domain: 'xn--y3cbx6azb.com',
     },

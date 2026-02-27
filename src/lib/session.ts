@@ -69,8 +69,16 @@ export async function validateSessionFromRequest(request: Request): Promise<Vali
   const sessionToken = extractSessionToken(cookieHeader);
 
   if (!sessionToken) {
+    console.log('[Session] No session token found in request cookies');
+    console.log('[Session] Cookie header:', cookieHeader.substring(0, 100)); // Log first 100 chars
     return null;
   }
 
-  return validateSession(sessionToken);
+  const validatedSession = await validateSession(sessionToken);
+
+  if (!validatedSession) {
+    console.log('[Session] Session validation failed for token:', sessionToken.substring(0, 10) + '...');
+  }
+
+  return validatedSession;
 }
