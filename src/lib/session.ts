@@ -40,7 +40,7 @@ export async function validateSession(sessionToken: string): Promise<ValidatedSe
       .from(session)
       .where(
         and(
-          eq(session.id, sessionToken),
+          eq(session.token, sessionToken), // Fixed: use token column, not id
           gt(session.expiresAt, new Date()) // Check if session is not expired
         )
       )
