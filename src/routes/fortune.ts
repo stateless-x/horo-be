@@ -146,42 +146,123 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
       const userId = session.userId;
 
-      // Save birth profile
-      const [savedProfile] = await db.insert(birthProfiles).values({
-        userId,
-        birthDate,
-        birthHour,
-        birthTimePeriod: profile.birthTime?.period,
-        gender: profile.gender,
-        isTimeUnknown: profile.birthTime?.isUnknown || false,
-      }).returning();
+      console.log('[Fortune] POST /profile - Saving profile for user:', userId);
+      console.log('[Fortune] Profile data:', { birthDate, birthHour, gender: profile.gender });
 
-      // Calculate and save Bazi chart
+      // Check if user already has a profile
+      const [existingProfile] = await db
+        .select()
+        .from(birthProfiles)
+        .where(eq(birthProfiles.userId, userId))
+        .limit(1);
+
+      let savedProfile;
+
+      if (existingProfile) {
+        console.log('[Fortune] Profile already exists, updating...');
+        // Update existing profile instead of inserting
+        [savedProfile] = await db
+          .update(birthProfiles)
+          .set({
+            birthDate,
+            birthHour,
+            birthTimePeriod: profile.birthTime?.period,
+            gender: profile.gender,
+            isTimeUnknown: profile.birthTime?.isUnknown || false,
+            updatedAt: new Date(),
+          })
+          .where(eq(birthProfiles.userId, userId))
+          .returning();
+      } else {
+        console.log('[Fortune] Creating new profile...');
+        // Save new birth profile
+        [savedProfile] = await db.insert(birthProfiles).values({
+          userId,
+          birthDate,
+          birthHour,
+          birthTimePeriod: profile.birthTime?.period,
+          gender: profile.gender,
+          isTimeUnknown: profile.birthTime?.isUnknown || false,
+        }).returning();
+      }
+
+      // Calculate and save/update Bazi chart
       const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
-      await db.insert(baziCharts).values({
-        profileId: savedProfile.id,
-        yearPillar: JSON.stringify(baziChart.yearPillar),
-        monthPillar: JSON.stringify(baziChart.monthPillar),
-        dayPillar: JSON.stringify(baziChart.dayPillar),
-        hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-        dayMaster: baziChart.dayMaster,
-        primaryElement: baziChart.element,
-        elementStrength: JSON.stringify({}),
-      });
 
-      // Calculate and save Thai astrology
+      // Check if chart exists
+      const [existingChart] = await db
+        .select()
+        .from(baziCharts)
+        .where(eq(baziCharts.profileId, savedProfile.id))
+        .limit(1);
+
+      if (existingChart) {
+        // Update existing chart
+        await db
+          .update(baziCharts)
+          .set({
+            yearPillar: JSON.stringify(baziChart.yearPillar),
+            monthPillar: JSON.stringify(baziChart.monthPillar),
+            dayPillar: JSON.stringify(baziChart.dayPillar),
+            hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+            dayMaster: baziChart.dayMaster,
+            primaryElement: baziChart.element,
+            elementStrength: JSON.stringify({}),
+          })
+          .where(eq(baziCharts.profileId, savedProfile.id));
+      } else {
+        // Insert new chart
+        await db.insert(baziCharts).values({
+          profileId: savedProfile.id,
+          yearPillar: JSON.stringify(baziChart.yearPillar),
+          monthPillar: JSON.stringify(baziChart.monthPillar),
+          dayPillar: JSON.stringify(baziChart.dayPillar),
+          hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+          dayMaster: baziChart.dayMaster,
+          primaryElement: baziChart.element,
+          elementStrength: JSON.stringify({}),
+        });
+      }
+
+      // Calculate and save/update Thai astrology
       const thaiAstro = calculateThaiAstrology(birthDate);
-      await db.insert(thaiAstrologyData).values({
-        profileId: savedProfile.id,
-        day: thaiAstro.day,
-        color: thaiAstro.color,
-        planet: thaiAstro.planet,
-        buddhaPosition: thaiAstro.buddhaPosition,
-        personality: thaiAstro.personality,
-        luckyNumber: thaiAstro.luckyNumber,
-        luckyDirection: thaiAstro.luckyDirection,
-      });
 
+      // Check if Thai astrology data exists
+      const [existingThaiAstro] = await db
+        .select()
+        .from(thaiAstrologyData)
+        .where(eq(thaiAstrologyData.profileId, savedProfile.id))
+        .limit(1);
+
+      if (existingThaiAstro) {
+        // Update existing Thai astrology data
+        await db
+          .update(thaiAstrologyData)
+          .set({
+            day: thaiAstro.day,
+            color: thaiAstro.color,
+            planet: thaiAstro.planet,
+            buddhaPosition: thaiAstro.buddhaPosition,
+            personality: thaiAstro.personality,
+            luckyNumber: thaiAstro.luckyNumber,
+            luckyDirection: thaiAstro.luckyDirection,
+          })
+          .where(eq(thaiAstrologyData.profileId, savedProfile.id));
+      } else {
+        // Insert new Thai astrology data
+        await db.insert(thaiAstrologyData).values({
+          profileId: savedProfile.id,
+          day: thaiAstro.day,
+          color: thaiAstro.color,
+          planet: thaiAstro.planet,
+          buddhaPosition: thaiAstro.buddhaPosition,
+          personality: thaiAstro.personality,
+          luckyNumber: thaiAstro.luckyNumber,
+          luckyDirection: thaiAstro.luckyDirection,
+        });
+      }
+
+      console.log('[Fortune] Profile saved successfully:', savedProfile.id);
       return { success: true, profileId: savedProfile.id };
     } catch (error) {
       console.error('Profile save error:', error);
@@ -315,31 +396,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
     console.log('[Fortune] GET /chart - Authenticated user:', session.userId);
 
-    // Rate limiting for authenticated users (by user ID)
-    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
-
-    if (rateLimitResult.limited) {
-      set.status = 429;
-      set.headers = {
-        'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-        'X-RateLimit-Remaining': '0',
-        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
-      return {
-        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-        code: 'RATE_LIMIT_EXCEEDED',
-        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
-      };
-    }
-
-    // Add rate limit headers
-    set.headers = {
-      'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-    };
+    // NOTE: No rate limiting on GET - this endpoint returns cached data
+    // Rate limiting is applied on POST /fortune/profile which triggers LLM generation
 
     try {
       const userId = session.userId;
