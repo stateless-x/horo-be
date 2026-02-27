@@ -35,7 +35,7 @@ export const auth = betterAuth({
   baseURL: config.oauth.baseUrl,
   // Trust proxy headers (needed for production behind reverse proxy)
   trustedOrigins: config.cors.allowedOrigins,
-  // Enable secure cookies in production
+  // Cookie security settings (cookies are configured at Elysia level)
   advanced: {
     useSecureCookies: config.env === 'production',
   },

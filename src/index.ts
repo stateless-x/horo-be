@@ -29,7 +29,13 @@ const app = new Elysia()
     origin: config.cors.allowedOrigins,
     credentials: true,
   }))
-  .use(cookie())
+  .use(cookie({
+    // Configure cookies for cross-origin OAuth
+    // CRITICAL: SameSite=None required for cross-origin auth flow
+    secure: config.env === 'production',
+    sameSite: config.env === 'production' ? 'none' : 'lax',
+    httpOnly: true,
+  }))
   .get('/', () => ({
     message: 'Horo API',
     version: '0.1.0',

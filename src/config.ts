@@ -3,6 +3,7 @@ console.log('[CONFIG] Loading configuration...');
 console.log('[CONFIG] PORT:', process.env.PORT);
 console.log('[CONFIG] NODE_ENV:', process.env.NODE_ENV);
 console.log('[CONFIG] DATABASE_URL:', process.env.DATABASE_URL ? 'SET' : 'MISSING');
+console.log('[CONFIG] OAUTH_BASE_URL:', process.env.OAUTH_BASE_URL || 'NOT SET (using default)');
 console.log('[CONFIG] CORS_ALLOWED_ORIGINS:', process.env.CORS_ALLOWED_ORIGINS || 'NOT SET (using default)');
 
 export const config = {
