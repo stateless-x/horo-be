@@ -25,10 +25,14 @@ export const auth = betterAuth({
     google: {
       clientId: config.oauth.google.clientId,
       clientSecret: config.oauth.google.clientSecret,
+      // Explicit redirect URI for OAuth provider console
+      redirectURI: `${config.oauth.baseUrl}/api/auth/callback/google`,
     },
     twitter: {
       clientId: config.oauth.twitter.clientId,
       clientSecret: config.oauth.twitter.clientSecret,
+      // Explicit redirect URI for OAuth provider console
+      redirectURI: `${config.oauth.baseUrl}/api/auth/callback/twitter`,
     },
   },
   // Base URL for OAuth callbacks (backend)
@@ -36,20 +40,25 @@ export const auth = betterAuth({
   // Base path where auth is mounted in the app
   basePath: '/api/auth',
   // Trust proxy headers (needed for production behind reverse proxy)
-  trustedOrigins: config.cors.allowedOrigins,
-  // Cookie configuration for subdomain OAuth
-  // Using SameSite=lax now since we're on the same parent domain
-  cookie: {
-    name: 'better-auth',
-    domain: config.env === 'production' ? '.สายมู.com' : undefined,
-    sameSite: 'lax',
-    secure: config.env === 'production',
-    httpOnly: true,
-    path: '/',
-  },
-  // Cookie security settings
+  // Include wildcard patterns for subdomain support
+  trustedOrigins: [
+    ...config.cors.allowedOrigins,
+    // Support all subdomains in production
+    ...(config.env === 'production'
+      ? ['https://*.สายมู.com', 'https://*.xn--y3cbx6azb.com']
+      : []
+    ),
+  ],
+  // Advanced configuration for cross-subdomain cookie sharing
   advanced: {
     useSecureCookies: config.env === 'production',
+    // Enable cross-subdomain cookies for proper session sharing
+    // between api.สายมู.com and สายมู.com
+    crossSubDomainCookies: {
+      enabled: config.env === 'production',
+      // Domain without leading dot (Better Auth adds it automatically)
+      domain: 'สายมู.com',
+    },
   },
   // Session configuration
   session: {
