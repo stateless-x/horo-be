@@ -23,14 +23,18 @@ export const user = pgTable('user', {
 export const session = pgTable('session', {
   id: text('id').primaryKey(),
   expiresAt: timestamp('expiresAt').notNull(),
+  token: text('token').notNull().unique(),
   ipAddress: text('ipAddress'),
   userAgent: text('userAgent'),
   userId: text('userId')
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 }, (table) => ({
   userIdIdx: index('session_user_id_idx').on(table.userId),
   expiresAtIdx: index('session_expires_at_idx').on(table.expiresAt),
+  tokenIdx: index('session_token_idx').on(table.token),
 }));
 
 export const account = pgTable('account', {
