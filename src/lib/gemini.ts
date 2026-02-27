@@ -35,3 +35,36 @@ export async function generateFortuneReading(
 
   return text;
 }
+
+/**
+ * Generate a fortune reading with streaming support
+ *
+ * Returns an async generator that yields text chunks as they arrive from the LLM.
+ * This enables progressive loading in the UI for better UX.
+ *
+ * @param prompt - The fortune reading prompt
+ * @param maxTokens - Maximum tokens to generate
+ * @returns AsyncGenerator yielding text chunks
+ */
+export async function* generateFortuneReadingStream(
+  prompt: string,
+  maxTokens: number = 500,
+): AsyncGenerator<string, void, unknown> {
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction: SYSTEM_PROMPT,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature: 0.8,
+    },
+  });
+
+  const result = await model.generateContentStream(prompt);
+
+  for await (const chunk of result.stream) {
+    const chunkText = chunk.text();
+    if (chunkText) {
+      yield chunkText;
+    }
+  }
+}

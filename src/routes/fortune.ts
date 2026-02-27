@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
-import { generateFortuneReading } from '../lib/gemini';
+import { generateFortuneReading, generateFortuneReadingStream } from '../lib/gemini';
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility } from '../../lib/db';
 import { BirthProfileSchema, type BaziChart } from '../../lib/shared';
@@ -396,6 +396,173 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       console.error('Chart reading error:', error);
       set.status = 500;
       return { error: 'Failed to generate chart reading' };
+    }
+  })
+
+  // Get full chart reading with streaming (requires auth)
+  .get('/chart/stream', async ({ cookie, set, request }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
+
+    if (!session) {
+      set.status = 401;
+      return new Response(JSON.stringify({ error: 'Not authenticated' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Rate limiting for authenticated users (by user ID)
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+
+    if (rateLimitResult.limited) {
+      return new Response(
+        JSON.stringify({
+          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+          },
+        }
+      );
+    }
+
+    try {
+      const userId = session.userId;
+
+      // Get user's birth profile
+      const [profile] = await db
+        .select()
+        .from(birthProfiles)
+        .where(eq(birthProfiles.userId, userId))
+        .limit(1);
+
+      if (!profile) {
+        return new Response(JSON.stringify({ error: 'Birth profile not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Get or calculate Bazi chart
+      let [baziChartRecord] = await db
+        .select()
+        .from(baziCharts)
+        .where(eq(baziCharts.profileId, profile.id))
+        .limit(1);
+
+      if (!baziChartRecord) {
+        // Calculate and save
+        const baziChart = calculateBazi(
+          profile.birthDate,
+          profile.birthHour || undefined,
+          profile.gender as 'male' | 'female'
+        );
+
+        [baziChartRecord] = await db
+          .insert(baziCharts)
+          .values({
+            profileId: profile.id,
+            yearPillar: JSON.stringify(baziChart.yearPillar),
+            monthPillar: JSON.stringify(baziChart.monthPillar),
+            dayPillar: JSON.stringify(baziChart.dayPillar),
+            hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+            dayMaster: baziChart.dayMaster,
+            primaryElement: baziChart.element,
+            elementStrength: JSON.stringify({}),
+          })
+          .returning();
+      }
+
+      // Parse chart data
+      const baziChart: BaziChart = {
+        yearPillar: JSON.parse(baziChartRecord.yearPillar),
+        monthPillar: JSON.parse(baziChartRecord.monthPillar),
+        dayPillar: JSON.parse(baziChartRecord.dayPillar),
+        hourPillar: baziChartRecord.hourPillar ? JSON.parse(baziChartRecord.hourPillar) : undefined,
+        dayMaster: baziChartRecord.dayMaster as any,
+        element: baziChartRecord.primaryElement as any,
+      };
+
+      // Get Thai astrology
+      const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+
+      // Calculate current age
+      const now = new Date();
+      const birthDate = new Date(profile.birthDate);
+      const currentAge = now.getFullYear() - birthDate.getFullYear();
+
+      // Create a readable stream for Server-Sent Events
+      const stream = new ReadableStream({
+        async start(controller) {
+          try {
+            // Send initial data with chart information
+            const initialData = {
+              type: 'chart',
+              data: {
+                baziChart,
+                thaiAstrology,
+                currentAge,
+              },
+            };
+            controller.enqueue(`data: ${JSON.stringify(initialData)}\n\n`);
+
+            // Generate and stream narrative
+            const prompt = buildFullChartPrompt(
+              'ผู้ใช้',
+              profile.birthDate,
+              baziChart,
+              thaiAstrology,
+              currentAge
+            );
+
+            for await (const chunk of generateFortuneReadingStream(prompt, 1500)) {
+              const chunkData = {
+                type: 'narrative',
+                data: chunk,
+              };
+              controller.enqueue(`data: ${JSON.stringify(chunkData)}\n\n`);
+            }
+
+            // Send completion event
+            controller.enqueue(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+            controller.close();
+          } catch (error) {
+            console.error('Stream error:', error);
+            const errorData = {
+              type: 'error',
+              data: 'Failed to generate fortune reading',
+            };
+            controller.enqueue(`data: ${JSON.stringify(errorData)}\n\n`);
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error('Chart stream error:', error);
+      return new Response(JSON.stringify({ error: 'Failed to generate chart reading' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
   })
 
