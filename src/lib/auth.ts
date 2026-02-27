@@ -31,8 +31,21 @@ export const auth = betterAuth({
       clientSecret: config.oauth.twitter.clientSecret,
     },
   },
-  // Base URL for OAuth callbacks
+  // Base URL for OAuth callbacks (backend)
   baseURL: config.oauth.baseUrl,
   // Trust proxy headers (needed for production behind reverse proxy)
   trustedOrigins: config.cors.allowedOrigins,
+  // Enable secure cookies in production
+  advanced: {
+    useSecureCookies: config.env === 'production',
+  },
+  // Session configuration
+  session: {
+    // Store session state in database for cross-origin OAuth
+    // This prevents state_mismatch errors
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60, // 5 minutes
+    },
+  },
 });
