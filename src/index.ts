@@ -87,6 +87,26 @@ if (configErrors.length === 0) {
 
         return response;
       })
+      // Debug endpoint to test session validation
+      .get('/api/debug/session', async ({ request, set }) => {
+        const { validateSessionFromRequest } = await import('./lib/session');
+        const session = await validateSessionFromRequest(request);
+
+        if (!session) {
+          set.status = 401;
+          return {
+            authenticated: false,
+            message: 'No valid session found',
+            cookieHeader: request.headers.get('cookie')?.substring(0, 50) + '...' || 'No cookie header'
+          };
+        }
+
+        return {
+          authenticated: true,
+          userId: session.userId,
+          expiresAt: session.expiresAt,
+        };
+      })
       .use(fortuneRoutes)
       .use(inviteRoutes)
       .use(onboardingRoutes);

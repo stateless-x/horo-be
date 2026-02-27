@@ -1,12 +1,10 @@
-import { db } from './db';
-import { session } from '../../lib/db/schema';
-import { eq, and, gt } from 'drizzle-orm';
+import { auth } from './auth';
 
 /**
  * Session Validation Helper
  *
- * Provides utilities for validating Better Auth sessions
- * and extracting user IDs from session tokens.
+ * Uses Better Auth's built-in session validation API
+ * instead of manually querying the database.
  */
 
 export interface ValidatedSession {
@@ -15,70 +13,57 @@ export interface ValidatedSession {
 }
 
 /**
- * Extract session token from cookie header
+ * Validate session from request using Better Auth's API
+ *
+ * This is the recommended approach as Better Auth handles:
+ * - Cookie parsing
+ * - Session token validation
+ * - Expiration checking
+ * - Cookie cache validation
+ *
+ * Returns user ID if session is valid, null otherwise
  */
-export function extractSessionToken(cookieHeader: string): string | null {
-  const sessionToken = cookieHeader
-    .split(';')
-    .find(cookie => cookie.trim().startsWith('better-auth.session_token='))
-    ?.split('=')[1];
-
-  return sessionToken || null;
-}
-
-/**
- * Validate session token and get user ID
- * Returns null if session is invalid or expired
- */
-export async function validateSession(sessionToken: string): Promise<ValidatedSession | null> {
+export async function validateSessionFromRequest(request: Request): Promise<ValidatedSession | null> {
   try {
-    const [sessionRecord] = await db
-      .select({
-        userId: session.userId,
-        expiresAt: session.expiresAt,
-      })
-      .from(session)
-      .where(
-        and(
-          eq(session.token, sessionToken), // Fixed: use token column, not id
-          gt(session.expiresAt, new Date()) // Check if session is not expired
-        )
-      )
-      .limit(1);
+    // Convert Request headers to Headers object for Better Auth
+    const headers = new Headers(request.headers);
 
-    if (!sessionRecord) {
+    // Log cookie header for debugging
+    const cookieHeader = headers.get('cookie');
+    console.log('[Session] Cookie header present:', !!cookieHeader);
+    if (cookieHeader) {
+      // Log cookie names (not values for security)
+      const cookieNames = cookieHeader.split(';').map(c => c.trim().split('=')[0]);
+      console.log('[Session] Cookie names:', cookieNames);
+    }
+
+    // Use Better Auth's built-in session validation
+    // Returns { user: {...}, session: {...} } or null
+    const result = await auth.api.getSession({
+      headers,
+    });
+
+    console.log('[Session] Better Auth result:', {
+      hasResult: !!result,
+      hasUser: !!result?.user,
+      hasSession: !!result?.session,
+      userId: result?.user?.id,
+    });
+
+    // Better Auth returns null or undefined if session is invalid
+    if (!result || !result.user || !result.session) {
+      console.log('[Session] No valid session found');
       return null;
     }
 
+    // Better Auth's session structure: { user: {...}, session: {...} }
+    console.log('[Session] Validated user:', result.user.id);
     return {
-      userId: sessionRecord.userId,
-      expiresAt: sessionRecord.expiresAt,
+      userId: result.user.id,
+      expiresAt: result.session.expiresAt,
     };
   } catch (error) {
     console.error('[Session] Validation error:', error);
     return null;
   }
-}
-
-/**
- * Validate session from request headers
- * Convenience function that extracts and validates in one step
- */
-export async function validateSessionFromRequest(request: Request): Promise<ValidatedSession | null> {
-  const cookieHeader = request.headers.get('cookie') || '';
-  const sessionToken = extractSessionToken(cookieHeader);
-
-  if (!sessionToken) {
-    console.log('[Session] No session token found in request cookies');
-    console.log('[Session] Cookie header:', cookieHeader.substring(0, 100)); // Log first 100 chars
-    return null;
-  }
-
-  const validatedSession = await validateSession(sessionToken);
-
-  if (!validatedSession) {
-    console.log('[Session] Session validation failed for token:', sessionToken.substring(0, 10) + '...');
-  }
-
-  return validatedSession;
 }
