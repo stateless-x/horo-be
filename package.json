@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
-    "start": "bun run scripts/migrate.ts && bun run dist/index.js",
+    "start": "bun scripts/migrate.ts && bun dist/index.js",
     "type-check": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
