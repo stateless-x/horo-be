@@ -142,9 +142,10 @@ export function calculateBazi(
   birthHour?: number, // 0-23, undefined if unknown
   gender?: Gender
 ): BaziChart {
-  const year = birthDate.getFullYear();
-  const month = birthDate.getMonth() + 1;
-  const day = birthDate.getDate();
+  // Use UTC methods since birthDate is stored as UTC midnight
+  const year = birthDate.getUTCFullYear();
+  const month = birthDate.getUTCMonth() + 1;
+  const day = birthDate.getUTCDate();
 
   const yearPillar = calculateYearPillar(year, month, day);
   const monthPillar = calculateMonthPillar(yearPillar.stemIndex, month, day);
@@ -184,9 +185,10 @@ export function calculateEnrichedBazi(
   birthHour?: number,
   gender?: Gender
 ): { year: EnrichedPillar; month: EnrichedPillar; day: EnrichedPillar; hour?: EnrichedPillar } {
-  const year = birthDate.getFullYear();
-  const month = birthDate.getMonth() + 1;
-  const day = birthDate.getDate();
+  // Use UTC methods since birthDate is stored as UTC midnight
+  const year = birthDate.getUTCFullYear();
+  const month = birthDate.getUTCMonth() + 1;
+  const day = birthDate.getUTCDate();
 
   const yearPillar = calculateYearPillar(year, month, day);
   const monthPillar = calculateMonthPillar(yearPillar.stemIndex, month, day);

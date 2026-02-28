@@ -10,8 +10,9 @@ import type { ThaiAstrology, ThaiDay } from '../shared';
  * TODO: Implement complete Thai astrology mapping
  */
 export function calculateThaiAstrology(birthDate: Date): ThaiAstrology {
-  const dayOfWeek = birthDate.getDay();
-  const hour = birthDate.getHours();
+  // Use UTC methods since birthDate is stored as UTC midnight
+  const dayOfWeek = birthDate.getUTCDay();
+  const hour = birthDate.getUTCHours();
 
   // Determine Thai day (with Wednesday split)
   let thaiDay: ThaiDay;

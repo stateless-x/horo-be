@@ -506,7 +506,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       const now = new Date();
       const birthDate = new Date(profile.birthDate);
-      const currentAge = now.getFullYear() - birthDate.getFullYear();
+      // Use UTC year since birthDate is stored as UTC midnight
+      const currentAge = now.getUTCFullYear() - birthDate.getUTCFullYear();
 
       // Get user's display name from the user table (prefer displayName over OAuth name)
       const [userData] = await db
@@ -532,10 +533,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
 
       // ---- Merge deterministic + LLM data ----
+      // Use UTC timezone to ensure date displays correctly (birthDate is stored as UTC midnight)
       const birthDateFormatted = profile.birthDate.toLocaleDateString('th-TH', {
         year: 'numeric',
         month: 'long',
         day: 'numeric',
+        timeZone: 'UTC',
       });
 
       const response: StructuredChartResponse = {

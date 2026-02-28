@@ -21,9 +21,10 @@ export function toGregorianYear(buddhistYear: number): number {
  */
 export function formatThaiDate(date: string | Date): string {
   const d = typeof date === 'string' ? new Date(date) : date;
-  const day = d.getDate();
-  const month = d.getMonth();
-  const year = toBuddhistYear(d.getFullYear());
+  // Use UTC methods since birth dates are stored as UTC midnight
+  const day = d.getUTCDate();
+  const month = d.getUTCMonth();
+  const year = toBuddhistYear(d.getUTCFullYear());
 
   const THAI_MONTHS = [
     'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
