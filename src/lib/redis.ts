@@ -79,3 +79,50 @@ export async function closeRedis(): Promise<void> {
 export function isRedisAvailable(): boolean {
   return redis !== null && redis.status === 'ready';
 }
+
+/**
+ * Get-or-set cache with TTL.
+ * If Redis has the key, return it. Otherwise call fetcher, cache the result, return it.
+ * Falls back to calling fetcher directly when Redis is unavailable.
+ * Does NOT cache null/undefined results.
+ */
+export async function cache<T>(key: string, ttlSeconds: number, fetcher: () => Promise<T>): Promise<T> {
+  const client = getRedisClient();
+
+  if (client) {
+    try {
+      const cached = await client.get(key);
+      if (cached !== null) {
+        return JSON.parse(cached) as T;
+      }
+    } catch (err) {
+      console.error('[Redis Cache] Get error:', err);
+    }
+  }
+
+  const result = await fetcher();
+
+  if (client && result !== null && result !== undefined) {
+    try {
+      await client.set(key, JSON.stringify(result), 'EX', ttlSeconds);
+    } catch (err) {
+      console.error('[Redis Cache] Set error:', err);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Delete one or more cache keys.
+ */
+export async function invalidateCache(...keys: string[]): Promise<void> {
+  const client = getRedisClient();
+  if (!client || keys.length === 0) return;
+
+  try {
+    await client.del(...keys);
+  } catch (err) {
+    console.error('[Redis Cache] Invalidate error:', err);
+  }
+}

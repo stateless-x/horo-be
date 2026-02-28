@@ -20,7 +20,6 @@ if (redis) {
 // Import auth and routes lazily to avoid blocking on database connection
 let auth: any;
 let fortuneRoutes: any;
-let inviteRoutes: any;
 let onboardingRoutes: any;
 
 let app = new Elysia()
@@ -66,9 +65,6 @@ if (configErrors.length === 0) {
     const fortuneModule = await import('./routes/fortune');
     fortuneRoutes = fortuneModule.fortuneRoutes;
 
-    const inviteModule = await import('./routes/invite');
-    inviteRoutes = inviteModule.inviteRoutes;
-
     const onboardingModule = await import('./routes/onboarding');
     onboardingRoutes = onboardingModule.onboardingRoutes;
 
@@ -109,7 +105,6 @@ if (configErrors.length === 0) {
         };
       })
       .use(fortuneRoutes)
-      .use(inviteRoutes)
       .use(onboardingRoutes);
 
     console.log('[STARTUP] Auth and routes loaded successfully');

@@ -14,6 +14,7 @@ import {
   SYSTEM_PROMPT_STRUCTURED,
 } from '../lib/prompts';
 import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
+import { cache, invalidateCache } from '../lib/redis';
 import { validateSessionFromRequest } from '../lib/session';
 
 /**
@@ -31,6 +32,21 @@ function getClientIP(request: Request): string {
   }
 
   return 'unknown';
+}
+
+/**
+ * Get birth profile with Redis caching (1 hour TTL).
+ * Invalidated when profile is created or updated.
+ */
+async function getCachedProfile(userId: string) {
+  return cache(`profile:${userId}`, 3600, async () => {
+    const [profile] = await db
+      .select()
+      .from(birthProfiles)
+      .where(eq(birthProfiles.userId, userId))
+      .limit(1);
+    return profile ?? null;
+  });
 }
 
 /**
@@ -279,6 +295,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         });
       }
 
+      await invalidateCache(`profile:${userId}`);
       console.log('[Fortune] Profile saved successfully:', savedProfile.id);
       return { success: true, profileId: savedProfile.id };
     } catch (error) {
@@ -303,12 +320,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
     try {
       const userId = session.userId;
 
-      // Get user's birth profile
-      const [profile] = await db
-        .select()
-        .from(birthProfiles)
-        .where(eq(birthProfiles.userId, userId))
-        .limit(1);
+      // Get user's birth profile (Redis-cached)
+      const profile = await getCachedProfile(userId);
 
       if (!profile) {
         set.status = 404;
@@ -439,6 +452,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       await db
         .delete(chartNarratives)
         .where(eq(chartNarratives.profileId, profile.id));
+      await invalidateCache(`chart:narrative:${profile.id}`);
 
       console.log('[Fortune] DELETE /chart/regenerate - Cleared cache for profile:', profile.id);
 
@@ -471,28 +485,28 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
     try {
       const userId = session.userId;
 
-      // Get user's birth profile
-      const [profile] = await db
-        .select()
-        .from(birthProfiles)
-        .where(eq(birthProfiles.userId, userId))
-        .limit(1);
+      // Get user's birth profile (Redis-cached)
+      const profile = await getCachedProfile(userId);
 
       if (!profile) {
         set.status = 404;
         return { error: 'Birth profile not found' };
       }
 
-      // Check for cached structured reading
-      const [cached] = await db
-        .select()
-        .from(chartNarratives)
-        .where(eq(chartNarratives.profileId, profile.id))
-        .limit(1);
+      // Check Redis L1 cache, then DB for cached structured reading
+      const chartCacheKey = `chart:narrative:${profile.id}`;
+      const cachedChart = await cache<StructuredChartResponse | null>(chartCacheKey, 86400, async () => {
+        const [dbCached] = await db
+          .select()
+          .from(chartNarratives)
+          .where(eq(chartNarratives.profileId, profile.id))
+          .limit(1);
+        return dbCached?.structuredReading ? JSON.parse(dbCached.structuredReading) : null;
+      });
 
-      if (cached?.structuredReading) {
+      if (cachedChart) {
         console.log('[Fortune] GET /chart - Cache hit for profile:', profile.id);
-        return JSON.parse(cached.structuredReading);
+        return cachedChart;
       }
 
       // ---- Step 1: Deterministic calculation ----
@@ -576,21 +590,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
       };
 
-      // ---- Cache the structured response ----
-      if (cached) {
-        await db
-          .update(chartNarratives)
-          .set({
-            structuredReading: JSON.stringify(response),
-            updatedAt: new Date(),
-          })
-          .where(eq(chartNarratives.profileId, profile.id));
-      } else {
-        await db.insert(chartNarratives).values({
-          profileId: profile.id,
-          structuredReading: JSON.stringify(response),
-        });
-      }
+      // ---- Cache the structured response (DB + Redis) ----
+      await db
+        .delete(chartNarratives)
+        .where(eq(chartNarratives.profileId, profile.id));
+      await db.insert(chartNarratives).values({
+        profileId: profile.id,
+        structuredReading: JSON.stringify(response),
+      });
+      await invalidateCache(chartCacheKey);
 
       console.log('[Fortune] GET /chart - Structured reading cached for profile:', profile.id);
 
@@ -651,11 +659,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       };
 
       const userId = session.userId;
-      const [userProfile] = await db
-        .select()
-        .from(birthProfiles)
-        .where(eq(birthProfiles.userId, userId))
-        .limit(1);
+      const userProfile = await getCachedProfile(userId);
 
       if (!userProfile) {
         set.status = 404;
@@ -765,12 +769,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'User not found' };
       }
 
-      // Get birth profile
-      const [profile] = await db
-        .select()
-        .from(birthProfiles)
-        .where(eq(birthProfiles.userId, userId))
-        .limit(1);
+      // Get birth profile (Redis-cached)
+      const profile = await getCachedProfile(userId);
 
       return {
         user: userData,
@@ -921,6 +921,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       await db
         .delete(chartNarratives)
         .where(eq(chartNarratives.profileId, savedProfile.id));
+      await invalidateCache(`profile:${userId}`, `chart:narrative:${savedProfile.id}`);
 
       console.log('[Fortune] Profile updated successfully:', savedProfile.id);
       return { success: true, profileId: savedProfile.id };
