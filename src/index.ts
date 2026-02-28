@@ -104,6 +104,49 @@ if (configErrors.length === 0) {
           expiresAt: session.expiresAt,
         };
       })
+      // Debug endpoint to reset rate limit (supports both Redis and in-memory)
+      .post('/api/debug/reset-rate-limit', async ({ request, set }) => {
+        const { validateSessionFromRequest } = await import('./lib/session');
+        const { resetRateLimit } = await import('./lib/rate-limit');
+        const { getRedisClient } = await import('./lib/redis');
+
+        const session = await validateSessionFromRequest(request);
+
+        if (!session) {
+          set.status = 401;
+          return { error: 'Not authenticated' };
+        }
+
+        const userId = session.userId;
+        let redisDeleted = 0;
+        let memoryDeleted = false;
+
+        // Try to delete from Redis first
+        const redis = getRedisClient();
+        if (redis) {
+          try {
+            const keys = await redis.keys(`ratelimit:${userId}*`);
+            if (keys.length > 0) {
+              redisDeleted = await redis.del(...keys);
+            }
+          } catch (err) {
+            console.error('[Debug] Redis delete error:', err);
+          }
+        }
+
+        // Also delete from in-memory
+        memoryDeleted = resetRateLimit(userId);
+
+        return {
+          success: true,
+          userId,
+          redisDeleted,
+          memoryDeleted,
+          message: redisDeleted > 0 || memoryDeleted
+            ? `Rate limit cleared (Redis: ${redisDeleted} keys, Memory: ${memoryDeleted})`
+            : 'No rate limit found',
+        };
+      })
       .use(fortuneRoutes)
       .use(onboardingRoutes);
 
