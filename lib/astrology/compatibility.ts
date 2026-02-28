@@ -1,4 +1,5 @@
-import type { BaziChart } from '../shared';
+import type { BaziChart, Element } from '../shared';
+import { ELEMENT_PRODUCING, ELEMENT_CONTROLLING } from './constants';
 
 /**
  * PLACEHOLDER: Calculate compatibility between two Bazi charts
@@ -41,26 +42,39 @@ export function calculateCompatibility(
 }
 
 /**
- * Calculate element interaction type
+ * Calculate element interaction type between two elements.
+ * Uses the Five Element producing and controlling cycles.
  */
 export function getElementInteraction(
-  element1: string,
-  element2: string
-): 'supporting' | 'controlling' | 'combining' | 'neutral' {
-  // Simplified mock
-  if (element1 === element2) return 'combining';
-
-  const supporting = {
-    wood: 'fire',
-    fire: 'earth',
-    earth: 'metal',
-    metal: 'water',
-    water: 'wood',
-  };
-
-  if (supporting[element1 as keyof typeof supporting] === element2) {
-    return 'supporting';
+  element1: Element,
+  element2: Element
+): {
+  type: 'producing' | 'controlling' | 'weakening' | 'overacting' | 'same' | 'neutral';
+  description: string;
+} {
+  if (element1 === element2) {
+    return { type: 'same', description: `${element1} reinforces ${element2}` };
   }
 
-  return 'neutral';
+  // Producing cycle: element1 produces element2
+  if (ELEMENT_PRODUCING[element1] === element2) {
+    return { type: 'producing', description: `${element1} produces ${element2}` };
+  }
+
+  // Reverse producing: element2 produces element1 (draining element2)
+  if (ELEMENT_PRODUCING[element2] === element1) {
+    return { type: 'weakening', description: `${element2} drains ${element1}` };
+  }
+
+  // Controlling cycle: element1 controls element2
+  if (ELEMENT_CONTROLLING[element1] === element2) {
+    return { type: 'controlling', description: `${element1} controls ${element2}` };
+  }
+
+  // Reverse controlling: element2 controls element1
+  if (ELEMENT_CONTROLLING[element2] === element1) {
+    return { type: 'overacting', description: `${element2} controls ${element1}` };
+  }
+
+  return { type: 'neutral', description: 'No direct cycle relationship' };
 }

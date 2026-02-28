@@ -1,16 +1,17 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
-import { generateFortuneReading, generateFortuneReadingStream } from '../lib/gemini';
-import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
-import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives } from '../../lib/db';
-import { BirthProfileSchema, type BaziChart } from '../../lib/shared';
+import { generateFortuneReading, generateStructuredFortuneReading } from '../lib/gemini';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
+import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives, user } from '../../lib/db';
+import { BirthProfileSchema, type BaziChart, type StructuredChartResponse } from '../../lib/shared';
 import { eq, and } from 'drizzle-orm';
 import {
   buildTeaserPrompt,
   buildDailyReadingPrompt,
-  buildFullChartPrompt,
+  buildStructuredChartPrompt,
   buildCompatibilityPrompt,
-  SYSTEM_PROMPT
+  SYSTEM_PROMPT,
+  SYSTEM_PROMPT_STRUCTURED,
 } from '../lib/prompts';
 import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { validateSessionFromRequest } from '../lib/session';
@@ -359,8 +360,16 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       );
       const thaiAstrology = calculateThaiAstrology(profile.birthDate);
 
+      // Get user's name from the user table
+      const [userData] = await db
+        .select({ name: user.name })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+      const userName = userData?.name || 'ผู้มาเยือน';
+
       const prompt = buildDailyReadingPrompt(
-        'ผู้ใช้', // TODO: Get actual name from users table
+        userName,
         profile.birthDate,
         new Date(),
         baziChart,
@@ -433,6 +442,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
   })
 
   // Get full chart reading (requires auth)
+  // Returns structured response with 6 fortune categories, element profile,
+  // enriched pillars, birth star details, and recommendations.
   .get('/chart', async ({ cookie, set, request }) => {
     // Validate session
     const session = await validateSessionFromRequest(request);
@@ -444,9 +455,6 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     }
 
     console.log('[Fortune] GET /chart - Authenticated user:', session.userId);
-
-    // NOTE: No rate limiting on GET - this endpoint returns cached data
-    // Rate limiting is applied on POST /fortune/profile which triggers LLM generation
 
     try {
       const userId = session.userId;
@@ -463,269 +471,119 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
         return { error: 'Birth profile not found' };
       }
 
-      // Get or calculate Bazi chart
-      let [baziChartRecord] = await db
-        .select()
-        .from(baziCharts)
-        .where(eq(baziCharts.profileId, profile.id))
-        .limit(1);
-
-      if (!baziChartRecord) {
-        // Calculate and save
-        const baziChart = calculateBazi(
-          profile.birthDate,
-          profile.birthHour || undefined,
-          profile.gender as 'male' | 'female'
-        );
-
-        [baziChartRecord] = await db
-          .insert(baziCharts)
-          .values({
-            profileId: profile.id,
-            yearPillar: JSON.stringify(baziChart.yearPillar),
-            monthPillar: JSON.stringify(baziChart.monthPillar),
-            dayPillar: JSON.stringify(baziChart.dayPillar),
-            hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-            dayMaster: baziChart.dayMaster,
-            primaryElement: baziChart.element,
-            elementStrength: JSON.stringify({}),
-          })
-          .returning();
-      }
-
-      // Parse chart data
-      const baziChart: BaziChart = {
-        yearPillar: JSON.parse(baziChartRecord.yearPillar),
-        monthPillar: JSON.parse(baziChartRecord.monthPillar),
-        dayPillar: JSON.parse(baziChartRecord.dayPillar),
-        hourPillar: baziChartRecord.hourPillar ? JSON.parse(baziChartRecord.hourPillar) : undefined,
-        dayMaster: baziChartRecord.dayMaster as any,
-        element: baziChartRecord.primaryElement as any,
-      };
-
-      // Get Thai astrology
-      const thaiAstrology = calculateThaiAstrology(profile.birthDate);
-
-      // Calculate current age
-      const now = new Date();
-      const birthDate = new Date(profile.birthDate);
-      const currentAge = now.getFullYear() - birthDate.getFullYear();
-
-      // Check if we have a cached chart narrative for this profile
-      let [cachedNarrative] = await db
+      // Check for cached structured reading
+      const [cached] = await db
         .select()
         .from(chartNarratives)
         .where(eq(chartNarratives.profileId, profile.id))
         .limit(1);
 
-      let narrative: string;
-
-      if (cachedNarrative) {
-        // Cache hit - return existing narrative
+      if (cached?.structuredReading) {
         console.log('[Fortune] GET /chart - Cache hit for profile:', profile.id);
-        narrative = cachedNarrative.narrative;
-      } else {
-        // Cache miss - generate new narrative with LLM
-        console.log('[Fortune] GET /chart - Cache miss for profile:', profile.id, '- Generating new narrative');
-
-        const prompt = buildFullChartPrompt(
-          'ผู้ใช้', // TODO: Get actual name
-          profile.birthDate,
-          baziChart,
-          thaiAstrology,
-          currentAge
-        );
-
-        narrative = await generateFortuneReading(prompt, 1500);
-
-        // Save to database for future requests
-        await db
-          .insert(chartNarratives)
-          .values({
-            profileId: profile.id,
-            narrative,
-          });
-
-        console.log('[Fortune] GET /chart - Narrative cached for profile:', profile.id);
+        return JSON.parse(cached.structuredReading);
       }
 
-      return {
-        baziChart,
-        thaiAstrology,
-        narrative,
-        currentAge,
-      };
-    } catch (error) {
-      console.error('Chart reading error:', error);
-      set.status = 500;
-      return { error: 'Failed to generate chart reading' };
-    }
-  })
+      // ---- Step 1: Deterministic calculation ----
+      const birthHour = profile.birthHour ?? undefined;
+      const gender = profile.gender as 'male' | 'female';
 
-  // Get full chart reading with streaming (requires auth)
-  .get('/chart/stream', async ({ cookie, set, request }) => {
-    // Validate session
-    const session = await validateSessionFromRequest(request);
-
-    if (!session) {
-      set.status = 401;
-      return new Response(JSON.stringify({ error: 'Not authenticated' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Rate limiting for authenticated users (by user ID)
-    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
-
-    if (rateLimitResult.limited) {
-      return new Response(
-        JSON.stringify({
-          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-          code: 'RATE_LIMIT_EXCEEDED',
-          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-        }),
-        {
-          status: 429,
-          headers: {
-            'Content-Type': 'application/json',
-            'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-            'X-RateLimit-Remaining': '0',
-            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-          },
-        }
-      );
-    }
-
-    try {
-      const userId = session.userId;
-
-      // Get user's birth profile
-      const [profile] = await db
-        .select()
-        .from(birthProfiles)
-        .where(eq(birthProfiles.userId, userId))
-        .limit(1);
-
-      if (!profile) {
-        return new Response(JSON.stringify({ error: 'Birth profile not found' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Get or calculate Bazi chart
-      let [baziChartRecord] = await db
-        .select()
-        .from(baziCharts)
-        .where(eq(baziCharts.profileId, profile.id))
-        .limit(1);
-
-      if (!baziChartRecord) {
-        // Calculate and save
-        const baziChart = calculateBazi(
-          profile.birthDate,
-          profile.birthHour || undefined,
-          profile.gender as 'male' | 'female'
-        );
-
-        [baziChartRecord] = await db
-          .insert(baziCharts)
-          .values({
-            profileId: profile.id,
-            yearPillar: JSON.stringify(baziChart.yearPillar),
-            monthPillar: JSON.stringify(baziChart.monthPillar),
-            dayPillar: JSON.stringify(baziChart.dayPillar),
-            hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-            dayMaster: baziChart.dayMaster,
-            primaryElement: baziChart.element,
-            elementStrength: JSON.stringify({}),
-          })
-          .returning();
-      }
-
-      // Parse chart data
-      const baziChart: BaziChart = {
-        yearPillar: JSON.parse(baziChartRecord.yearPillar),
-        monthPillar: JSON.parse(baziChartRecord.monthPillar),
-        dayPillar: JSON.parse(baziChartRecord.dayPillar),
-        hourPillar: baziChartRecord.hourPillar ? JSON.parse(baziChartRecord.hourPillar) : undefined,
-        dayMaster: baziChartRecord.dayMaster as any,
-        element: baziChartRecord.primaryElement as any,
-      };
-
-      // Get Thai astrology
+      const enrichedPillars = calculateEnrichedBazi(profile.birthDate, birthHour, gender);
+      const elementProfile = calculateElementProfile(enrichedPillars.day);
+      const pillarInteractions = calculatePillarInteractions(enrichedPillars);
       const thaiAstrology = calculateThaiAstrology(profile.birthDate);
 
-      // Calculate current age
       const now = new Date();
       const birthDate = new Date(profile.birthDate);
       const currentAge = now.getFullYear() - birthDate.getFullYear();
 
-      // Create a readable stream for Server-Sent Events
-      const stream = new ReadableStream({
-        async start(controller) {
-          try {
-            // Send initial data with chart information
-            const initialData = {
-              type: 'chart',
-              data: {
-                baziChart,
-                thaiAstrology,
-                currentAge,
-              },
-            };
-            controller.enqueue(`data: ${JSON.stringify(initialData)}\n\n`);
+      // Get user's name from the user table
+      const [userData] = await db
+        .select({ name: user.name })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+      const userName = userData?.name || 'ผู้มาเยือน';
 
-            // Generate and stream narrative
-            const prompt = buildFullChartPrompt(
-              'ผู้ใช้',
-              profile.birthDate,
-              baziChart,
-              thaiAstrology,
-              currentAge
-            );
+      // ---- Step 2: LLM synthesis ----
+      console.log('[Fortune] GET /chart - Generating structured reading for profile:', profile.id);
 
-            for await (const chunk of generateFortuneReadingStream(prompt, 1500)) {
-              const chunkData = {
-                type: 'narrative',
-                data: chunk,
-              };
-              controller.enqueue(`data: ${JSON.stringify(chunkData)}\n\n`);
-            }
+      const prompt = buildStructuredChartPrompt(
+        userName,
+        profile.birthDate,
+        enrichedPillars,
+        elementProfile,
+        pillarInteractions,
+        thaiAstrology,
+        currentAge,
+      );
 
-            // Send completion event
-            controller.enqueue(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
-            controller.close();
-          } catch (error) {
-            console.error('Stream error:', error);
-            const errorData = {
-              type: 'error',
-              data: 'Failed to generate fortune reading',
-            };
-            controller.enqueue(`data: ${JSON.stringify(errorData)}\n\n`);
-            controller.close();
-          }
-        },
+      const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+
+      // ---- Merge deterministic + LLM data ----
+      const birthDateFormatted = profile.birthDate.toLocaleDateString('th-TH', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
       });
 
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+      const response: StructuredChartResponse = {
+        // Section 1: Hero
+        personalityTraits: llmResult.personalityTraits as string[],
+        birthDateFormatted,
+        currentAge,
+
+        // Section 2: Element Profile
+        elementProfile,
+
+        // Section 3: Four Pillars
+        pillars: enrichedPillars,
+        pillarInterpretations: llmResult.pillarInterpretations as StructuredChartResponse['pillarInterpretations'],
+        pillarInteractions,
+
+        // Section 4: Birth Star & Lucky Attributes
+        birthStar: {
+          planet: thaiAstrology.planet,
+          planetDescription: (llmResult.birthStarDetails as any).planetDescription,
+          luckyColor: thaiAstrology.color,
+          luckyColorTooltip: (llmResult.birthStarDetails as any).luckyColorTooltip,
+          luckyNumber: thaiAstrology.luckyNumber,
+          luckyNumberTooltip: (llmResult.birthStarDetails as any).luckyNumberTooltip,
+          luckyDirection: thaiAstrology.luckyDirection,
+          luckyDirectionTooltip: (llmResult.birthStarDetails as any).luckyDirectionTooltip,
+          luckyDay: thaiAstrology.day,
+          luckyDayTooltip: (llmResult.birthStarDetails as any).luckyDayTooltip,
         },
-      });
+
+        // Section 5: Fortune Readings
+        fortuneReadings: llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
+
+        // Section 6: Recommendations
+        recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
+      };
+
+      // ---- Cache the structured response ----
+      if (cached) {
+        await db
+          .update(chartNarratives)
+          .set({
+            structuredReading: JSON.stringify(response),
+            updatedAt: new Date(),
+          })
+          .where(eq(chartNarratives.profileId, profile.id));
+      } else {
+        await db.insert(chartNarratives).values({
+          profileId: profile.id,
+          structuredReading: JSON.stringify(response),
+        });
+      }
+
+      console.log('[Fortune] GET /chart - Structured reading cached for profile:', profile.id);
+
+      return response;
     } catch (error) {
-      console.error('Chart stream error:', error);
-      return new Response(JSON.stringify({ error: 'Failed to generate chart reading' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      console.error('Chart reading error:', error);
+      set.status = 500;
+      return { error: 'Failed to generate chart reading' };
     }
   })
 

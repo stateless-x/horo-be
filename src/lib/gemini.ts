@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
 
@@ -37,34 +37,165 @@ export async function generateFortuneReading(
 }
 
 /**
- * Generate a fortune reading with streaming support
+ * Generate a structured fortune reading using Gemini's JSON mode.
+ * Uses responseMimeType: "application/json" with a responseSchema
+ * to ensure reliable structured output.
  *
- * Returns an async generator that yields text chunks as they arrive from the LLM.
- * This enables progressive loading in the UI for better UX.
- *
- * @param prompt - The fortune reading prompt
- * @param maxTokens - Maximum tokens to generate
- * @returns AsyncGenerator yielding text chunks
+ * Includes retry logic (max 2 retries) if JSON parsing fails.
  */
-export async function* generateFortuneReadingStream(
+export async function generateStructuredFortuneReading(
   prompt: string,
-  maxTokens: number = 500,
-): AsyncGenerator<string, void, unknown> {
+  systemPrompt: string,
+): Promise<Record<string, unknown>> {
+  const responseSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+      personalityTraits: {
+        type: SchemaType.ARRAY,
+        items: { type: SchemaType.STRING },
+      },
+      pillarInterpretations: {
+        type: SchemaType.ARRAY,
+        items: {
+          type: SchemaType.OBJECT,
+          properties: {
+            pillarKey: { type: SchemaType.STRING },
+            interpretation: { type: SchemaType.STRING },
+            pillarRelationships: { type: SchemaType.STRING },
+          },
+          required: ["pillarKey", "interpretation", "pillarRelationships"],
+        },
+      },
+      birthStarDetails: {
+        type: SchemaType.OBJECT,
+        properties: {
+          planetDescription: { type: SchemaType.STRING },
+          luckyColorTooltip: { type: SchemaType.STRING },
+          luckyNumberTooltip: { type: SchemaType.STRING },
+          luckyDirectionTooltip: { type: SchemaType.STRING },
+          luckyDayTooltip: { type: SchemaType.STRING },
+        },
+        required: [
+          "planetDescription",
+          "luckyColorTooltip",
+          "luckyNumberTooltip",
+          "luckyDirectionTooltip",
+          "luckyDayTooltip",
+        ],
+      },
+      fortuneReadings: {
+        type: SchemaType.ARRAY,
+        items: {
+          type: SchemaType.OBJECT,
+          properties: {
+            key: { type: SchemaType.STRING },
+            score: { type: SchemaType.INTEGER },
+            reading: { type: SchemaType.STRING },
+            tips: {
+              type: SchemaType.ARRAY,
+              items: { type: SchemaType.STRING },
+            },
+            warnings: {
+              type: SchemaType.ARRAY,
+              items: { type: SchemaType.STRING },
+            },
+          },
+          required: ["key", "score", "reading", "tips", "warnings"],
+        },
+      },
+      recommendations: {
+        type: SchemaType.OBJECT,
+        properties: {
+          luckyColors: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+          },
+          luckyNumbers: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.INTEGER },
+          },
+          luckyDirection: { type: SchemaType.STRING },
+          luckyDay: { type: SchemaType.STRING },
+          monthlyHighlights: {
+            type: SchemaType.ARRAY,
+            items: {
+              type: SchemaType.OBJECT,
+              properties: {
+                month: { type: SchemaType.STRING },
+                rating: { type: SchemaType.INTEGER },
+                note: { type: SchemaType.STRING },
+              },
+              required: ["month", "rating", "note"],
+            },
+          },
+          dos: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+          },
+          donts: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+          },
+        },
+        required: [
+          "luckyColors",
+          "luckyNumbers",
+          "luckyDirection",
+          "luckyDay",
+          "monthlyHighlights",
+          "dos",
+          "donts",
+        ],
+      },
+    },
+    required: [
+      "personalityTraits",
+      "pillarInterpretations",
+      "birthStarDetails",
+      "fortuneReadings",
+      "recommendations",
+    ],
+  };
+
   const model = genAI.getGenerativeModel({
     model: "gemini-2.5-flash",
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: systemPrompt,
     generationConfig: {
-      maxOutputTokens: maxTokens,
-      temperature: 0.8,
+      maxOutputTokens: 8000,
+      temperature: 0.75,
+      responseMimeType: "application/json",
+      responseSchema,
     },
   });
 
-  const result = await model.generateContentStream(prompt);
+  const maxRetries = 2;
+  let lastError: Error | null = null;
 
-  for await (const chunk of result.stream) {
-    const chunkText = chunk.text();
-    if (chunkText) {
-      yield chunkText;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+
+      if (!text) {
+        throw new Error("Empty response from Gemini");
+      }
+
+      return JSON.parse(text);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(
+        `[Gemini] Structured generation attempt ${attempt + 1}/${maxRetries + 1} failed:`,
+        lastError.message
+      );
+
+      if (attempt < maxRetries) {
+        // Brief delay before retry
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
     }
   }
+
+  throw new Error(
+    `Failed to generate structured fortune reading after ${maxRetries + 1} attempts: ${lastError?.message}`
+  );
 }

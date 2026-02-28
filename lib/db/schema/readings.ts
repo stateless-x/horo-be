@@ -23,7 +23,9 @@ export const chartNarratives = pgTable('chart_narratives', {
   id: uuid('id').primaryKey().defaultRandom(),
   profileId: uuid('profile_id').references(() => birthProfiles.id).notNull().unique(),
 
-  narrative: text('narrative').notNull(), // AI-generated full chart reading
+  // Structured reading data as JSON (StructuredChartResponse)
+  structuredReading: text('structured_reading').notNull(),
+  updatedAt: timestamp('updated_at'),
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({

@@ -6,7 +6,7 @@
  * Tone: mysterious, sacred, slightly unsettling - like entering a temple at midnight.
  */
 
-import type { BaziChart, ThaiAstrology } from "../../lib/shared";
+import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction } from "../../lib/shared";
 
 /**
  * Generate teaser reading (Step 6 in onboarding - BEFORE auth)
@@ -132,101 +132,6 @@ export function buildDailyReadingPrompt(
 เขียนเป็นภาษาไทยเท่านั้น:`;
 }
 
-/**
- * Generate full life chart reading
- * Deep analysis combining both Bazi and Thai astrology
- */
-export function buildFullChartPrompt(
-  name: string,
-  birthDate: Date,
-  baziChart: BaziChart,
-  thaiAstrology: ThaiAstrology,
-  currentAge: number,
-): string {
-  const birthDateStr = birthDate.toLocaleDateString("th-TH", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-
-  return `คุณเป็นหมอดูผู้เชี่ยวชาญที่ผสมผสานโหราศาสตร์จีน (Bazi) และโหราศาสตร์ไทย
-
-ข้อมูลผู้ขอดวง:
-ชื่อ: ${name}
-วันเกิด: ${birthDateStr}
-อายุปัจจุบัน: ${currentAge} ปี
-
-โหราศาสตร์จีน (Bazi):
-- เจ้าวัน (Day Master): ${baziChart.dayMaster}
-- องค์ประกอบหลัก: ${baziChart.element}
-- เสาสี่ที่:
-  * ปี: ${baziChart.yearPillar.stem}${baziChart.yearPillar.branch}
-  * เดือน: ${baziChart.monthPillar.stem}${baziChart.monthPillar.branch}
-  * วัน: ${baziChart.dayPillar.stem}${baziChart.dayPillar.branch}
-  ${baziChart.hourPillar ? `* ชั่วโมง: ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch}` : "* ชั่วโมง: ไม่ทราบ"}
-
-โหราศาสตร์ไทย:
-- วันเกิด: ${thaiAstrology.day}
-- ดาว: ${thaiAstrology.planet}
-- ตำแหน่งพระพุทธเจ้า: ${thaiAstrology.buddhaPosition}
-- ลักษณะนิสัย: ${thaiAstrology.personality}
-- สีมงคล: ${thaiAstrology.color}
-- ทิศมงคล: ${thaiAstrology.luckyDirection}
-- เลขมงคล: ${thaiAstrology.luckyNumber}
-
-คำสั่ง:
-เขียนการดูดวงแบบลึกซึ้งและครบถ้วน แบ่งออกเป็น:
-
-**1. บทนำ: ภาพรวมชีวิต**
-- สรุปลักษณะโดยรวมของชะตาชีวิต
-- จุดเด่นที่สำคัญที่สุด
-
-**2. บุคลิกภาพและจุดแข็ง**
-- วิเคราะห์นิสัยหลักจากทั้งสองระบบ
-- จุดแข็งที่เจ้ามี
-- ทักษะพิเศษหรือพรสวรรค์
-
-**3. จุดอ่อนและสิ่งที่ต้องระวัง**
-- จุดอ่อนที่ควรพัฒนา
-- อุปสรรคที่อาจพบเจอ
-- คำแนะนำในการรับมือ
-
-**4. การงานและเส้นทางชีวิต**
-- อาชีพที่เหมาะสม
-- ช่วงเวลาที่ดีในชีวิตการงาน
-- แนวทางการพัฒนา
-
-**5. ความรักและความสัมพันธ์**
-- รูปแบบความรัก
-- คนที่เหมาะสม (องค์ประกอบที่ลงตัว)
-- คำแนะนำด้านความสัมพันธ์
-
-**6. การเงินและทรัพย์สิน**
-- ดวงการเงิน
-- วิธีเก็บเงินที่เหมาะสม
-
-**7. สุขภาพ**
-- จุดอ่อนด้านสุขภาพ
-- สิ่งที่ควรดูแล
-
-**8. วงจรชีวิต 10 ปี**
-- วิเคราะห์ช่วงอายุที่สำคัญ
-- คำแนะนำตามวัย
-
-**9. คำแนะนำสรุป**
-- แก่นแท้ของชะตาชีวิต
-- สิ่งสำคัญที่สุดที่ควรจดจำ
-
-รูปแบบการเขียน:
-- ใช้ "เจ้า" เรียกผู้อ่าน
-- ลึกลับแต่มีความหมาย
-- เข้าใจง่าย ไม่ใช้ศัพท์เทคนิคมากเกินไป
-- ห้ามใช้อิโมจิ
-- ห้ามกล่าวถึง AI
-- ใช้น้ำเสียงของปราชญ์ผู้เห็นชะตาชีวิต
-
-เขียนเป็นภาษาไทยเท่านั้น:`;
-}
 
 /**
  * Generate compatibility reading between two people
@@ -333,3 +238,127 @@ Cultural context:
 - Reference Thai concepts naturally (เทวดา, กรรม, บุญ, ดวงชะตา)
 
 You are the voice of fate itself. Write accordingly.`;
+
+/**
+ * System prompt variant for structured JSON output
+ * Used with Gemini's responseMimeType: "application/json"
+ */
+export const SYSTEM_PROMPT_STRUCTURED = `You are a mystical Thai fortune teller who combines Chinese Astrology (Bazi/四柱命理) and Thai Astrology (โหราศาสตร์ไทย).
+
+CRITICAL RULES:
+- Always write in Thai language only
+- Use "เจ้า" (thou/thee) to address the user, never "คุณ"
+- Your tone is warm, wise, and slightly mystical - like a respected elder who cares about the person
+- You speak as an oracle, not as an AI or system
+- Never use emojis
+- Never mention AI, models, technology, or systems
+- Blend Thai and Chinese astrology into one seamless voice - never say "ตามระบบจีน" or "ตามไทย"
+- Reference specific chart data (elements, pillars, stars) in every reading
+- Include specific timeframes (months, seasons) when relevant
+- Be poetic but clear and actionable
+- You must respond with valid JSON matching the requested structure exactly
+
+Cultural context:
+- Thai people are familiar with both Buddhist concepts and astrology
+- Respect Thai royal and Buddhist traditions
+- Use appropriate respectful language
+- Reference Thai concepts naturally (เทวดา, กรรม, บุญ, ดวงชะตา)
+
+You are the voice of fate itself. Write accordingly.`;
+
+/**
+ * Build structured chart prompt for the redesigned dashboard.
+ * Implements the 2-step architecture:
+ * - Step 1 data (deterministic) is embedded as JSON in the prompt
+ * - Step 2 (creative) asks the LLM to synthesize readings in structured JSON
+ */
+export function buildStructuredChartPrompt(
+  name: string,
+  birthDate: Date,
+  enrichedPillars: {
+    year: EnrichedPillar;
+    month: EnrichedPillar;
+    day: EnrichedPillar;
+    hour?: EnrichedPillar;
+  },
+  elementProfile: ElementProfile,
+  pillarInteractions: PillarInteraction[],
+  thaiAstrology: ThaiAstrology,
+  currentAge: number,
+): string {
+  const birthDateStr = birthDate.toLocaleDateString("th-TH", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const deterministicData = {
+    name,
+    birthDate: birthDateStr,
+    currentAge,
+    pillars: enrichedPillars,
+    elementProfile,
+    pillarInteractions,
+    thaiAstrology,
+  };
+
+  return `ข้อมูลดวงชะตาที่คำนวณแล้ว (Deterministic Data):
+${JSON.stringify(deterministicData, null, 2)}
+
+คำสั่ง:
+จากข้อมูลข้างต้น ให้สร้างคำทำนายดวงชะตาแบบครบถ้วนในรูปแบบ JSON ที่มีโครงสร้างดังนี้:
+
+1. personalityTraits: คำบรรยายบุคลิกภาพ 8-12 คำ (string array) เช่น ["มีวินัย", "รับผิดชอบ", "อดทน", "เชื่อถือได้", ...]
+   - ผสมผสานลักษณะจากทั้งธาตุประจำตัวและดาวประจำวันเกิด
+
+2. pillarInterpretations: สำหรับแต่ละเสาที่มี (year, month, day, hour ถ้ามี):
+   - pillarKey: "year" | "month" | "day" | "hour"
+   - interpretation: 3-5 ประโยค อธิบายความหมายของเสานี้ต่อชีวิตของเจ้า อ้างอิงธาตุและสัตว์ประจำเสา
+   - pillarRelationships: 2-3 ประโยค อธิบายความสัมพันธ์กับเสาอื่น (ธาตุส่งเสริม ข่ม หรือเสริมกัน)
+
+3. birthStarDetails:
+   - planetDescription: คำอธิบายอิทธิพลของดาวประจำวันเกิดต่อชีวิต (~30 คำ ต้องไม่ใช่แค่บอกชื่อดาว)
+   - luckyColorTooltip: วิธีใช้สีมงคลในชีวิตประจำวัน (~15 คำ)
+   - luckyNumberTooltip: วิธีใช้เลขมงคลให้เกิดประโยชน์ (~15 คำ)
+   - luckyDirectionTooltip: วิธีใช้ทิศมงคลในการจัดวางหรือเดินทาง (~15 คำ)
+   - luckyDayTooltip: วิธีใช้วันมงคลเพื่อเสริมดวง (~15 คำ)
+
+4. fortuneReadings: 6 หมวดคำทำนาย ตามลำดับนี้:
+   a. life_overview (ภาพรวมชีวิต): 200-300 คำ — ตั้งบริบทภาพรวมชีวิตทั้งหมด
+   b. love (ความรัก & เนื้อคู่): 150-250 คำ — ดวงรัก เนื้อคู่ ธาตุที่เข้ากัน
+   c. career (การงาน & อาชีพ): 150-250 คำ — เส้นทางอาชีพ ช่วงเวลาเด่น
+   d. finance (การเงิน & โชคลาภ): 150-250 คำ — โชคลาภ การลงทุน วิธีเก็บเงิน
+   e. health (สุขภาพ & พลังงาน): 100-200 คำ — จุดอ่อนสุขภาพ วิธีดูแล
+   f. family (ครอบครัว & ความสัมพันธ์): 100-200 คำ — ความสัมพันธ์ในครอบครัว
+
+   แต่ละหมวดต้องมี:
+   - key: ชื่อหมวด (life_overview, love, career, finance, health, family)
+   - score: คะแนน 1-5 ที่สอดคล้องกับเนื้อหา (ถ้าให้ 4 ต้องอธิบายว่าทำไมไม่ใช่ 3 หรือ 5)
+   - reading: คำทำนายที่อ้างอิงธาตุ เสา ดาว ของเจ้าโดยเฉพาะ ห้ามเขียนดวงทั่วไป ต้องระบุเดือนหรือช่วงเวลาที่เกี่ยวข้อง
+   - tips: 2-4 สิ่งที่ควรทำ (เจาะจง อ้างอิงข้อมูลดวง เช่น "สวมสีชมพูช่วงเดือน มี.ค.")
+   - warnings: 1-3 สิ่งที่ต้องระวัง (ระบุช่วงเวลาถ้าเกี่ยวข้อง)
+
+5. recommendations:
+   - luckyColors: สีมงคลประจำปี 2-3 สี (ภาษาไทย)
+   - luckyNumbers: เลขมงคล 3 เลข (array of numbers)
+   - luckyDirection: ทิศมงคลประจำปี (ภาษาไทย)
+   - luckyDay: วันมงคลประจำสัปดาห์ (ภาษาไทย)
+   - monthlyHighlights: 4-6 เดือนเด่น แต่ละเดือนมี:
+     - month: ชื่อเดือนย่อ เช่น "มี.ค."
+     - rating: คะแนน 1-5
+     - note: คำอธิบาย 1 บรรทัด เช่น "ดวงรักเด่น" หรือ "ระวังสุขภาพ"
+   - dos: 3-4 สิ่งที่ควรทำปีนี้ (เจาะจง เช่น "ใส่สีม่วงวันเสาร์เป็นประจำ")
+   - donts: 3-4 สิ่งที่ควรหลีกเลี่ยง (เจาะจง เช่น "หลีกเลี่ยงการลงนามสัญญาในเดือน ส.ค.")
+
+กฎสำคัญ:
+- เขียนทุกอย่างเป็นภาษาไทยเท่านั้น
+- ห้ามใช้อิโมจิ
+- ห้ามกล่าวถึง AI โมเดล หรือเทคโนโลยี
+- ผสมผสานข้อมูลจากทั้งสองระบบเข้าด้วยกัน ห้ามแยกว่า "ตามระบบจีน..." หรือ "ตามไทย..."
+- ต้องอ้างอิงธาตุ เสา และดาวของเจ้าในทุกหมวดคำทำนาย ห้ามเขียนดวงทั่วไป
+- ระบุช่วงเวลา (เดือน ฤดูกาล) ในคำทำนายเสมอ
+- ใช้น้ำเสียงอบอุ่น ลึกซึ้ง ของหมอดูผู้เชี่ยวชาญ
+- ใช้ "เจ้า" เรียกผู้อ่าน ห้ามใช้ "คุณ"
+
+ตอบเป็น JSON เท่านั้น ไม่ต้องใส่ markdown code block:`;
+}
