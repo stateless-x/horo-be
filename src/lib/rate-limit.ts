@@ -39,10 +39,10 @@ export const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 5, // 5 requests per hour per user
   },
-  // Full chart reading (expensive)
+  // Full chart reading (expensive, but allows refreshing cached results)
   chart: {
     windowMs: 60 * 60 * 1000, // 1 hour
-    maxRequests: 3, // 3 charts per hour per user
+    maxRequests: 10, // 10 views per hour per user (cached + regenerated)
   },
   // Compatibility reading (expensive)
   compatibility: {

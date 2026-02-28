@@ -482,6 +482,35 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
     console.log('[Fortune] GET /chart - Authenticated user:', session.userId);
 
+    // Rate limiting - applies to ALL requests (cached and uncached)
+    // This prevents users from abusing refresh
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        ...set.headers,
+        'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
+    // Add rate limit headers to successful requests
+    set.headers = {
+      ...set.headers,
+      'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+    };
+
     try {
       const userId = session.userId;
 
@@ -505,7 +534,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       });
 
       if (cachedChart) {
-        console.log('[Fortune] GET /chart - Cache hit for profile:', profile.id);
+        console.log('[Fortune] GET /chart - Cache hit (still counted toward rate limit) for profile:', profile.id);
         return cachedChart;
       }
 
