@@ -48,6 +48,6 @@ export const compatibility = pgTable('compatibility', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   profileAIdx: index('compatibility_profile_a_idx').on(table.profileAId),
-  profileBIdx: index('compatibility_profile_b_idx').on(table.profileBIdx),
+  profileBIdx: index('compatibility_profile_b_idx').on(table.profileBId),
   shareTokenIdx: index('compatibility_share_token_idx').on(table.shareToken),
 }));

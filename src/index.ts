@@ -23,7 +23,7 @@ let fortuneRoutes: any;
 let inviteRoutes: any;
 let onboardingRoutes: any;
 
-const app = new Elysia()
+let app = new Elysia()
   .use(cors({
     origin: config.cors.allowedOrigins,
     credentials: true,
@@ -72,7 +72,8 @@ if (configErrors.length === 0) {
     const onboardingModule = await import('./routes/onboarding');
     onboardingRoutes = onboardingModule.onboardingRoutes;
 
-    app
+    // IMPORTANT: Reassign app to capture the chained routes
+    app = app
       .all('/api/auth/*', async ({ request, set }) => {
         // Debug logging for OAuth requests
         const url = new URL(request.url);
