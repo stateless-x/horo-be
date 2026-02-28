@@ -19,6 +19,17 @@ export const dailyReadings = pgTable('daily_readings', {
   profileDateIdx: index('daily_readings_profile_date_idx').on(table.profileId, table.date),
 }));
 
+export const chartNarratives = pgTable('chart_narratives', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  profileId: uuid('profile_id').references(() => birthProfiles.id).notNull().unique(),
+
+  narrative: text('narrative').notNull(), // AI-generated full chart reading
+
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  profileIdx: index('chart_narratives_profile_idx').on(table.profileId),
+}));
+
 export const compatibility = pgTable('compatibility', {
   id: uuid('id').primaryKey().defaultRandom(),
   profileAId: uuid('profile_a_id').references(() => birthProfiles.id).notNull(),
@@ -37,6 +48,6 @@ export const compatibility = pgTable('compatibility', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   profileAIdx: index('compatibility_profile_a_idx').on(table.profileAId),
-  profileBIdx: index('compatibility_profile_b_idx').on(table.profileBId),
+  profileBIdx: index('compatibility_profile_b_idx').on(table.profileBIdx),
   shareTokenIdx: index('compatibility_share_token_idx').on(table.shareToken),
 }));

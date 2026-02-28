@@ -2,7 +2,7 @@ import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
 import { generateFortuneReading, generateFortuneReadingStream } from '../lib/gemini';
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
-import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility } from '../../lib/db';
+import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives } from '../../lib/db';
 import { BirthProfileSchema, type BaziChart } from '../../lib/shared';
 import { eq, and } from 'drizzle-orm';
 import {
@@ -391,6 +391,47 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     }
   })
 
+  // Regenerate chart reading (clear cache) - requires auth
+  .delete('/chart/regenerate', async ({ request, set }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
+
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      // Get user's profile
+      const [profile] = await db
+        .select()
+        .from(birthProfiles)
+        .where(eq(birthProfiles.userId, session.userId))
+        .limit(1);
+
+      if (!profile) {
+        set.status = 404;
+        return { error: 'Profile not found' };
+      }
+
+      // Delete cached narrative to force regeneration
+      await db
+        .delete(chartNarratives)
+        .where(eq(chartNarratives.profileId, profile.id));
+
+      console.log('[Fortune] DELETE /chart/regenerate - Cleared cache for profile:', profile.id);
+
+      return {
+        success: true,
+        message: 'Fortune cache cleared. Next request will regenerate.'
+      };
+    } catch (error) {
+      console.error('[Fortune] Regenerate error:', error);
+      set.status = 500;
+      return { error: 'Failed to clear fortune cache' };
+    }
+  })
+
   // Get full chart reading (requires auth)
   .get('/chart', async ({ cookie, set, request }) => {
     // Validate session
@@ -470,16 +511,43 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       const birthDate = new Date(profile.birthDate);
       const currentAge = now.getFullYear() - birthDate.getFullYear();
 
-      // Generate comprehensive reading with LLM
-      const prompt = buildFullChartPrompt(
-        'ผู้ใช้', // TODO: Get actual name
-        profile.birthDate,
-        baziChart,
-        thaiAstrology,
-        currentAge
-      );
+      // Check if we have a cached chart narrative for this profile
+      let [cachedNarrative] = await db
+        .select()
+        .from(chartNarratives)
+        .where(eq(chartNarratives.profileId, profile.id))
+        .limit(1);
 
-      const narrative = await generateFortuneReading(prompt, 1500);
+      let narrative: string;
+
+      if (cachedNarrative) {
+        // Cache hit - return existing narrative
+        console.log('[Fortune] GET /chart - Cache hit for profile:', profile.id);
+        narrative = cachedNarrative.narrative;
+      } else {
+        // Cache miss - generate new narrative with LLM
+        console.log('[Fortune] GET /chart - Cache miss for profile:', profile.id, '- Generating new narrative');
+
+        const prompt = buildFullChartPrompt(
+          'ผู้ใช้', // TODO: Get actual name
+          profile.birthDate,
+          baziChart,
+          thaiAstrology,
+          currentAge
+        );
+
+        narrative = await generateFortuneReading(prompt, 1500);
+
+        // Save to database for future requests
+        await db
+          .insert(chartNarratives)
+          .values({
+            profileId: profile.id,
+            narrative,
+          });
+
+        console.log('[Fortune] GET /chart - Narrative cached for profile:', profile.id);
+      }
 
       return {
         baziChart,
