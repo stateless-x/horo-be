@@ -37,7 +37,7 @@ function getClientIP(request: Request): string {
  * Fortune calculation and reading routes
  * All LLM calls are handled server-side for security and consistency
  */
-export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
+export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
   // Generate teaser result (BEFORE auth)
   .post('/teaser', async ({ body, set, request }) => {

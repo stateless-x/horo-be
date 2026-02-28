@@ -10,7 +10,7 @@ import { randomBytes } from 'crypto';
  *
  * Handles compatibility invite link generation and validation
  */
-export const inviteRoutes = new Elysia({ prefix: '/invite' })
+export const inviteRoutes = new Elysia({ prefix: '/api/invite' })
   /**
    * Generate a new invite link
    * POST /invite/create
