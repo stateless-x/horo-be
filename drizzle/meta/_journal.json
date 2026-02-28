@@ -57,6 +57,13 @@
       "when": 1772269944913,
       "tag": "0007_solid_thena",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1772282194023,
+      "tag": "0008_lively_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

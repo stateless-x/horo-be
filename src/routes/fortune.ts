@@ -161,6 +161,18 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
         .where(eq(birthProfiles.userId, userId))
         .limit(1);
 
+      // Save display name to user table if provided
+      if (profile.name) {
+        console.log('[Fortune] Updating user displayName:', profile.name);
+        await db
+          .update(user)
+          .set({
+            displayName: profile.name,
+            updatedAt: new Date(),
+          })
+          .where(eq(user.id, userId));
+      }
+
       let savedProfile;
 
       if (existingProfile) {
@@ -360,13 +372,13 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       );
       const thaiAstrology = calculateThaiAstrology(profile.birthDate);
 
-      // Get user's name from the user table
+      // Get user's display name from the user table (prefer displayName over OAuth name)
       const [userData] = await db
-        .select({ name: user.name })
+        .select({ name: user.name, displayName: user.displayName })
         .from(user)
         .where(eq(user.id, userId))
         .limit(1);
-      const userName = userData?.name || 'ผู้มาเยือน';
+      const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
 
       const prompt = buildDailyReadingPrompt(
         userName,
@@ -496,13 +508,13 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
       const birthDate = new Date(profile.birthDate);
       const currentAge = now.getFullYear() - birthDate.getFullYear();
 
-      // Get user's name from the user table
+      // Get user's display name from the user table (prefer displayName over OAuth name)
       const [userData] = await db
-        .select({ name: user.name })
+        .select({ name: user.name, displayName: user.displayName })
         .from(user)
         .where(eq(user.id, userId))
         .limit(1);
-      const userName = userData?.name || 'ผู้มาเยือน';
+      const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
 
       // ---- Step 2: LLM synthesis ----
       console.log('[Fortune] GET /chart - Generating structured reading for profile:', profile.id);
@@ -720,4 +732,200 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
         isUnknown: t.Optional(t.Boolean()),
       })),
     }),
+  })
+
+  // Get user profile data (for settings page)
+  .get('/user-profile', async ({ request, set }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
+
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const userId = session.userId;
+
+      // Get user data
+      const [userData] = await db
+        .select({
+          name: user.name,
+          displayName: user.displayName,
+        })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+
+      if (!userData) {
+        set.status = 404;
+        return { error: 'User not found' };
+      }
+
+      // Get birth profile
+      const [profile] = await db
+        .select()
+        .from(birthProfiles)
+        .where(eq(birthProfiles.userId, userId))
+        .limit(1);
+
+      return {
+        user: userData,
+        profile: profile || null,
+      };
+    } catch (error) {
+      console.error('[Fortune] GET /user-profile error:', error);
+      set.status = 500;
+      return { error: 'Failed to fetch user profile' };
+    }
+  })
+
+  // Update user profile (for settings page)
+  .post('/update-profile', async ({ body, request, set }) => {
+    // Validate session
+    const session = await validateSessionFromRequest(request);
+
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const profile = BirthProfileSchema.parse(body);
+      const birthDate = new Date(profile.birthDate);
+      const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
+      const userId = session.userId;
+
+      console.log('[Fortune] POST /update-profile - Updating profile for user:', userId);
+
+      // Update display name in user table
+      if (profile.name) {
+        await db
+          .update(user)
+          .set({
+            displayName: profile.name,
+            updatedAt: new Date(),
+          })
+          .where(eq(user.id, userId));
+      }
+
+      // Check if birth profile exists
+      const [existingProfile] = await db
+        .select()
+        .from(birthProfiles)
+        .where(eq(birthProfiles.userId, userId))
+        .limit(1);
+
+      let savedProfile;
+
+      if (existingProfile) {
+        // Update existing profile
+        [savedProfile] = await db
+          .update(birthProfiles)
+          .set({
+            birthDate,
+            birthHour,
+            birthTimePeriod: profile.birthTime?.period,
+            gender: profile.gender,
+            isTimeUnknown: profile.birthTime?.isUnknown || false,
+            updatedAt: new Date(),
+          })
+          .where(eq(birthProfiles.userId, userId))
+          .returning();
+      } else {
+        // Create new profile
+        [savedProfile] = await db.insert(birthProfiles).values({
+          userId,
+          birthDate,
+          birthHour,
+          birthTimePeriod: profile.birthTime?.period,
+          gender: profile.gender,
+          isTimeUnknown: profile.birthTime?.isUnknown || false,
+        }).returning();
+      }
+
+      // Recalculate and update Bazi chart
+      const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
+
+      const [existingChart] = await db
+        .select()
+        .from(baziCharts)
+        .where(eq(baziCharts.profileId, savedProfile.id))
+        .limit(1);
+
+      if (existingChart) {
+        await db
+          .update(baziCharts)
+          .set({
+            yearPillar: JSON.stringify(baziChart.yearPillar),
+            monthPillar: JSON.stringify(baziChart.monthPillar),
+            dayPillar: JSON.stringify(baziChart.dayPillar),
+            hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+            dayMaster: baziChart.dayMaster,
+            primaryElement: baziChart.element,
+            elementStrength: JSON.stringify({}),
+          })
+          .where(eq(baziCharts.profileId, savedProfile.id));
+      } else {
+        await db.insert(baziCharts).values({
+          profileId: savedProfile.id,
+          yearPillar: JSON.stringify(baziChart.yearPillar),
+          monthPillar: JSON.stringify(baziChart.monthPillar),
+          dayPillar: JSON.stringify(baziChart.dayPillar),
+          hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+          dayMaster: baziChart.dayMaster,
+          primaryElement: baziChart.element,
+          elementStrength: JSON.stringify({}),
+        });
+      }
+
+      // Recalculate and update Thai astrology
+      const thaiAstro = calculateThaiAstrology(birthDate);
+
+      const [existingThaiAstro] = await db
+        .select()
+        .from(thaiAstrologyData)
+        .where(eq(thaiAstrologyData.profileId, savedProfile.id))
+        .limit(1);
+
+      if (existingThaiAstro) {
+        await db
+          .update(thaiAstrologyData)
+          .set({
+            day: thaiAstro.day,
+            color: thaiAstro.color,
+            planet: thaiAstro.planet,
+            buddhaPosition: thaiAstro.buddhaPosition,
+            personality: thaiAstro.personality,
+            luckyNumber: thaiAstro.luckyNumber,
+            luckyDirection: thaiAstro.luckyDirection,
+          })
+          .where(eq(thaiAstrologyData.profileId, savedProfile.id));
+      } else {
+        await db.insert(thaiAstrologyData).values({
+          profileId: savedProfile.id,
+          day: thaiAstro.day,
+          color: thaiAstro.color,
+          planet: thaiAstro.planet,
+          buddhaPosition: thaiAstro.buddhaPosition,
+          personality: thaiAstro.personality,
+          luckyNumber: thaiAstro.luckyNumber,
+          luckyDirection: thaiAstro.luckyDirection,
+        });
+      }
+
+      // Clear cached chart narrative to force regeneration on next view
+      await db
+        .delete(chartNarratives)
+        .where(eq(chartNarratives.profileId, savedProfile.id));
+
+      console.log('[Fortune] Profile updated successfully:', savedProfile.id);
+      return { success: true, profileId: savedProfile.id };
+    } catch (error) {
+      console.error('[Fortune] POST /update-profile error:', error);
+      set.status = 500;
+      return { error: 'Failed to update profile' };
+    }
+  }, {
+    body: BirthProfileSchema,
   });
