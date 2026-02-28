@@ -32,6 +32,7 @@ export const onboardingRoutes = new Elysia({ prefix: '/api/onboarding' })
         if (rateLimitResult.limited) {
           set.status = 429;
           set.headers = {
+            ...set.headers,
             'X-RateLimit-Limit': RATE_LIMITS.onboardingComplete.maxRequests.toString(),
             'X-RateLimit-Remaining': '0',
             'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -45,8 +46,9 @@ export const onboardingRoutes = new Elysia({ prefix: '/api/onboarding' })
           };
         }
 
-        // Add rate limit headers
+        // Add rate limit headers (merge with existing CORS headers)
         set.headers = {
+          ...set.headers,
           'X-RateLimit-Limit': RATE_LIMITS.onboardingComplete.maxRequests.toString(),
           'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),

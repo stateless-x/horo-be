@@ -37,6 +37,7 @@ export const inviteRoutes = new Elysia({ prefix: '/invite' })
     if (rateLimitResult.limited) {
       set.status = 429;
       set.headers = {
+        ...set.headers,  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.inviteCreate.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -52,6 +53,7 @@ export const inviteRoutes = new Elysia({ prefix: '/invite' })
 
     // Add rate limit headers
     set.headers = {
+      ...set.headers,  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.inviteCreate.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),

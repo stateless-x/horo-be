@@ -47,6 +47,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     if (rateLimitResult.limited) {
       set.status = 429;
       set.headers = {
+        ...set.headers,  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -62,6 +63,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
     // Add rate limit headers to successful requests
     set.headers = {
+      ...set.headers,  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -119,6 +121,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     if (rateLimitResult.limited) {
       set.status = 429;
       set.headers = {
+        ...set.headers,  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -134,6 +137,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
     // Add rate limit headers
     set.headers = {
+      ...set.headers,  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -289,6 +293,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     if (rateLimitResult.limited) {
       set.status = 429;
       set.headers = {
+        ...set.headers,  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -304,6 +309,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
     // Add rate limit headers
     set.headers = {
+      ...set.headers,  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -669,6 +675,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
     if (rateLimitResult.limited) {
       set.status = 429;
       set.headers = {
+        ...set.headers,  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
@@ -684,6 +691,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/fortune' })
 
     // Add rate limit headers
     set.headers = {
+      ...set.headers,  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
