@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
-import { generateFortuneReading, generateStructuredFortuneReading } from '../lib/gemini';
+import { generateFortuneReading, generateStructuredFortuneReading, generateStructuredDailyReading } from '../lib/gemini';
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives, user } from '../../lib/db';
 import { BirthProfileSchema, type BaziChart, type StructuredChartResponse } from '../../lib/shared';
@@ -8,6 +8,7 @@ import { eq, and } from 'drizzle-orm';
 import {
   buildTeaserPrompt,
   buildDailyReadingPrompt,
+  buildStructuredDailyPrompt,
   buildStructuredChartPrompt,
   buildCompatibilityPrompt,
   SYSTEM_PROMPT,
@@ -345,7 +346,17 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       if (existingReading) {
         console.log('[Fortune] Returning cached daily reading for', todayStr);
-        return existingReading;
+        // Try to parse structured content from stored JSON
+        let structuredContent = null;
+        try {
+          structuredContent = JSON.parse(existingReading.content);
+        } catch {
+          // Legacy plain text content - return as-is
+        }
+        return {
+          ...existingReading,
+          structuredContent,
+        };
       }
 
       // Only apply rate limiting if we need to generate NEW content
@@ -377,7 +388,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
       };
 
-      // Generate new daily reading
+      // Generate new structured daily reading
       const baziChart = calculateBazi(
         profile.birthDate,
         profile.birthHour || undefined,
@@ -393,7 +404,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         .limit(1);
       const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
 
-      const prompt = buildDailyReadingPrompt(
+      const prompt = buildStructuredDailyPrompt(
         userName,
         profile.birthDate,
         new Date(),
@@ -401,15 +412,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         thaiAstrology
       );
 
-      const content = await generateFortuneReading(prompt, 800);
+      const structuredReading = await generateStructuredDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
 
-      // Save to database
+      // Save to database (content stores JSON string)
       const [newReading] = await db
         .insert(dailyReadings)
         .values({
           profileId: profile.id,
           date: todayStr, // Use YYYY-MM-DD string format
-          content,
+          content: JSON.stringify(structuredReading),
           luckyColor: thaiAstrology.color,
           luckyNumber: thaiAstrology.luckyNumber,
           luckyDirection: thaiAstrology.luckyDirection,
@@ -417,7 +428,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         })
         .returning();
 
-      return newReading;
+      // Return with parsed structured content
+      return {
+        ...newReading,
+        structuredContent: structuredReading,
+      };
     } catch (error) {
       console.error('Daily reading error:', error);
       set.status = 500;
@@ -801,9 +816,34 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       // Get birth profile (Redis-cached)
       const profile = await getCachedProfile(userId);
 
+      // Get astrology data for identity context (element, planet)
+      let primaryElement: string | null = null;
+      let planet: string | null = null;
+
+      if (profile) {
+        const [baziData] = await db
+          .select({ primaryElement: baziCharts.primaryElement })
+          .from(baziCharts)
+          .where(eq(baziCharts.profileId, profile.id))
+          .limit(1);
+
+        const [thaiData] = await db
+          .select({ planet: thaiAstrologyData.planet })
+          .from(thaiAstrologyData)
+          .where(eq(thaiAstrologyData.profileId, profile.id))
+          .limit(1);
+
+        primaryElement = baziData?.primaryElement ?? null;
+        planet = thaiData?.planet ?? null;
+      }
+
       return {
         user: userData,
         profile: profile || null,
+        astrology: {
+          primaryElement,
+          planet,
+        },
       };
     } catch (error) {
       console.error('[Fortune] GET /user-profile error:', error);

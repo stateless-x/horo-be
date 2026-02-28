@@ -134,6 +134,74 @@ export function buildDailyReadingPrompt(
 
 
 /**
+ * Generate structured daily reading with categories, dos/donts, and lucky moment.
+ * Uses JSON mode for reliable structured output.
+ */
+export function buildStructuredDailyPrompt(
+  name: string,
+  birthDate: Date,
+  today: Date,
+  baziChart: BaziChart,
+  thaiAstrology: ThaiAstrology,
+): string {
+  const birthDateStr = birthDate.toLocaleDateString("th-TH", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const todayStr = today.toLocaleDateString("th-TH", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  return `ข้อมูลผู้ขอดวง:
+ชื่อ: ${name}
+วันเกิด: ${birthDateStr}
+วันที่ดูดวง: ${todayStr}
+
+โหราศาสตร์จีน (Bazi):
+- องค์ประกอบหลัก: ${baziChart.element}
+- เจ้าวัน: ${baziChart.dayMaster}
+- เสาสี่ที่: ${baziChart.yearPillar.stem}${baziChart.yearPillar.branch} (ปี), ${baziChart.monthPillar.stem}${baziChart.monthPillar.branch} (เดือน), ${baziChart.dayPillar.stem}${baziChart.dayPillar.branch} (วัน)${baziChart.hourPillar ? `, ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch} (ชั่วโมง)` : ""}
+
+โหราศาสตร์ไทย:
+- วัน: ${thaiAstrology.day}
+- ดาว: ${thaiAstrology.planet}
+- สีประจำวัน: ${thaiAstrology.color}
+- ทิศมงคล: ${thaiAstrology.luckyDirection}
+- เลขมงคล: ${thaiAstrology.luckyNumber}
+
+คำสั่ง:
+เขียนคำทำนายประจำวันแบบเต็มในรูปแบบ JSON ที่มีโครงสร้างดังนี้:
+
+1. overallReading: คำทำนายภาพรวมวันนี้ 4-6 ประโยค วิเคราะห์ดวงของวันนี้จากมุมมองทั้งสองระบบ บอกว่าวันนี้เหมาะกับการทำอะไร
+
+2. categories: 4 หมวด ได้แก่:
+   a. career (การงาน & อาชีพ): reading 2-3 ประโยค, score 1-5, tip คำแนะนำสั้น 1 ประโยค
+   b. love (ความรัก & ความสัมพันธ์): reading 2-3 ประโยค, score 1-5, tip คำแนะนำสั้น 1 ประโยค
+   c. finance (การเงิน & โชคลาภ): reading 2-3 ประโยค, score 1-5, tip คำแนะนำสั้น 1 ประโยค
+   d. health (สุขภาพ & พลังงาน): reading 2-3 ประโยค, score 1-5, tip คำแนะนำสั้น 1 ประโยค
+
+3. dos: 3 สิ่งที่ควรทำวันนี้ (เจาะจง อ้างอิงข้อมูลดวง)
+4. donts: 3 สิ่งที่ควรหลีกเลี่ยงวันนี้ (เจาะจง)
+5. luckyMoment: ช่วงเวลามงคลของวันนี้ (เช่น "ช่วงเช้า 06.00-09.00 น.")
+
+กฎสำคัญ:
+- เขียนทุกอย่างเป็นภาษาไทยเท่านั้น
+- ใช้คำสรรพนาม "เจ้า" เรียกผู้อ่าน ห้ามใช้ "คุณ"
+- ภาษาลึกลับแต่กระชับ เข้าใจง่าย
+- ห้ามใช้อิโมจิ
+- ห้ามกล่าวถึง AI โมเดล หรือเทคโนโลยี
+- ผสมผสานข้อมูลจากทั้งสองระบบเข้าด้วยกัน
+- ต้องอ้างอิงธาตุ เสา และดาวของเจ้าในคำทำนาย
+
+ตอบเป็น JSON เท่านั้น ไม่ต้องใส่ markdown code block:`;
+}
+
+/**
  * Generate compatibility reading between two people
  * Analyzes element interactions and relationship dynamics
  */

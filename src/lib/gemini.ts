@@ -199,3 +199,112 @@ export async function generateStructuredFortuneReading(
     `Failed to generate structured fortune reading after ${maxRetries + 1} attempts: ${lastError?.message}`
   );
 }
+
+/**
+ * Generate a structured daily reading using Gemini's JSON mode.
+ * Lighter schema than the full chart - focused on today's fortune only.
+ */
+export async function generateStructuredDailyReading(
+  prompt: string,
+  systemPrompt: string,
+): Promise<Record<string, unknown>> {
+  const responseSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+      overallReading: { type: SchemaType.STRING },
+      categories: {
+        type: SchemaType.OBJECT,
+        properties: {
+          career: {
+            type: SchemaType.OBJECT,
+            properties: {
+              reading: { type: SchemaType.STRING },
+              score: { type: SchemaType.INTEGER },
+              tip: { type: SchemaType.STRING },
+            },
+            required: ["reading", "score", "tip"],
+          },
+          love: {
+            type: SchemaType.OBJECT,
+            properties: {
+              reading: { type: SchemaType.STRING },
+              score: { type: SchemaType.INTEGER },
+              tip: { type: SchemaType.STRING },
+            },
+            required: ["reading", "score", "tip"],
+          },
+          finance: {
+            type: SchemaType.OBJECT,
+            properties: {
+              reading: { type: SchemaType.STRING },
+              score: { type: SchemaType.INTEGER },
+              tip: { type: SchemaType.STRING },
+            },
+            required: ["reading", "score", "tip"],
+          },
+          health: {
+            type: SchemaType.OBJECT,
+            properties: {
+              reading: { type: SchemaType.STRING },
+              score: { type: SchemaType.INTEGER },
+              tip: { type: SchemaType.STRING },
+            },
+            required: ["reading", "score", "tip"],
+          },
+        },
+        required: ["career", "love", "finance", "health"],
+      },
+      dos: {
+        type: SchemaType.ARRAY,
+        items: { type: SchemaType.STRING },
+      },
+      donts: {
+        type: SchemaType.ARRAY,
+        items: { type: SchemaType.STRING },
+      },
+      luckyMoment: { type: SchemaType.STRING },
+    },
+    required: ["overallReading", "categories", "dos", "donts", "luckyMoment"],
+  };
+
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      maxOutputTokens: 3000,
+      temperature: 0.8,
+      responseMimeType: "application/json",
+      responseSchema,
+    },
+  });
+
+  const maxRetries = 2;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+
+      if (!text) {
+        throw new Error("Empty response from Gemini");
+      }
+
+      return JSON.parse(text);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(
+        `[Gemini] Structured daily generation attempt ${attempt + 1}/${maxRetries + 1} failed:`,
+        lastError.message
+      );
+
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  throw new Error(
+    `Failed to generate structured daily reading after ${maxRetries + 1} attempts: ${lastError?.message}`
+  );
+}
