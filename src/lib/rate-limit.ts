@@ -49,15 +49,15 @@ export const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 5, // 5 compatibility checks per hour per user
   },
-  // Profile save (prevent spam account creation)
+  // Profile save (prevent spam, generous for users correcting mistakes)
   profileSave: {
     windowMs: 60 * 60 * 1000, // 1 hour
-    maxRequests: 3, // 3 profile saves per hour per user
+    maxRequests: 20, // 20 profile saves per hour (allows users to edit/correct data)
   },
-  // Onboarding completion (prevent abuse)
+  // Onboarding completion (prevent runaway bugs, generous for edge cases)
   onboardingComplete: {
     windowMs: 60 * 60 * 1000, // 1 hour
-    maxRequests: 5, // 5 completions per hour per user
+    maxRequests: 20, // 20 completions per hour (accommodates retries + manual refreshes)
   },
   // Invite creation (prevent spam)
   inviteCreate: {
