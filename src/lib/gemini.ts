@@ -1,8 +1,8 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
 
-const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
+const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
 
 /**
  * Generate a fortune reading using Gemini 2.5 Flash
@@ -16,18 +16,20 @@ export async function generateFortuneReading(
   prompt: string,
   maxTokens: number = 500,
 ): Promise<string> {
-  const model = genAI.getGenerativeModel({
+  const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
-    systemInstruction: SYSTEM_PROMPT,
-    generationConfig: {
+    contents: prompt,
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
       maxOutputTokens: maxTokens,
-      temperature: 0.8, // Slightly higher for more creative/mystical responses
+      temperature: 0.8,
+      thinkingConfig: {
+        thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
+      },
     },
   });
 
-  const result = await model.generateContent(prompt);
-  const response = result.response;
-  const text = response.text();
+  const text = response.text;
 
   if (!text) {
     throw new Error("Empty response from Gemini");
@@ -48,32 +50,32 @@ export async function generateStructuredFortuneReading(
   systemPrompt: string,
 ): Promise<Record<string, unknown>> {
   const responseSchema = {
-    type: SchemaType.OBJECT,
+    type: "object" as const,
     properties: {
       personalityTraits: {
-        type: SchemaType.ARRAY,
-        items: { type: SchemaType.STRING },
+        type: "array" as const,
+        items: { type: "string" as const },
       },
       pillarInterpretations: {
-        type: SchemaType.ARRAY,
+        type: "array" as const,
         items: {
-          type: SchemaType.OBJECT,
+          type: "object" as const,
           properties: {
-            pillarKey: { type: SchemaType.STRING },
-            interpretation: { type: SchemaType.STRING },
-            pillarRelationships: { type: SchemaType.STRING },
+            pillarKey: { type: "string" as const },
+            interpretation: { type: "string" as const },
+            pillarRelationships: { type: "string" as const },
           },
           required: ["pillarKey", "interpretation", "pillarRelationships"],
         },
       },
       birthStarDetails: {
-        type: SchemaType.OBJECT,
+        type: "object" as const,
         properties: {
-          planetDescription: { type: SchemaType.STRING },
-          luckyColorTooltip: { type: SchemaType.STRING },
-          luckyNumberTooltip: { type: SchemaType.STRING },
-          luckyDirectionTooltip: { type: SchemaType.STRING },
-          luckyDayTooltip: { type: SchemaType.STRING },
+          planetDescription: { type: "string" as const },
+          luckyColorTooltip: { type: "string" as const },
+          luckyNumberTooltip: { type: "string" as const },
+          luckyDirectionTooltip: { type: "string" as const },
+          luckyDayTooltip: { type: "string" as const },
         },
         required: [
           "planetDescription",
@@ -84,57 +86,57 @@ export async function generateStructuredFortuneReading(
         ],
       },
       fortuneReadings: {
-        type: SchemaType.ARRAY,
+        type: "array" as const,
         items: {
-          type: SchemaType.OBJECT,
+          type: "object" as const,
           properties: {
-            key: { type: SchemaType.STRING },
-            score: { type: SchemaType.INTEGER },
-            reading: { type: SchemaType.STRING },
+            key: { type: "string" as const },
+            score: { type: "integer" as const },
+            reading: { type: "string" as const },
             tips: {
-              type: SchemaType.ARRAY,
-              items: { type: SchemaType.STRING },
+              type: "array" as const,
+              items: { type: "string" as const },
             },
             warnings: {
-              type: SchemaType.ARRAY,
-              items: { type: SchemaType.STRING },
+              type: "array" as const,
+              items: { type: "string" as const },
             },
           },
           required: ["key", "score", "reading", "tips", "warnings"],
         },
       },
       recommendations: {
-        type: SchemaType.OBJECT,
+        type: "object" as const,
         properties: {
           luckyColors: {
-            type: SchemaType.ARRAY,
-            items: { type: SchemaType.STRING },
+            type: "array" as const,
+            items: { type: "string" as const },
           },
           luckyNumbers: {
-            type: SchemaType.ARRAY,
-            items: { type: SchemaType.INTEGER },
+            type: "array" as const,
+            items: { type: "integer" as const },
           },
-          luckyDirection: { type: SchemaType.STRING },
-          luckyDay: { type: SchemaType.STRING },
+          luckyDirection: { type: "string" as const },
+          luckyDay: { type: "string" as const },
           monthlyHighlights: {
-            type: SchemaType.ARRAY,
+            type: "array" as const,
             items: {
-              type: SchemaType.OBJECT,
+              type: "object" as const,
               properties: {
-                month: { type: SchemaType.STRING },
-                rating: { type: SchemaType.INTEGER },
-                note: { type: SchemaType.STRING },
+                month: { type: "string" as const },
+                rating: { type: "integer" as const },
+                note: { type: "string" as const },
               },
               required: ["month", "rating", "note"],
             },
           },
           dos: {
-            type: SchemaType.ARRAY,
-            items: { type: SchemaType.STRING },
+            type: "array" as const,
+            items: { type: "string" as const },
           },
           donts: {
-            type: SchemaType.ARRAY,
-            items: { type: SchemaType.STRING },
+            type: "array" as const,
+            items: { type: "string" as const },
           },
         },
         required: [
@@ -157,24 +159,27 @@ export async function generateStructuredFortuneReading(
     ],
   };
 
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-    systemInstruction: systemPrompt,
-    generationConfig: {
-      maxOutputTokens: 8000,
-      temperature: 0.75,
-      responseMimeType: "application/json",
-      responseSchema,
-    },
-  });
-
   const maxRetries = 2;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: systemPrompt,
+          maxOutputTokens: 8000,
+          temperature: 0.75,
+          responseMimeType: "application/json",
+          responseSchema,
+          thinkingConfig: {
+            thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
+          },
+        },
+      });
+
+      const text = response.text;
 
       if (!text) {
         throw new Error("Empty response from Gemini");
@@ -209,45 +214,45 @@ export async function generateStructuredDailyReading(
   systemPrompt: string,
 ): Promise<Record<string, unknown>> {
   const responseSchema = {
-    type: SchemaType.OBJECT,
+    type: "object" as const,
     properties: {
-      overallReading: { type: SchemaType.STRING },
+      overallReading: { type: "string" as const },
       categories: {
-        type: SchemaType.OBJECT,
+        type: "object" as const,
         properties: {
           career: {
-            type: SchemaType.OBJECT,
+            type: "object" as const,
             properties: {
-              reading: { type: SchemaType.STRING },
-              score: { type: SchemaType.INTEGER },
-              tip: { type: SchemaType.STRING },
+              reading: { type: "string" as const },
+              score: { type: "integer" as const },
+              tip: { type: "string" as const },
             },
             required: ["reading", "score", "tip"],
           },
           love: {
-            type: SchemaType.OBJECT,
+            type: "object" as const,
             properties: {
-              reading: { type: SchemaType.STRING },
-              score: { type: SchemaType.INTEGER },
-              tip: { type: SchemaType.STRING },
+              reading: { type: "string" as const },
+              score: { type: "integer" as const },
+              tip: { type: "string" as const },
             },
             required: ["reading", "score", "tip"],
           },
           finance: {
-            type: SchemaType.OBJECT,
+            type: "object" as const,
             properties: {
-              reading: { type: SchemaType.STRING },
-              score: { type: SchemaType.INTEGER },
-              tip: { type: SchemaType.STRING },
+              reading: { type: "string" as const },
+              score: { type: "integer" as const },
+              tip: { type: "string" as const },
             },
             required: ["reading", "score", "tip"],
           },
           health: {
-            type: SchemaType.OBJECT,
+            type: "object" as const,
             properties: {
-              reading: { type: SchemaType.STRING },
-              score: { type: SchemaType.INTEGER },
-              tip: { type: SchemaType.STRING },
+              reading: { type: "string" as const },
+              score: { type: "integer" as const },
+              tip: { type: "string" as const },
             },
             required: ["reading", "score", "tip"],
           },
@@ -255,36 +260,39 @@ export async function generateStructuredDailyReading(
         required: ["career", "love", "finance", "health"],
       },
       dos: {
-        type: SchemaType.ARRAY,
-        items: { type: SchemaType.STRING },
+        type: "array" as const,
+        items: { type: "string" as const },
       },
       donts: {
-        type: SchemaType.ARRAY,
-        items: { type: SchemaType.STRING },
+        type: "array" as const,
+        items: { type: "string" as const },
       },
-      luckyMoment: { type: SchemaType.STRING },
+      luckyMoment: { type: "string" as const },
     },
     required: ["overallReading", "categories", "dos", "donts", "luckyMoment"],
   };
-
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-    systemInstruction: systemPrompt,
-    generationConfig: {
-      maxOutputTokens: 3000,
-      temperature: 0.8,
-      responseMimeType: "application/json",
-      responseSchema,
-    },
-  });
 
   const maxRetries = 2;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: systemPrompt,
+          maxOutputTokens: 3000,
+          temperature: 0.8,
+          responseMimeType: "application/json",
+          responseSchema,
+          thinkingConfig: {
+            thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
+          },
+        },
+      });
+
+      const text = response.text;
 
       if (!text) {
         throw new Error("Empty response from Gemini");

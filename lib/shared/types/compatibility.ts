@@ -14,10 +14,10 @@ export const RELATIONSHIP_LABELS: Record<RelationshipType, string> = {
 };
 
 export const TOKEN_LIMITS: Record<RelationshipType, number> = {
-  romantic: 1200,
-  talking: 1000,
-  friend: 900,
-  boss: 800,
-  coworker: 800,
-  family: 1000,
+  romantic: 2500,
+  talking: 2000,
+  friend: 1800,
+  boss: 1800,
+  coworker: 1800,
+  family: 2000,
 };
