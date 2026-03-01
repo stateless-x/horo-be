@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, date, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, date, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { birthProfiles } from './profiles';
 
 export const dailyReadings = pgTable('daily_readings', {
@@ -37,21 +37,34 @@ export const chartNarratives = pgTable('chart_narratives', {
 export const compatibility = pgTable('compatibility', {
   id: uuid('id').primaryKey().defaultRandom(),
   profileAId: uuid('profile_a_id').references(() => birthProfiles.id).notNull(),
-  profileBId: uuid('profile_b_id').references(() => birthProfiles.id).notNull(),
+
+  // Partner data stored inline (partners don't have profiles in our system)
+  partnerName: varchar('partner_name', { length: 255 }).notNull(),
+  partnerBirthDate: date('partner_birth_date').notNull(),
+
+  // Relationship type: romantic, talking, friend, boss, coworker, family
+  relationshipType: varchar('relationship_type', { length: 50 }).notNull(),
 
   score: integer('score').notNull(), // 0-100
   elementHarmony: integer('element_harmony'),
   branchHarmony: integer('branch_harmony'),
 
   analysis: text('analysis').notNull(), // AI-generated compatibility analysis
-  strengths: varchar('strengths', { length: 2000 }), // JSON array
-  challenges: varchar('challenges', { length: 2000 }), // JSON array
+  strengths: text('strengths'), // JSON array
+  challenges: text('challenges'), // JSON array
+
+  // Element data for display without recalculating
+  userElement: varchar('user_element', { length: 50 }),
+  userDayMaster: varchar('user_day_master', { length: 50 }),
+  partnerElement: varchar('partner_element', { length: 50 }),
+  partnerDayMaster: varchar('partner_day_master', { length: 50 }),
 
   shareToken: varchar('share_token', { length: 100 }).unique(), // For shareable links
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   profileAIdx: index('compatibility_profile_a_idx').on(table.profileAId),
-  profileBIdx: index('compatibility_profile_b_idx').on(table.profileBId),
+  profileCreatedIdx: index('compatibility_profile_created_idx').on(table.profileAId, table.createdAt),
+  userPartnerTypeIdx: uniqueIndex('compatibility_user_partner_type_idx').on(table.profileAId, table.partnerBirthDate, table.relationshipType),
   shareTokenIdx: index('compatibility_share_token_idx').on(table.shareToken),
 }));

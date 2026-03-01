@@ -3,8 +3,8 @@ import { db } from '../lib/db';
 import { generateFortuneReading, generateStructuredFortuneReading, generateStructuredDailyReading } from '../lib/gemini';
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives, user } from '../../lib/db';
-import { BirthProfileSchema, type BaziChart, type StructuredChartResponse } from '../../lib/shared';
-import { eq, and } from 'drizzle-orm';
+import { BirthProfileSchema, type BaziChart, type StructuredChartResponse, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../lib/shared';
+import { eq, and, desc, lt, sql, count } from 'drizzle-orm';
 import {
   buildTeaserPrompt,
   buildDailyReadingPrompt,
@@ -683,51 +683,18 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
   })
 
   // Calculate compatibility between two people
-  .post('/compatibility', async ({ body, cookie, set, request }) => {
-    // Validate session
+  .post('/compatibility', async ({ body, set, request }) => {
     const session = await validateSessionFromRequest(request);
-
     if (!session) {
       set.status = 401;
       return { error: 'Not authenticated' };
     }
 
-    // Rate limiting for authenticated users (by user ID)
-    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.compatibility);
-
-    if (rateLimitResult.limited) {
-      set.status = 429;
-      set.headers = {
-        ...set.headers,  // Preserve existing headers (including CORS)
-        'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
-        'X-RateLimit-Remaining': '0',
-        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
-      return {
-        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-        code: 'RATE_LIMIT_EXCEEDED',
-        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
-      };
-    }
-
-    // Add rate limit headers
-    set.headers = {
-      ...set.headers,  // Preserve existing headers (including CORS)
-      'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
-      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-    };
-
     try {
-      const { partnerBirthDate, partnerGender, partnerBirthTime } = body as {
+      const { partnerName, partnerBirthDate, relationshipType } = body as {
+        partnerName: string;
         partnerBirthDate: string;
-        partnerGender: 'male' | 'female';
-        partnerBirthTime?: {
-          chineseHour?: number;
-          isUnknown?: boolean;
-        };
+        relationshipType: RelationshipType;
       };
 
       const userId = session.userId;
@@ -738,6 +705,76 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'User profile not found' };
       }
 
+      // Convert partner birth date to Date object (frontend sends ISO string)
+      const partnerBirthDateObj = new Date(partnerBirthDate);
+      // Format as YYYY-MM-DD for DB storage
+      const partnerBirthDateStr = partnerBirthDateObj.toISOString().split('T')[0];
+
+      // Check for existing reading with same partner + relationship type
+      const [existing] = await db
+        .select()
+        .from(compatibility)
+        .where(
+          and(
+            eq(compatibility.profileAId, userProfile.id),
+            eq(compatibility.partnerBirthDate, partnerBirthDateStr),
+            eq(compatibility.relationshipType, relationshipType),
+          )
+        )
+        .limit(1);
+
+      if (existing) {
+        // Return cached result without consuming rate limit
+        return {
+          id: existing.id,
+          profileAId: existing.profileAId,
+          partnerName: existing.partnerName,
+          partnerBirthDate: existing.partnerBirthDate,
+          relationshipType: existing.relationshipType,
+          score: existing.score,
+          analysis: existing.analysis,
+          strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
+          challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
+          userElement: existing.userElement,
+          userDayMaster: existing.userDayMaster,
+          partnerElement: existing.partnerElement,
+          partnerDayMaster: existing.partnerDayMaster,
+          shareToken: existing.shareToken,
+          cached: true,
+          createdAt: existing.createdAt.toISOString(),
+        };
+      }
+
+      // Only check rate limit for new generations
+      const rateLimitResult = await checkRateLimit(
+        `compat:${session.userId}`,
+        RATE_LIMITS.compatibility
+      );
+
+      if (rateLimitResult.limited) {
+        set.status = 429;
+        set.headers = {
+          ...set.headers,
+          'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+        };
+        return {
+          error: 'พลังดวงดาวต้องการเวลาฟื้นฟู กรุณาลองใหม่อีกครั้งในภายหลัง',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+          resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+        };
+      }
+
+      set.headers = {
+        ...set.headers,
+        'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
+        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+      };
+
       // Calculate charts for both people
       const userBaziChart = calculateBazi(
         userProfile.birthDate,
@@ -746,20 +783,18 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       );
       const userThaiAstrology = calculateThaiAstrology(userProfile.birthDate);
 
-      const partnerBirthDateObj = new Date(partnerBirthDate);
-      const partnerBirthHour = partnerBirthTime?.isUnknown ? undefined : partnerBirthTime?.chineseHour;
-
       const partnerBaziChart = calculateBazi(
         partnerBirthDateObj,
-        partnerBirthHour,
-        partnerGender as 'male' | 'female'
+        undefined,
+        'female' // default, not critical for compatibility
       );
       const partnerThaiAstrology = calculateThaiAstrology(partnerBirthDateObj);
 
       // Calculate compatibility score
       const compatibilityScore = calculateCompatibility(userBaziChart, partnerBaziChart);
 
-      // Generate LLM reading
+      // Generate LLM reading with relationship-type-aware prompt
+      const tokenLimit = TOKEN_LIMITS[relationshipType] || 1000;
       const prompt = buildCompatibilityPrompt(
         {
           name: 'เจ้า',
@@ -768,49 +803,276 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           thaiAstrology: userThaiAstrology,
         },
         {
-          name: 'คู่ของเจ้า',
+          name: partnerName,
           birthDate: partnerBirthDateObj,
           baziChart: partnerBaziChart,
           thaiAstrology: partnerThaiAstrology,
-        }
+        },
+        relationshipType,
       );
 
-      const reading = await generateFortuneReading(prompt, 1200);
-
-      // Generate unique share token
+      const reading = await generateFortuneReading(prompt, tokenLimit);
       const shareToken = Math.random().toString(36).substring(2, 15);
 
-      // TODO: Create a temporary profile for partner or handle differently
-      // For now, return the result without saving to DB if partner has no profile
-      return {
-        score: compatibilityScore,
-        reading,
-        user: {
-          element: userBaziChart.element,
-          dayMaster: userBaziChart.dayMaster,
-          thaiDay: userThaiAstrology.day,
-        },
-        partner: {
-          element: partnerBaziChart.element,
-          dayMaster: partnerBaziChart.dayMaster,
-          thaiDay: partnerThaiAstrology.day,
-        },
+      // Save to DB
+      const [saved] = await db.insert(compatibility).values({
+        profileAId: userProfile.id,
+        partnerName,
+        partnerBirthDate: partnerBirthDateStr,
+        relationshipType,
+        score: compatibilityScore.score,
+        elementHarmony: compatibilityScore.elementHarmony,
+        branchHarmony: compatibilityScore.branchHarmony,
+        analysis: reading,
+        strengths: JSON.stringify(compatibilityScore.strengths),
+        challenges: JSON.stringify(compatibilityScore.challenges),
+        userElement: userBaziChart.element,
+        userDayMaster: userBaziChart.dayMaster,
+        partnerElement: partnerBaziChart.element,
+        partnerDayMaster: partnerBaziChart.dayMaster,
         shareToken,
+      }).returning();
+
+      // Cache the result
+      const resultKey = `compat:${userId}:${saved.id}`;
+      await cache(resultKey, 86400, async () => saved);
+
+      return {
+        id: saved.id,
+        profileAId: saved.profileAId,
+        partnerName: saved.partnerName,
+        partnerBirthDate: saved.partnerBirthDate,
+        relationshipType: saved.relationshipType,
+        score: saved.score,
+        analysis: saved.analysis,
+        strengths: compatibilityScore.strengths,
+        challenges: compatibilityScore.challenges,
+        userElement: saved.userElement,
+        userDayMaster: saved.userDayMaster,
+        partnerElement: saved.partnerElement,
+        partnerDayMaster: saved.partnerDayMaster,
+        shareToken: saved.shareToken,
+        cached: false,
+        createdAt: saved.createdAt.toISOString(),
       };
-    } catch (error) {
+    } catch (error: any) {
+      // Handle unique constraint violation (race condition on double-submit)
+      if (error?.code === '23505') {
+        const { partnerBirthDate, relationshipType } = body as any;
+        const userProfile = await getCachedProfile(session.userId);
+        if (userProfile) {
+          const partnerBirthDateStr = new Date(partnerBirthDate).toISOString().split('T')[0];
+          const [existing] = await db
+            .select()
+            .from(compatibility)
+            .where(
+              and(
+                eq(compatibility.profileAId, userProfile.id),
+                eq(compatibility.partnerBirthDate, partnerBirthDateStr),
+                eq(compatibility.relationshipType, relationshipType),
+              )
+            )
+            .limit(1);
+          if (existing) {
+            return {
+              id: existing.id,
+              profileAId: existing.profileAId,
+              partnerName: existing.partnerName,
+              partnerBirthDate: existing.partnerBirthDate,
+              relationshipType: existing.relationshipType,
+              score: existing.score,
+              analysis: existing.analysis,
+              strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
+              challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
+              userElement: existing.userElement,
+              userDayMaster: existing.userDayMaster,
+              partnerElement: existing.partnerElement,
+              partnerDayMaster: existing.partnerDayMaster,
+              shareToken: existing.shareToken,
+              cached: true,
+              createdAt: existing.createdAt.toISOString(),
+            };
+          }
+        }
+      }
       console.error('Compatibility error:', error);
       set.status = 500;
       return { error: 'Failed to calculate compatibility' };
     }
   }, {
     body: t.Object({
+      partnerName: t.String({ minLength: 1, maxLength: 100 }),
       partnerBirthDate: t.String(),
-      partnerGender: t.Union([t.Literal('male'), t.Literal('female')]),
-      partnerBirthTime: t.Optional(t.Object({
-        chineseHour: t.Optional(t.Number()),
-        isUnknown: t.Optional(t.Boolean()),
-      })),
+      relationshipType: t.Union(
+        RELATIONSHIP_TYPES.map(rt => t.Literal(rt))
+      ),
     }),
+  })
+
+  // Get compatibility reading history (paginated)
+  .get('/compatibility/history', async ({ query, set, request }) => {
+    const session = await validateSessionFromRequest(request);
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const userProfile = await getCachedProfile(session.userId);
+      if (!userProfile) {
+        set.status = 404;
+        return { error: 'User profile not found' };
+      }
+
+      const limit = Math.min(Math.max(parseInt(query.limit || '20'), 1), 50);
+      const cursor = query.cursor || null;
+      const typeFilter = query.relationshipType || null;
+
+      // Build conditions
+      const conditions = [eq(compatibility.profileAId, userProfile.id)];
+
+      if (typeFilter && RELATIONSHIP_TYPES.includes(typeFilter as any)) {
+        conditions.push(eq(compatibility.relationshipType, typeFilter));
+      }
+
+      // Decode cursor
+      if (cursor) {
+        try {
+          const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString());
+          conditions.push(
+            sql`(${compatibility.createdAt}, ${compatibility.id}) < (${new Date(decoded.createdAt)}, ${decoded.id})`
+          );
+        } catch {
+          // Invalid cursor, ignore
+        }
+      }
+
+      // Fetch items
+      const items = await db
+        .select({
+          id: compatibility.id,
+          partnerName: compatibility.partnerName,
+          partnerBirthDate: compatibility.partnerBirthDate,
+          relationshipType: compatibility.relationshipType,
+          score: compatibility.score,
+          userElement: compatibility.userElement,
+          partnerElement: compatibility.partnerElement,
+          createdAt: compatibility.createdAt,
+        })
+        .from(compatibility)
+        .where(and(...conditions))
+        .orderBy(desc(compatibility.createdAt), desc(compatibility.id))
+        .limit(limit + 1); // Fetch one extra to determine if there are more
+
+      const hasMore = items.length > limit;
+      const data = items.slice(0, limit);
+
+      // Build next cursor
+      let nextCursor: string | null = null;
+      if (hasMore && data.length > 0) {
+        const lastItem = data[data.length - 1];
+        nextCursor = Buffer.from(JSON.stringify({
+          createdAt: lastItem.createdAt.toISOString(),
+          id: lastItem.id,
+        })).toString('base64');
+      }
+
+      // Get total count (only on first page for efficiency)
+      let total = 0;
+      if (!cursor) {
+        const countConditions = [eq(compatibility.profileAId, userProfile.id)];
+        if (typeFilter && RELATIONSHIP_TYPES.includes(typeFilter as any)) {
+          countConditions.push(eq(compatibility.relationshipType, typeFilter));
+        }
+        const [countResult] = await db
+          .select({ count: count() })
+          .from(compatibility)
+          .where(and(...countConditions));
+        total = countResult?.count || 0;
+      }
+
+      return {
+        data: data.map(item => ({
+          id: item.id,
+          partnerName: item.partnerName,
+          partnerBirthDate: item.partnerBirthDate,
+          relationshipType: item.relationshipType,
+          score: item.score,
+          userElement: item.userElement,
+          partnerElement: item.partnerElement,
+          createdAt: item.createdAt.toISOString(),
+        })),
+        nextCursor,
+        total,
+      };
+    } catch (error) {
+      console.error('Compatibility history error:', error);
+      set.status = 500;
+      return { error: 'Failed to fetch compatibility history' };
+    }
+  })
+
+  // Get single compatibility reading by ID
+  .get('/compatibility/:id', async ({ params, set, request }) => {
+    const session = await validateSessionFromRequest(request);
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const userProfile = await getCachedProfile(session.userId);
+      if (!userProfile) {
+        set.status = 404;
+        return { error: 'User profile not found' };
+      }
+
+      const readingId = params.id;
+
+      // Try Redis cache first
+      const cached = await cache(`compat:${session.userId}:${readingId}`, 86400, async () => {
+        const [record] = await db
+          .select()
+          .from(compatibility)
+          .where(
+            and(
+              eq(compatibility.id, readingId),
+              eq(compatibility.profileAId, userProfile.id),
+            )
+          )
+          .limit(1);
+        return record ?? null;
+      });
+
+      if (!cached) {
+        set.status = 404;
+        return { error: 'Compatibility reading not found' };
+      }
+
+      return {
+        id: cached.id,
+        profileAId: cached.profileAId,
+        partnerName: cached.partnerName,
+        partnerBirthDate: cached.partnerBirthDate,
+        relationshipType: cached.relationshipType,
+        score: cached.score,
+        elementHarmony: cached.elementHarmony,
+        branchHarmony: cached.branchHarmony,
+        analysis: cached.analysis,
+        strengths: cached.strengths ? JSON.parse(cached.strengths) : [],
+        challenges: cached.challenges ? JSON.parse(cached.challenges) : [],
+        userElement: cached.userElement,
+        userDayMaster: cached.userDayMaster,
+        partnerElement: cached.partnerElement,
+        partnerDayMaster: cached.partnerDayMaster,
+        shareToken: cached.shareToken,
+        createdAt: cached.createdAt.toISOString(),
+      };
+    } catch (error) {
+      console.error('Compatibility detail error:', error);
+      set.status = 500;
+      return { error: 'Failed to fetch compatibility reading' };
+    }
   })
 
   // Get user profile data (for settings page)
