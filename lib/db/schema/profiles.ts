@@ -9,6 +9,7 @@ export const birthProfiles = pgTable('birth_profiles', {
   birthTimePeriod: varchar('birth_time_period', { length: 50 }), // Thai time period name
   gender: varchar('gender', { length: 10 }).notNull(), // 'male' | 'female'
   isTimeUnknown: boolean('is_time_unknown').default(false),
+  mbtiType: varchar('mbti_type', { length: 10 }), // e.g. 'INTP', null if unknown
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

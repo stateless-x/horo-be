@@ -7,6 +7,7 @@ export * from './types/compatibility';
 // Constants
 export * from './constants/thai-time';
 export * from './constants/design';
+export * from './constants/mbti';
 
 // Utils
 export * from './utils/date';

@@ -205,6 +205,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             birthTimePeriod: profile.birthTime?.period,
             gender: profile.gender,
             isTimeUnknown: profile.birthTime?.isUnknown || false,
+            mbtiType: profile.mbtiType || null,
             updatedAt: new Date(),
           })
           .where(eq(birthProfiles.userId, userId))
@@ -218,6 +219,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           birthTimePeriod: profile.birthTime?.period,
           gender: profile.gender,
           isTimeUnknown: profile.birthTime?.isUnknown || false,
+          mbtiType: profile.mbtiType || null,
         }).returning();
       }
 
@@ -619,6 +621,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           pillarInteractions,
           thaiAstrology,
           currentAge,
+          profile.mbtiType,
         );
 
         const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
@@ -835,6 +838,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           birthDate: userProfile.birthDate,
           baziChart: userBaziChart,
           thaiAstrology: userThaiAstrology,
+          mbtiType: userProfile.mbtiType,
         },
         {
           name: partnerName,
@@ -1261,6 +1265,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             birthTimePeriod: profile.birthTime?.period,
             gender: profile.gender,
             isTimeUnknown: profile.birthTime?.isUnknown || false,
+            mbtiType: profile.mbtiType || null,
             updatedAt: new Date(),
           })
           .where(eq(birthProfiles.userId, userId))
@@ -1274,6 +1279,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           birthTimePeriod: profile.birthTime?.period,
           gender: profile.gender,
           isTimeUnknown: profile.birthTime?.isUnknown || false,
+          mbtiType: profile.mbtiType || null,
         }).returning();
       }
 

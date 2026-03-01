@@ -7,6 +7,28 @@
  */
 
 import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType } from "../../lib/shared";
+import { getMbtiInfo, getMbtiCognitiveFunctions, type MbtiType } from "../../lib/shared";
+
+/**
+ * Build MBTI context block for LLM prompts.
+ * Returns empty string if mbtiType is null/undefined (excluded from prompt entirely).
+ */
+function buildMbtiContext(mbtiType: string | null | undefined): string {
+  if (!mbtiType) return '';
+
+  const info = getMbtiInfo(mbtiType);
+  const cognitive = getMbtiCognitiveFunctions(mbtiType);
+  if (!info || !cognitive) return '';
+
+  return `
+บุคลิกภาพ MBTI ของเจ้า:
+- ประเภท: ${info.code} (${info.nameTh} / ${info.nameEn})
+- ฟังก์ชันหลัก: ${cognitive.dominantFunction}
+- ฟังก์ชันเสริม: ${cognitive.auxiliaryFunction}
+- จุดเด่น: ${cognitive.strengths}
+- จุดอ่อน: ${cognitive.weaknesses}
+- สรุป: ${cognitive.summary}`;
+}
 
 /**
  * Generate teaser reading (Step 6 in onboarding - BEFORE auth)
@@ -275,6 +297,7 @@ export function buildCompatibilityPrompt(
     birthDate: Date;
     baziChart: BaziChart;
     thaiAstrology: ThaiAstrology;
+    mbtiType?: string | null;
   },
   person2: {
     name: string;
@@ -285,6 +308,7 @@ export function buildCompatibilityPrompt(
   relationshipType: RelationshipType = 'romantic',
 ): string {
   const focus = RELATIONSHIP_FOCUS[relationshipType];
+  const mbtiContext = person1.mbtiType ? buildMbtiContext(person1.mbtiType) : '';
 
   return `คุณเป็นหมอดูผู้เชี่ยวชาญด้านดวงความสัมพันธ์และความเข้ากันได้ เจ้ากำลังให้คำปรึกษาแก่ผู้มาขอดวง ("เจ้า") เกี่ยวกับความสัมพันธ์กับ ${person2.name}
 
@@ -293,7 +317,7 @@ export function buildCompatibilityPrompt(
 เจ้าวัน: ${person1.baziChart.dayMaster}
 องค์ประกอบ: ${person1.baziChart.element}
 วันไทย: ${person1.thaiAstrology.day}
-ดาว: ${person1.thaiAstrology.planet}
+ดาว: ${person1.thaiAstrology.planet}${mbtiContext}
 
 ${person2.name}:
 วันเกิด: ${person2.birthDate.toLocaleDateString("th-TH")}
@@ -337,7 +361,8 @@ ${focus}
 - ให้ทั้งด้านบวกและด้านลบ
 - ห้ามใช้อิโมจิ
 - เขียนในน้ำเสียงของที่ปรึกษาที่ห่วงใย ไม่ใช่ผู้พิพากษา
-- ใช้ markdown headers (##) สำหรับหัวข้อ และ bullet points (-) สำหรับรายการ
+- ใช้ markdown headers (##) สำหรับหัวข้อ และ bullet points (-) สำหรับรายการ${person1.mbtiType ? `
+- ผสมผสานข้อมูล MBTI ของเจ้าเข้ากับดวงชะตาอย่างกลมกลืน เช่น วิเคราะห์ว่าบุคลิกภาพของเจ้าจะเข้ากับคนนี้อย่างไร ห้ามแยกเป็นหัวข้อ MBTI ต่างหาก` : ''}
 
 เขียนเป็นภาษาไทยเท่านั้น:`;
 }
@@ -414,6 +439,7 @@ export function buildStructuredChartPrompt(
   pillarInteractions: PillarInteraction[],
   thaiAstrology: ThaiAstrology,
   currentAge: number,
+  mbtiType?: string | null,
 ): string {
   const birthDateStr = birthDate.toLocaleDateString("th-TH", {
     year: "numeric",
@@ -431,14 +457,18 @@ export function buildStructuredChartPrompt(
     thaiAstrology,
   };
 
+  const mbtiContext = buildMbtiContext(mbtiType);
+
   return `ข้อมูลดวงชะตาที่คำนวณแล้ว (Deterministic Data):
 ${JSON.stringify(deterministicData, null, 2)}
+${mbtiContext}
 
 คำสั่ง:
 จากข้อมูลข้างต้น ให้สร้างคำทำนายดวงชะตาแบบครบถ้วนในรูปแบบ JSON ที่มีโครงสร้างดังนี้:
 
 1. personalityTraits: คำบรรยายบุคลิกภาพ 8-12 คำ (string array) เช่น ["มีวินัย", "รับผิดชอบ", "อดทน", "เชื่อถือได้", ...]
-   - ผสมผสานลักษณะจากทั้งธาตุประจำตัวและดาวประจำวันเกิด
+   - ผสมผสานลักษณะจากทั้งธาตุประจำตัวและดาวประจำวันเกิด${mbtiType ? `
+   - ผสมผสานลักษณะ MBTI (${mbtiType}) เข้ากับธาตุและดาวอย่างกลมกลืน เช่น ถ้าธาตุน้ำ + INTP ให้เน้นพลังวิเคราะห์ที่ลึกซึ้ง` : ''}
 
 2. pillarInterpretations: สำหรับแต่ละเสาที่มี (year, month, day, hour ถ้ามี):
    - pillarKey: "year" | "month" | "day" | "hour"
@@ -491,7 +521,10 @@ ${JSON.stringify(deterministicData, null, 2)}
 - ต้องอ้างอิงธาตุ เสา และดาวของเจ้าในทุกหมวดคำทำนาย ห้ามเขียนดวงทั่วไป
 - ระบุช่วงเวลา (เดือน ฤดูกาล) ในคำทำนายเสมอ
 - ใช้น้ำเสียงอบอุ่น ลึกซึ้ง ของหมอดูผู้เชี่ยวชาญ
-- ใช้ "เจ้า" เรียกผู้อ่าน ห้ามใช้ "คุณ"
+- ใช้ "เจ้า" เรียกผู้อ่าน ห้ามใช้ "คุณ"${mbtiType ? `
+- ผสมผสาน MBTI เข้ากับธาตุและดาวอย่างกลมกลืน ห้ามแยกเป็นหัวข้อ MBTI ต่างหาก ห้ามพูดว่า "ตาม MBTI..."
+- ใช้ข้อมูล MBTI เพื่อเสริมความแม่นยำของคำทำนาย เช่น ถ้าธาตุน้ำ + INTP ให้เน้นพลังการวิเคราะห์ที่ลึกซึ้งเป็นพิเศษ
+- ปรับคำแนะนำให้เหมาะกับบุคลิกภาพ เช่น คนที่ชอบอยู่คนเดียว ไม่ต้องแนะนำให้ออกงานสังคม แต่แนะนำวิธีเสริมดวงที่เหมาะกับตัวเจ้า` : ''}
 
 ตอบเป็น JSON เท่านั้น ไม่ต้องใส่ markdown code block:`;
 }

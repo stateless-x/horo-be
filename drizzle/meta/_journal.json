@@ -85,6 +85,13 @@
       "when": 1772343305100,
       "tag": "0011_compatibility_multi_relationship",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1772611200000,
+      "tag": "0012_add_mbti_type",
+      "breakpoints": true
     }
   ]
 }

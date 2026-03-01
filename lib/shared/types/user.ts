@@ -15,6 +15,7 @@ export const BirthProfileSchema = z.object({
   birthDate: z.string().datetime(), // ISO format
   gender: GenderSchema,
   birthTime: BirthTimeSchema.optional(),
+  mbtiType: z.string().max(4).optional(), // e.g. 'INTP', undefined if unknown
 });
 export type BirthProfile = z.infer<typeof BirthProfileSchema>;
 
