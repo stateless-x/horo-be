@@ -58,6 +58,21 @@ export const auth = betterAuth({
   // Advanced configuration for cross-subdomain cookie sharing
   advanced: {
     useSecureCookies: config.env === 'production',
+    // Default cookie attributes for all cookies
+    // CRITICAL: SameSite=None is required for OAuth state cookies to work with POST callbacks
+    // Twitter/X and some other OAuth providers use POST for callbacks, which don't send
+    // SameSite=Lax cookies (the default). Setting SameSite=None allows the state cookie
+    // to be sent with POST requests, preventing state_mismatch errors.
+    //
+    // This is a known issue in Better Auth 1.4.4+ - see:
+    // - https://github.com/better-auth/better-auth/issues/5243
+    // - https://github.com/better-auth/better-auth/issues/7023
+    //
+    // Note: SameSite=None requires Secure=true, which is handled by useSecureCookies
+    defaultCookieAttributes: {
+      sameSite: 'none' as const,
+      secure: true,
+    },
     // Enable cross-subdomain cookies for proper session sharing
     // IMPORTANT: Use punycode domain (xn--y3cbx6azb.com) instead of Thai (สายมู.com)
     // Browsers automatically convert Thai domains to punycode, so cookies must use punycode
