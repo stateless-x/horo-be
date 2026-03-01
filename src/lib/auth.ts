@@ -15,6 +15,12 @@ import * as schema from '../../lib/db/schema';
  * - Twitter/X OAuth 2.0
  * - Built-in session management
  * - Automatic database schema generation
+ *
+ * OAuth State Management:
+ * - Uses database for OAuth state persistence (storeStateStrategy: "database")
+ * - This prevents state_mismatch errors in cross-origin OAuth flows
+ * - OAuth state is stored in the database during the authorization phase
+ * - State is validated and cleaned up during the callback phase
  */
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -66,16 +72,29 @@ export const auth = betterAuth({
       domain: 'xn--y3cbx6azb.com',
     },
   },
+  // Account configuration for OAuth
+  // CRITICAL: OAuth state management moved to account options in Better Auth v1.4+
+  account: {
+    // Store OAuth state in database for reliable cross-origin flows
+    // Options: "database" | "cookie"
+    // - "database": More reliable for cross-origin scenarios, uses database to store state
+    // - "cookie": Stores state in cookies, can fail with strict cookie policies
+    // We use "database" because:
+    // 1. More reliable for production environments with HTTPS
+    // 2. Not affected by third-party cookie blocking
+    // 3. Works consistently across different browsers and devices
+    storeStateStrategy: 'database',
+  },
   // Session configuration
   session: {
-    // Store session state in database for cross-origin OAuth
-    // This prevents state_mismatch errors
+    // Enable cookie caching for better performance
+    // This caches session data in cookies to reduce database queries
+    // Note: This is for SESSION data, not OAuth state (which is handled by account.storeStateStrategy)
     cookieCache: {
       enabled: true,
       maxAge: 5 * 60, // 5 minutes
     },
-    // Use database for OAuth state storage instead of cookies
-    // This is more reliable for cross-origin scenarios
+    // Store sessions in database for persistence
     storeSessionInDatabase: true,
   },
 });
