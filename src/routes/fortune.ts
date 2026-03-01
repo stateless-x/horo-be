@@ -191,7 +191,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
               .where(eq(user.id, userId))
           : Promise.resolve(),
       ]);
-      const existingProfile = existingProfileResult;
+      const existingProfile = existingProfileResult[0];
 
       let savedProfile;
 
