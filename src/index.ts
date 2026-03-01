@@ -69,21 +69,11 @@ if (configErrors.length === 0) {
     onboardingRoutes = onboardingModule.onboardingRoutes;
 
     // IMPORTANT: Reassign app to capture the chained routes
+    // Mount Better Auth handler using .mount() instead of .all()
+    // This is the recommended approach per Better Auth Elysia integration docs
+    // The basePath is configured in auth.ts, so we mount at root and let Better Auth handle routing
     app = app
-      .all('/api/auth/*', async ({ request, set }) => {
-        // Debug logging for OAuth requests
-        const url = new URL(request.url);
-        console.log('[AUTH]', request.method, url.pathname);
-        console.log('[AUTH] Headers:', Object.fromEntries(request.headers.entries()));
-
-        const response = await auth.handler(request);
-
-        // Debug logging for OAuth responses
-        console.log('[AUTH] Response status:', response.status);
-        console.log('[AUTH] Response headers:', Object.fromEntries(response.headers.entries()));
-
-        return response;
-      })
+      .mount(auth.handler)
       // Debug endpoint to test session validation
       .get('/api/debug/session', async ({ request, set }) => {
         const { validateSessionFromRequest } = await import('./lib/session');
