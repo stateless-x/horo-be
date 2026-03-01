@@ -19,6 +19,14 @@ import { cache, invalidateCache } from '../lib/redis';
 import { validateSessionFromRequest } from '../lib/session';
 
 /**
+ * In-flight LLM generation guard.
+ * Prevents concurrent LLM calls for the same profile (e.g., rapid double-requests
+ * or race condition from fire-and-forget caching).
+ * Maps profileId -> Promise of the in-flight generation result.
+ */
+const inflightChartGenerations = new Map<string, Promise<any>>();
+
+/**
  * Helper function to extract client IP from request
  */
 function getClientIP(request: Request): string {
@@ -171,30 +179,24 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       console.log('[Fortune] POST /profile - Saving profile for user:', userId);
       console.log('[Fortune] Profile data:', { birthDate, birthHour, gender: profile.gender });
 
-      // Check if user already has a profile
-      const [existingProfile] = await db
-        .select()
-        .from(birthProfiles)
-        .where(eq(birthProfiles.userId, userId))
-        .limit(1);
-
-      // Save display name to user table if provided
-      if (profile.name) {
-        console.log('[Fortune] Updating user displayName:', profile.name);
-        await db
-          .update(user)
-          .set({
-            displayName: profile.name,
-            updatedAt: new Date(),
-          })
-          .where(eq(user.id, userId));
-      }
+      // Check existing profile + update displayName in parallel (independent)
+      const [existingProfileResult] = await Promise.all([
+        db.select()
+          .from(birthProfiles)
+          .where(eq(birthProfiles.userId, userId))
+          .limit(1),
+        profile.name
+          ? db.update(user)
+              .set({ displayName: profile.name, updatedAt: new Date() })
+              .where(eq(user.id, userId))
+          : Promise.resolve(),
+      ]);
+      const existingProfile = existingProfileResult;
 
       let savedProfile;
 
       if (existingProfile) {
         console.log('[Fortune] Profile already exists, updating...');
-        // Update existing profile instead of inserting
         [savedProfile] = await db
           .update(birthProfiles)
           .set({
@@ -209,7 +211,6 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           .returning();
       } else {
         console.log('[Fortune] Creating new profile...');
-        // Save new birth profile
         [savedProfile] = await db.insert(birthProfiles).values({
           userId,
           birthDate,
@@ -220,81 +221,77 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         }).returning();
       }
 
-      // Calculate and save/update Bazi chart
+      // Calculate Bazi + Thai astrology (sync, independent of each other)
       const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
-
-      // Check if chart exists
-      const [existingChart] = await db
-        .select()
-        .from(baziCharts)
-        .where(eq(baziCharts.profileId, savedProfile.id))
-        .limit(1);
-
-      if (existingChart) {
-        // Update existing chart
-        await db
-          .update(baziCharts)
-          .set({
-            yearPillar: JSON.stringify(baziChart.yearPillar),
-            monthPillar: JSON.stringify(baziChart.monthPillar),
-            dayPillar: JSON.stringify(baziChart.dayPillar),
-            hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-            dayMaster: baziChart.dayMaster,
-            primaryElement: baziChart.element,
-            elementStrength: JSON.stringify({}),
-          })
-          .where(eq(baziCharts.profileId, savedProfile.id));
-      } else {
-        // Insert new chart
-        await db.insert(baziCharts).values({
-          profileId: savedProfile.id,
-          yearPillar: JSON.stringify(baziChart.yearPillar),
-          monthPillar: JSON.stringify(baziChart.monthPillar),
-          dayPillar: JSON.stringify(baziChart.dayPillar),
-          hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-          dayMaster: baziChart.dayMaster,
-          primaryElement: baziChart.element,
-          elementStrength: JSON.stringify({}),
-        });
-      }
-
-      // Calculate and save/update Thai astrology
       const thaiAstro = calculateThaiAstrology(birthDate);
 
-      // Check if Thai astrology data exists
-      const [existingThaiAstro] = await db
-        .select()
-        .from(thaiAstrologyData)
-        .where(eq(thaiAstrologyData.profileId, savedProfile.id))
-        .limit(1);
+      // Save Bazi + Thai astrology in parallel (both depend on savedProfile.id, not each other)
+      await Promise.all([
+        (async () => {
+          const [existingChart] = await db
+            .select()
+            .from(baziCharts)
+            .where(eq(baziCharts.profileId, savedProfile.id))
+            .limit(1);
 
-      if (existingThaiAstro) {
-        // Update existing Thai astrology data
-        await db
-          .update(thaiAstrologyData)
-          .set({
-            day: thaiAstro.day,
-            color: thaiAstro.color,
-            planet: thaiAstro.planet,
-            buddhaPosition: thaiAstro.buddhaPosition,
-            personality: thaiAstro.personality,
-            luckyNumber: thaiAstro.luckyNumber,
-            luckyDirection: thaiAstro.luckyDirection,
-          })
-          .where(eq(thaiAstrologyData.profileId, savedProfile.id));
-      } else {
-        // Insert new Thai astrology data
-        await db.insert(thaiAstrologyData).values({
-          profileId: savedProfile.id,
-          day: thaiAstro.day,
-          color: thaiAstro.color,
-          planet: thaiAstro.planet,
-          buddhaPosition: thaiAstro.buddhaPosition,
-          personality: thaiAstro.personality,
-          luckyNumber: thaiAstro.luckyNumber,
-          luckyDirection: thaiAstro.luckyDirection,
-        });
-      }
+          if (existingChart) {
+            await db.update(baziCharts)
+              .set({
+                yearPillar: JSON.stringify(baziChart.yearPillar),
+                monthPillar: JSON.stringify(baziChart.monthPillar),
+                dayPillar: JSON.stringify(baziChart.dayPillar),
+                hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+                dayMaster: baziChart.dayMaster,
+                primaryElement: baziChart.element,
+                elementStrength: JSON.stringify({}),
+              })
+              .where(eq(baziCharts.profileId, savedProfile.id));
+          } else {
+            await db.insert(baziCharts).values({
+              profileId: savedProfile.id,
+              yearPillar: JSON.stringify(baziChart.yearPillar),
+              monthPillar: JSON.stringify(baziChart.monthPillar),
+              dayPillar: JSON.stringify(baziChart.dayPillar),
+              hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+              dayMaster: baziChart.dayMaster,
+              primaryElement: baziChart.element,
+              elementStrength: JSON.stringify({}),
+            });
+          }
+        })(),
+        (async () => {
+          const [existingThaiAstro] = await db
+            .select()
+            .from(thaiAstrologyData)
+            .where(eq(thaiAstrologyData.profileId, savedProfile.id))
+            .limit(1);
+
+          if (existingThaiAstro) {
+            await db.update(thaiAstrologyData)
+              .set({
+                day: thaiAstro.day,
+                color: thaiAstro.color,
+                planet: thaiAstro.planet,
+                buddhaPosition: thaiAstro.buddhaPosition,
+                personality: thaiAstro.personality,
+                luckyNumber: thaiAstro.luckyNumber,
+                luckyDirection: thaiAstro.luckyDirection,
+              })
+              .where(eq(thaiAstrologyData.profileId, savedProfile.id));
+          } else {
+            await db.insert(thaiAstrologyData).values({
+              profileId: savedProfile.id,
+              day: thaiAstro.day,
+              color: thaiAstro.color,
+              planet: thaiAstro.planet,
+              buddhaPosition: thaiAstro.buddhaPosition,
+              personality: thaiAstro.personality,
+              luckyNumber: thaiAstro.luckyNumber,
+              luckyDirection: thaiAstro.luckyDirection,
+            });
+          }
+        })(),
+      ]);
 
       await invalidateCache(`profile:${userId}`);
       console.log('[Fortune] Profile saved successfully:', savedProfile.id);
@@ -450,6 +447,26 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       return { error: 'Not authenticated' };
     }
 
+    // Rate limit regeneration to prevent LLM abuse
+    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chartRegenerate);
+
+    if (rateLimitResult.limited) {
+      set.status = 429;
+      set.headers = {
+        ...set.headers,
+        'X-RateLimit-Limit': RATE_LIMITS.chartRegenerate.maxRequests.toString(),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+      };
+      return {
+        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+      };
+    }
+
     try {
       // Get user's profile
       const [profile] = await db
@@ -473,7 +490,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       return {
         success: true,
-        message: 'Fortune cache cleared. Next request will regenerate.'
+        message: 'Fortune cache cleared. Next request will regenerate.',
+        remaining: rateLimitResult.remaining,
       };
     } catch (error) {
       console.error('[Fortune] Regenerate error:', error);
@@ -580,101 +598,130 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         'X-Cache-Status': 'MISS',
       };
 
-      // ---- Step 1: Deterministic calculation ----
-      const birthHour = profile.birthHour ?? undefined;
-      const gender = profile.gender as 'male' | 'female';
+      // ---- Guard against concurrent LLM calls for same profile ----
+      const existingGeneration = inflightChartGenerations.get(profile.id);
+      if (existingGeneration) {
+        console.log('[Fortune] GET /chart - Reusing in-flight generation for profile:', profile.id);
+        return existingGeneration;
+      }
 
-      const enrichedPillars = calculateEnrichedBazi(profile.birthDate, birthHour, gender);
-      const elementProfile = calculateElementProfile(enrichedPillars.day);
-      const pillarInteractions = calculatePillarInteractions(enrichedPillars);
-      const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+      // Wrap the generation in a tracked promise
+      const generationPromise = (async () => {
+        // ---- Step 1: Deterministic calculation + parallel DB fetch ----
+        const birthHour = profile.birthHour ?? undefined;
+        const gender = profile.gender as 'male' | 'female';
 
-      const now = new Date();
-      const birthDate = new Date(profile.birthDate);
-      // Use UTC year since birthDate is stored as UTC midnight
-      const currentAge = now.getUTCFullYear() - birthDate.getUTCFullYear();
+        // Fire DB query early so it runs in background during sync calculations
+        const userDataPromise = db
+          .select({ name: user.name, displayName: user.displayName })
+          .from(user)
+          .where(eq(user.id, userId))
+          .limit(1);
 
-      // Get user's display name from the user table (prefer displayName over OAuth name)
-      const [userData] = await db
-        .select({ name: user.name, displayName: user.displayName })
-        .from(user)
-        .where(eq(user.id, userId))
-        .limit(1);
-      const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
+        // Sync calculations (~1-3ms total, no I/O)
+        const enrichedPillars = calculateEnrichedBazi(profile.birthDate, birthHour, gender);
+        const elementProfile = calculateElementProfile(enrichedPillars.day);
+        const pillarInteractions = calculatePillarInteractions(enrichedPillars);
+        const thaiAstrology = calculateThaiAstrology(profile.birthDate);
 
-      // ---- Step 2: LLM synthesis ----
-      console.log('[Fortune] GET /chart - Generating structured reading for profile:', profile.id);
+        const now = new Date();
+        const birthDate = new Date(profile.birthDate);
+        // Use UTC year since birthDate is stored as UTC midnight
+        const currentAge = now.getUTCFullYear() - birthDate.getUTCFullYear();
 
-      const prompt = buildStructuredChartPrompt(
-        userName,
-        profile.birthDate,
-        enrichedPillars,
-        elementProfile,
-        pillarInteractions,
-        thaiAstrology,
-        currentAge,
-      );
+        // Await the DB query that started earlier
+        const [userData] = await userDataPromise;
+        const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
 
-      const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+        // ---- Step 2: LLM synthesis ----
+        console.log('[Fortune] GET /chart - Generating structured reading for profile:', profile.id);
 
-      // ---- Merge deterministic + LLM data ----
-      // Use UTC timezone to ensure date displays correctly (birthDate is stored as UTC midnight)
-      const birthDateFormatted = profile.birthDate.toLocaleDateString('th-TH', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        timeZone: 'UTC',
+        const prompt = buildStructuredChartPrompt(
+          userName,
+          profile.birthDate,
+          enrichedPillars,
+          elementProfile,
+          pillarInteractions,
+          thaiAstrology,
+          currentAge,
+        );
+
+        const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+
+        // ---- Merge deterministic + LLM data ----
+        // Use UTC timezone to ensure date displays correctly (birthDate is stored as UTC midnight)
+        const birthDateFormatted = profile.birthDate.toLocaleDateString('th-TH', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          timeZone: 'UTC',
+        });
+
+        const response: StructuredChartResponse = {
+          // Section 1: Hero
+          personalityTraits: llmResult.personalityTraits as string[],
+          birthDateFormatted,
+          currentAge,
+
+          // Section 2: Element Profile
+          elementProfile,
+
+          // Section 3: Four Pillars
+          pillars: enrichedPillars,
+          pillarInterpretations: llmResult.pillarInterpretations as StructuredChartResponse['pillarInterpretations'],
+          pillarInteractions,
+
+          // Section 4: Birth Star & Lucky Attributes
+          birthStar: {
+            planet: thaiAstrology.planet,
+            planetDescription: (llmResult.birthStarDetails as any).planetDescription,
+            luckyColor: thaiAstrology.color,
+            luckyColorTooltip: (llmResult.birthStarDetails as any).luckyColorTooltip,
+            luckyNumber: thaiAstrology.luckyNumber,
+            luckyNumberTooltip: (llmResult.birthStarDetails as any).luckyNumberTooltip,
+            luckyDirection: thaiAstrology.luckyDirection,
+            luckyDirectionTooltip: (llmResult.birthStarDetails as any).luckyDirectionTooltip,
+            luckyDay: thaiAstrology.day,
+            luckyDayTooltip: (llmResult.birthStarDetails as any).luckyDayTooltip,
+          },
+
+          // Section 5: Fortune Readings
+          fortuneReadings: llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
+
+          // Section 6: Recommendations
+          recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
+        };
+
+        // ---- Cache the structured response in background (non-blocking) ----
+        const profileIdForCache = profile.id;
+        (async () => {
+          try {
+            await db
+              .delete(chartNarratives)
+              .where(eq(chartNarratives.profileId, profileIdForCache));
+            await Promise.all([
+              db.insert(chartNarratives).values({
+                profileId: profileIdForCache,
+                structuredReading: JSON.stringify(response),
+              }),
+              invalidateCache(chartCacheKey),
+            ]);
+            console.log('[Fortune] GET /chart - Structured reading cached for profile:', profileIdForCache);
+          } catch (err) {
+            console.error('[Fortune] GET /chart - Cache write failed:', err);
+          }
+        })();
+
+        return response;
+      })();
+
+      // Track the in-flight generation, clean up when done
+      inflightChartGenerations.set(profile.id, generationPromise);
+      generationPromise.finally(() => {
+        inflightChartGenerations.delete(profile.id);
       });
 
-      const response: StructuredChartResponse = {
-        // Section 1: Hero
-        personalityTraits: llmResult.personalityTraits as string[],
-        birthDateFormatted,
-        currentAge,
-
-        // Section 2: Element Profile
-        elementProfile,
-
-        // Section 3: Four Pillars
-        pillars: enrichedPillars,
-        pillarInterpretations: llmResult.pillarInterpretations as StructuredChartResponse['pillarInterpretations'],
-        pillarInteractions,
-
-        // Section 4: Birth Star & Lucky Attributes
-        birthStar: {
-          planet: thaiAstrology.planet,
-          planetDescription: (llmResult.birthStarDetails as any).planetDescription,
-          luckyColor: thaiAstrology.color,
-          luckyColorTooltip: (llmResult.birthStarDetails as any).luckyColorTooltip,
-          luckyNumber: thaiAstrology.luckyNumber,
-          luckyNumberTooltip: (llmResult.birthStarDetails as any).luckyNumberTooltip,
-          luckyDirection: thaiAstrology.luckyDirection,
-          luckyDirectionTooltip: (llmResult.birthStarDetails as any).luckyDirectionTooltip,
-          luckyDay: thaiAstrology.day,
-          luckyDayTooltip: (llmResult.birthStarDetails as any).luckyDayTooltip,
-        },
-
-        // Section 5: Fortune Readings
-        fortuneReadings: llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
-
-        // Section 6: Recommendations
-        recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
-      };
-
-      // ---- Cache the structured response (DB + Redis) ----
-      await db
-        .delete(chartNarratives)
-        .where(eq(chartNarratives.profileId, profile.id));
-      await db.insert(chartNarratives).values({
-        profileId: profile.id,
-        structuredReading: JSON.stringify(response),
-        // updatedAt and createdAt will use defaultNow() from schema
-      });
-      await invalidateCache(chartCacheKey);
-
-      console.log('[Fortune] GET /chart - Structured reading cached for profile:', profile.id);
-
-      return response;
+      return generationPromise;
     } catch (error) {
       console.error('Chart reading error:', error);
       set.status = 500;

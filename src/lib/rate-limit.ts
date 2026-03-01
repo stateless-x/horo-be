@@ -39,10 +39,15 @@ export const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 5, // 5 requests per hour per user
   },
-  // Full chart reading (expensive, but allows refreshing cached results)
+  // Full chart LLM generation (expensive - only counted on cache miss)
   chart: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    maxRequests: 10, // 10 views per hour per user (cached + regenerated)
+    windowMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxRequests: 3, // 3 LLM generations per day per user
+  },
+  // Chart regeneration (cache bust + triggers LLM)
+  chartRegenerate: {
+    windowMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxRequests: 3, // 3 regenerations per day per user
   },
   // Compatibility reading (expensive)
   compatibility: {
