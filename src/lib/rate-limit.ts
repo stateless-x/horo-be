@@ -31,8 +31,8 @@ const rateLimitStore = new Map<string, RateLimitEntry>();
 export const RATE_LIMITS = {
   // Public teaser endpoint (most restrictive)
   teaser: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    maxRequests: 3, // 3 teasers per hour per IP
+    windowMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxRequests: 3, // 3 teasers per day per IP
   },
   // Daily reading (once per day, but allow retries)
   daily: {
@@ -102,27 +102,19 @@ async function checkRateLimitRedis(
     const now = Date.now();
     const windowSeconds = Math.ceil(config.windowMs / 1000);
 
-    // Use Redis pipeline for atomic operations
-    const pipeline = redis.pipeline();
-    pipeline.incr(key);
-    pipeline.ttl(key);
-    const results = await pipeline.exec();
+    // Use Lua script for fully atomic incr + expire
+    const luaScript = `
+      local count = redis.call('incr', KEYS[1])
+      local ttl = redis.call('ttl', KEYS[1])
+      if ttl == -1 then
+        redis.call('expire', KEYS[1], ARGV[1])
+        ttl = tonumber(ARGV[1])
+      end
+      return {count, ttl}
+    `;
+    const [count, ttl] = await redis.eval(luaScript, 1, key, windowSeconds) as [number, number];
 
-    if (!results) return null;
-
-    const [[incrErr, count], [ttlErr, ttl]] = results as [[Error | null, number], [Error | null, number]];
-
-    if (incrErr || ttlErr) {
-      console.error('[RateLimit] Redis error:', incrErr || ttlErr);
-      return null;
-    }
-
-    // If this is a new key (ttl = -1), set expiration
-    if (ttl === -1) {
-      await redis.expire(key, windowSeconds);
-    }
-
-    const resetAt = now + ((ttl > 0 ? ttl : windowSeconds) * 1000);
+    const resetAt = now + (ttl * 1000);
     const limited = count > config.maxRequests;
     const remaining = Math.max(0, config.maxRequests - count);
 
@@ -207,7 +199,7 @@ export async function checkRateLimit(
 export function rateLimitByIP(config: RateLimitConfig) {
   return async ({ request, set }: { request: Request; set: any }) => {
     const clientIP = getClientIP(request);
-    const result = checkRateLimit(clientIP, config);
+    const result = await checkRateLimit(clientIP, config);
 
     if (result.limited) {
       set.status = 429;
@@ -239,7 +231,7 @@ export function rateLimitByUser(config: RateLimitConfig) {
       return;
     }
 
-    const result = checkRateLimit(userId, config);
+    const result = await checkRateLimit(userId, config);
 
     if (result.limited) {
       set.status = 429;

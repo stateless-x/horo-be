@@ -3,6 +3,7 @@ import { db } from '../lib/db';
 import { user } from '../../lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { validateSessionFromRequest } from '../lib/session';
+import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 
 /**
  * Onboarding Routes
@@ -25,8 +26,7 @@ export const onboardingRoutes = new Elysia({ prefix: '/api/onboarding' })
           };
         }
 
-        // Rate limiting (import at top of file)
-        const { checkRateLimit, RATE_LIMITS } = await import('../lib/rate-limit');
+        // Rate limiting
         const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.onboardingComplete);
 
         if (rateLimitResult.limited) {
