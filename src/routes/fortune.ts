@@ -497,35 +497,6 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
     console.log('[Fortune] GET /chart - Authenticated user:', session.userId);
 
-    // Rate limiting - applies to ALL requests (cached and uncached)
-    // This prevents users from abusing refresh
-    const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
-
-    if (rateLimitResult.limited) {
-      set.status = 429;
-      set.headers = {
-        ...set.headers,
-        'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-        'X-RateLimit-Remaining': '0',
-        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
-      return {
-        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-        code: 'RATE_LIMIT_EXCEEDED',
-        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
-      };
-    }
-
-    // Add rate limit headers to successful requests
-    set.headers = {
-      ...set.headers,
-      'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-    };
-
     try {
       const userId = session.userId;
 
@@ -545,13 +516,69 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           .from(chartNarratives)
           .where(eq(chartNarratives.profileId, profile.id))
           .limit(1);
-        return dbCached?.structuredReading ? JSON.parse(dbCached.structuredReading) : null;
+
+        if (!dbCached?.structuredReading) {
+          return null;
+        }
+
+        // Check if cached data is older than 1 year (365 days)
+        // Use updatedAt if available, otherwise fall back to createdAt for backward compatibility
+        const lastUpdated = dbCached.updatedAt || dbCached.createdAt;
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+        if (lastUpdated < oneYearAgo) {
+          console.log('[Fortune] GET /chart - Cached data expired (>1 year old), will regenerate for profile:', profile.id);
+          // Delete expired cache to force regeneration
+          await db
+            .delete(chartNarratives)
+            .where(eq(chartNarratives.profileId, profile.id));
+          return null;
+        }
+
+        return JSON.parse(dbCached.structuredReading);
       });
 
       if (cachedChart) {
-        console.log('[Fortune] GET /chart - Cache hit (still counted toward rate limit) for profile:', profile.id);
+        console.log('[Fortune] GET /chart - Cache hit (not counted toward rate limit) for profile:', profile.id);
+        // Return cached data without consuming rate limit
+        set.headers = {
+          ...set.headers,
+          'X-Cache-Status': 'HIT',
+        };
         return cachedChart;
       }
+
+      // Cache miss - need to regenerate with LLM
+      // Only NOW apply rate limiting for expensive LLM calls
+      console.log('[Fortune] GET /chart - Cache miss, checking rate limit for LLM generation');
+      const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+
+      if (rateLimitResult.limited) {
+        set.status = 429;
+        set.headers = {
+          ...set.headers,
+          'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+        };
+        return {
+          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+          resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+        };
+      }
+
+      // Add rate limit headers for LLM generation
+      set.headers = {
+        ...set.headers,
+        'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'X-Cache-Status': 'MISS',
+      };
 
       // ---- Step 1: Deterministic calculation ----
       const birthHour = profile.birthHour ?? undefined;
@@ -641,6 +668,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       await db.insert(chartNarratives).values({
         profileId: profile.id,
         structuredReading: JSON.stringify(response),
+        // updatedAt and createdAt will use defaultNow() from schema
       });
       await invalidateCache(chartCacheKey);
 

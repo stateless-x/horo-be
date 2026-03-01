@@ -25,7 +25,9 @@ export const chartNarratives = pgTable('chart_narratives', {
 
   // Structured reading data as JSON (StructuredChartResponse)
   structuredReading: text('structured_reading').notNull(),
-  updatedAt: timestamp('updated_at'),
+
+  // Track when the reading was last regenerated (for yearly expiration logic)
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
