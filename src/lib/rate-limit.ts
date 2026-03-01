@@ -49,10 +49,15 @@ export const RATE_LIMITS = {
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     maxRequests: 3, // 3 regenerations per day per user
   },
-  // Compatibility reading (expensive)
+  // Compatibility reading (expensive) - hourly burst limit
   compatibility: {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 5, // 5 compatibility checks per hour per user
+  },
+  // Compatibility daily limit (prevent spam, protect LLM costs)
+  compatibilityDaily: {
+    windowMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxRequests: 5, // 5 unique people per day per user
   },
   // Profile save (prevent spam, generous for users correcting mistakes)
   profileSave: {

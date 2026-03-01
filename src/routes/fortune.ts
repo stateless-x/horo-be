@@ -225,72 +225,42 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
       const thaiAstro = calculateThaiAstrology(birthDate);
 
-      // Save Bazi + Thai astrology in parallel (both depend on savedProfile.id, not each other)
+      // Save Bazi + Thai astrology in parallel using atomic upserts
+      // Each table has a UNIQUE constraint on profileId, so ON CONFLICT DO UPDATE is safe
+      // No SELECT needed — single atomic statement per table, parallel across tables
+      const baziData = {
+        yearPillar: JSON.stringify(baziChart.yearPillar),
+        monthPillar: JSON.stringify(baziChart.monthPillar),
+        dayPillar: JSON.stringify(baziChart.dayPillar),
+        hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+        dayMaster: baziChart.dayMaster,
+        primaryElement: baziChart.element,
+        elementStrength: JSON.stringify({}),
+      };
+
+      const thaiData = {
+        day: thaiAstro.day,
+        color: thaiAstro.color,
+        planet: thaiAstro.planet,
+        buddhaPosition: thaiAstro.buddhaPosition,
+        personality: thaiAstro.personality,
+        luckyNumber: thaiAstro.luckyNumber,
+        luckyDirection: thaiAstro.luckyDirection,
+      };
+
       await Promise.all([
-        (async () => {
-          const [existingChart] = await db
-            .select()
-            .from(baziCharts)
-            .where(eq(baziCharts.profileId, savedProfile.id))
-            .limit(1);
-
-          if (existingChart) {
-            await db.update(baziCharts)
-              .set({
-                yearPillar: JSON.stringify(baziChart.yearPillar),
-                monthPillar: JSON.stringify(baziChart.monthPillar),
-                dayPillar: JSON.stringify(baziChart.dayPillar),
-                hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-                dayMaster: baziChart.dayMaster,
-                primaryElement: baziChart.element,
-                elementStrength: JSON.stringify({}),
-              })
-              .where(eq(baziCharts.profileId, savedProfile.id));
-          } else {
-            await db.insert(baziCharts).values({
-              profileId: savedProfile.id,
-              yearPillar: JSON.stringify(baziChart.yearPillar),
-              monthPillar: JSON.stringify(baziChart.monthPillar),
-              dayPillar: JSON.stringify(baziChart.dayPillar),
-              hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-              dayMaster: baziChart.dayMaster,
-              primaryElement: baziChart.element,
-              elementStrength: JSON.stringify({}),
-            });
-          }
-        })(),
-        (async () => {
-          const [existingThaiAstro] = await db
-            .select()
-            .from(thaiAstrologyData)
-            .where(eq(thaiAstrologyData.profileId, savedProfile.id))
-            .limit(1);
-
-          if (existingThaiAstro) {
-            await db.update(thaiAstrologyData)
-              .set({
-                day: thaiAstro.day,
-                color: thaiAstro.color,
-                planet: thaiAstro.planet,
-                buddhaPosition: thaiAstro.buddhaPosition,
-                personality: thaiAstro.personality,
-                luckyNumber: thaiAstro.luckyNumber,
-                luckyDirection: thaiAstro.luckyDirection,
-              })
-              .where(eq(thaiAstrologyData.profileId, savedProfile.id));
-          } else {
-            await db.insert(thaiAstrologyData).values({
-              profileId: savedProfile.id,
-              day: thaiAstro.day,
-              color: thaiAstro.color,
-              planet: thaiAstro.planet,
-              buddhaPosition: thaiAstro.buddhaPosition,
-              personality: thaiAstro.personality,
-              luckyNumber: thaiAstro.luckyNumber,
-              luckyDirection: thaiAstro.luckyDirection,
-            });
-          }
-        })(),
+        db.insert(baziCharts)
+          .values({ profileId: savedProfile.id, ...baziData })
+          .onConflictDoUpdate({
+            target: baziCharts.profileId,
+            set: baziData,
+          }),
+        db.insert(thaiAstrologyData)
+          .values({ profileId: savedProfile.id, ...thaiData })
+          .onConflictDoUpdate({
+            target: thaiAstrologyData.profileId,
+            set: thaiData,
+          }),
       ]);
 
       await invalidateCache(`profile:${userId}`);
@@ -797,34 +767,46 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         };
       }
 
-      // Only check rate limit for new generations
-      const rateLimitResult = await checkRateLimit(
-        `compat:${session.userId}`,
-        RATE_LIMITS.compatibility
-      );
+      // Check both hourly burst limit AND daily limit (both must pass)
+      const [hourlyResult, dailyResult] = await Promise.all([
+        checkRateLimit(`compat:${session.userId}`, RATE_LIMITS.compatibility),
+        checkRateLimit(`compat-daily:${session.userId}`, RATE_LIMITS.compatibilityDaily),
+      ]);
 
-      if (rateLimitResult.limited) {
+      // Use whichever limit is more restrictive
+      const rateLimitResult = hourlyResult.limited ? hourlyResult : dailyResult.limited ? dailyResult : hourlyResult;
+      const isLimited = hourlyResult.limited || dailyResult.limited;
+
+      if (isLimited) {
+        const limitConfig = hourlyResult.limited ? RATE_LIMITS.compatibility : RATE_LIMITS.compatibilityDaily;
+        const retryAfter = Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000);
         set.status = 429;
         set.headers = {
           ...set.headers,
-          'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
+          'X-RateLimit-Limit': limitConfig.maxRequests.toString(),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+          'Retry-After': retryAfter.toString(),
         };
         return {
-          error: 'พลังดวงดาวต้องการเวลาฟื้นฟู กรุณาลองใหม่อีกครั้งในภายหลัง',
+          error: dailyResult.limited
+            ? 'เจ้าส่องดวงครบ 5 คนในวันนี้แล้ว กลับมาใหม่พรุ่งนี้นะ'
+            : 'พลังดวงดาวต้องการเวลาฟื้นฟู กรุณาลองใหม่อีกครั้งในภายหลัง',
           code: 'RATE_LIMIT_EXCEEDED',
-          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+          limitType: dailyResult.limited ? 'daily' : 'hourly',
+          retryAfter,
           resetAt: new Date(rateLimitResult.resetAt).toISOString(),
         };
       }
 
+      // Use the most restrictive remaining count
+      const remaining = Math.min(hourlyResult.remaining, dailyResult.remaining);
       set.headers = {
         ...set.headers,
-        'X-RateLimit-Limit': RATE_LIMITS.compatibility.maxRequests.toString(),
-        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+        'X-RateLimit-Limit': RATE_LIMITS.compatibilityDaily.maxRequests.toString(),
+        'X-RateLimit-Remaining': remaining.toString(),
+        'X-RateLimit-Reset': new Date(dailyResult.resetAt).toISOString(),
+        'X-DailyLimit-Remaining': dailyResult.remaining.toString(),
       };
 
       // Calculate charts for both people
@@ -1124,6 +1106,43 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       console.error('Compatibility detail error:', error);
       set.status = 500;
       return { error: 'Failed to fetch compatibility reading' };
+    }
+  })
+
+  // Public share endpoint for compatibility results (NO AUTH required)
+  .get('/compatibility/share/:token', async ({ params, set }) => {
+    try {
+      const { token } = params;
+
+      const [result] = await db
+        .select()
+        .from(compatibility)
+        .where(eq(compatibility.shareToken, token))
+        .limit(1);
+
+      if (!result) {
+        set.status = 404;
+        return { error: 'ไม่พบผลดวงที่ต้องการ' };
+      }
+
+      // Return sanitized result (no profileAId for privacy)
+      return {
+        partnerName: result.partnerName,
+        relationshipType: result.relationshipType,
+        score: result.score,
+        analysis: result.analysis,
+        strengths: result.strengths ? JSON.parse(result.strengths) : [],
+        challenges: result.challenges ? JSON.parse(result.challenges) : [],
+        userElement: result.userElement,
+        partnerElement: result.partnerElement,
+        userDayMaster: result.userDayMaster,
+        partnerDayMaster: result.partnerDayMaster,
+        createdAt: result.createdAt.toISOString(),
+      };
+    } catch (error) {
+      console.error('Compatibility share error:', error);
+      set.status = 500;
+      return { error: 'Failed to fetch shared compatibility result' };
     }
   })
 

@@ -1,1 +1,1 @@
-DROP TABLE "compatibility_invite" CASCADE;
+DROP TABLE IF EXISTS "compatibility_invite" CASCADE;
