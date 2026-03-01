@@ -567,36 +567,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return cachedChart;
       }
 
-      // Cache miss - need to regenerate with LLM
-      // Only NOW apply rate limiting for expensive LLM calls
-      console.log('[Fortune] GET /chart - Cache miss, checking rate limit for LLM generation');
-      const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
-
-      if (rateLimitResult.limited) {
-        set.status = 429;
-        set.headers = {
-          ...set.headers,
-          'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-          'X-RateLimit-Remaining': '0',
-          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-        };
-        return {
-          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-          code: 'RATE_LIMIT_EXCEEDED',
-          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-          resetAt: new Date(rateLimitResult.resetAt).toISOString(),
-        };
-      }
-
-      // Add rate limit headers for LLM generation
-      set.headers = {
-        ...set.headers,
-        'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-        'X-Cache-Status': 'MISS',
-      };
+      // Cache miss - check in-flight guard FIRST (before rate limit)
+      // This prevents duplicate requests from consuming rate limit tokens
+      console.log('[Fortune] GET /chart - Cache miss, checking for in-flight generation');
 
       // ---- Guard against concurrent LLM calls for same profile ----
       const existingGeneration = inflightChartGenerations.get(profile.id);
@@ -605,8 +578,40 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return existingGeneration;
       }
 
-      // Wrap the generation in a tracked promise
+      // Wrap EVERYTHING (rate limit + generation) in a tracked promise
+      // Set in map IMMEDIATELY (synchronously) to close race window
+      // The IIFE returns a Promise which is assigned synchronously,
+      // and the map.set() below runs before any internal await yields
       const generationPromise = (async () => {
+        // Rate limit check is inside the promise so no gap between guard check and set
+        console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
+        const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+
+        if (rateLimitResult.limited) {
+          set.status = 429;
+          set.headers = {
+            ...set.headers,
+            'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+          };
+          return {
+            error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+            code: 'RATE_LIMIT_EXCEEDED',
+            retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+            resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+          };
+        }
+
+        // Add rate limit headers for LLM generation
+        set.headers = {
+          ...set.headers,
+          'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+          'X-Cache-Status': 'MISS',
+        };
         // ---- Step 1: Deterministic calculation + parallel DB fetch ----
         const birthHour = profile.birthHour ?? undefined;
         const gender = profile.gender as 'male' | 'female';
@@ -715,7 +720,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return response;
       })();
 
-      // Track the in-flight generation, clean up when done
+      // Track IMMEDIATELY (synchronous — runs before the first await inside the IIFE yields)
       inflightChartGenerations.set(profile.id, generationPromise);
       generationPromise.finally(() => {
         inflightChartGenerations.delete(profile.id);

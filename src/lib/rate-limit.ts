@@ -42,7 +42,7 @@ export const RATE_LIMITS = {
   // Full chart LLM generation (expensive - only counted on cache miss)
   chart: {
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    maxRequests: 3, // 3 LLM generations per day per user
+    maxRequests: 5, // 5 LLM generations per day per user
   },
   // Chart regeneration (cache bust + triggers LLM)
   chartRegenerate: {
