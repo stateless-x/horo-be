@@ -99,6 +99,13 @@ export const auth = betterAuth({
     // 2. Not affected by third-party cookie blocking
     // 3. Works consistently across different browsers and devices
     storeStateStrategy: 'database',
+    // Skip the additional signed cookie check when using database strategy.
+    // With database strategy, better-auth does a double check: DB lookup + cookie comparison.
+    // The cookie check fails in cross-origin OAuth flows (frontend on สายมู.com, backend on Railway)
+    // because the signed state cookie set during OAuth initiation doesn't persist through the
+    // Twitter/X redirect chain. The database check alone provides sufficient CSRF protection.
+    // This is the same approach used by better-auth's own oauth-proxy plugin.
+    skipStateCookieCheck: true,
   },
   // Session configuration
   session: {
