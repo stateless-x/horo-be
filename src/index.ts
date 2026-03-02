@@ -55,29 +55,6 @@ let app = new Elysia()
     };
   });
 
-// Run pending schema migrations programmatically
-// This ensures migrations are applied even when Railway caches builds
-if (configErrors.length === 0) {
-  try {
-    const { sql } = await import('drizzle-orm');
-    const { db } = await import('./lib/db');
-    console.log('[STARTUP] Checking pending schema migrations...');
-
-    // Check and add mbti_type column if missing
-    const result = await db.execute(sql`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = 'birth_profiles' AND column_name = 'mbti_type'
-    `);
-    if (result.length === 0) {
-      await db.execute(sql`ALTER TABLE "birth_profiles" ADD COLUMN "mbti_type" varchar(10)`);
-      console.log('[STARTUP] ✓ Migration applied: added mbti_type column');
-    } else {
-      console.log('[STARTUP] ✓ Schema up to date');
-    }
-  } catch (error) {
-    console.error('[STARTUP] ⚠ Migration check failed (non-fatal):', error);
-  }
-}
 
 // Only load auth and routes if config is valid
 if (configErrors.length === 0) {
