@@ -38,6 +38,7 @@ async function migrateBirthDates() {
     // This indicates they were created with the buggy timezone code
     const affectedProfiles = await db
       .select({
+        profileId: birthProfiles.id,
         userId: birthProfiles.userId,
         name: user.name,
         displayName: user.displayName,
@@ -104,7 +105,7 @@ async function migrateBirthDates() {
         // Clear cached chart narratives to force regeneration
         await db
           .delete(chartNarratives)
-          .where(eq(chartNarratives.userId, p.userId));
+          .where(eq(chartNarratives.profileId, p.profileId));
 
         console.log(`✅ Migrated user ${p.userId} (${p.displayName || p.name})`);
         successCount++;
