@@ -1,9 +1,8 @@
 [build]
 installCommand = "bun install"
-buildCommand = "bun run db:migrate && bun run build"
+buildCommand = "bun run build"
 
 [deploy]
-startCommand = "bun dist/migrate.js && bun run start"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"

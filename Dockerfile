@@ -36,8 +36,12 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 
-# Copy node_modules for runtime dependencies
+# Copy node_modules for runtime dependencies (includes drizzle-kit binary)
 COPY --from=builder /app/node_modules ./node_modules
+
+# Copy schema files and drizzle config for drizzle-kit push at startup
+COPY --from=builder /app/lib/db/schema ./lib/db/schema
+COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 
 # Set environment to production
 ENV NODE_ENV=production
@@ -49,5 +53,6 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD bun run -e 'fetch(`http://localhost:${process.env.PORT || 3000}/health`).then(r => r.ok ? process.exit(0) : process.exit(1))'
 
-# Start the application
-CMD ["bun", "run", "dist/index.js"]
+# Run drizzle-kit push in background (hangs after completion due to unclosed DB pool)
+# & lets server start immediately without waiting for push to exit
+CMD ["sh", "-c", "bunx drizzle-kit push & exec bun run start"]
