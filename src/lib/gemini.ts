@@ -16,26 +16,51 @@ export async function generateFortuneReading(
   prompt: string,
   maxTokens: number = 500,
 ): Promise<string> {
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      maxOutputTokens: maxTokens,
-      temperature: 0.8,
-      thinkingConfig: {
-        thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
-      },
-    },
-  });
+  const maxRetries = 2;
+  let lastError: Error | null = null;
+  const timeoutMs = maxTokens <= 300 ? 15_000 : 20_000;
 
-  const text = response.text;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          maxOutputTokens: maxTokens,
+          temperature: 0.8,
+          thinkingConfig: {
+            thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
+          },
+          httpOptions: {
+            timeout: timeoutMs,
+          },
+        },
+      });
 
-  if (!text) {
-    throw new Error("Empty response from Gemini");
+      const text = response.text;
+
+      if (!text) {
+        throw new Error("Empty response from Gemini");
+      }
+
+      return text;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(
+        `[Gemini] Fortune reading attempt ${attempt + 1}/${maxRetries + 1} failed:`,
+        lastError.message
+      );
+
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
   }
 
-  return text;
+  throw new Error(
+    `Failed to generate fortune reading after ${maxRetries + 1} attempts: ${lastError?.message}`
+  );
 }
 
 /**
@@ -176,6 +201,9 @@ export async function generateStructuredFortuneReading(
           thinkingConfig: {
             thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
           },
+          httpOptions: {
+            timeout: 30_000, // 30s timeout for large structured output (8000 tokens)
+          },
         },
       });
 
@@ -288,6 +316,9 @@ export async function generateStructuredDailyReading(
           responseSchema,
           thinkingConfig: {
             thinkingBudget: 0, // Disable thinking — creative writing, not reasoning
+          },
+          httpOptions: {
+            timeout: 25_000, // 25s timeout for daily reading (3000 tokens)
           },
         },
       });

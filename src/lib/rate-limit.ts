@@ -29,10 +29,11 @@ const rateLimitStore = new Map<string, RateLimitEntry>();
  * Rate limit configurations for different endpoint types
  */
 export const RATE_LIMITS = {
-  // Public teaser endpoint (most restrictive)
+  // Public teaser endpoint — generous enough for shared IPs (corporate NAT, mobile carrier)
+  // Failed LLM calls are refunded via decrementRateLimit(), so only successes count
   teaser: {
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    maxRequests: 3, // 3 teasers per day per IP
+    maxRequests: 5, // 5 teasers per day per IP
   },
   // Daily reading (once per day, but allow retries)
   daily: {
@@ -201,6 +202,40 @@ export async function checkRateLimit(
 
   // Fall back to in-memory
   return checkRateLimitMemory(identifier, config);
+}
+
+/**
+ * Decrement rate limit counter (refund a failed request).
+ * Used when an LLM call fails — don't punish users for server-side failures.
+ */
+export async function decrementRateLimit(
+  identifier: string,
+): Promise<void> {
+  // Try Redis first
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      const key = `ratelimit:${identifier}`;
+      const luaScript = `
+        local count = redis.call('get', KEYS[1])
+        if count and tonumber(count) > 0 then
+          return redis.call('decr', KEYS[1])
+        end
+        return 0
+      `;
+      await redis.eval(luaScript, 1, key);
+      return;
+    } catch (error) {
+      console.error('[RateLimit] Redis decrement error:', error);
+      // Fall through to in-memory
+    }
+  }
+
+  // Fall back to in-memory
+  const entry = rateLimitStore.get(identifier);
+  if (entry && entry.count > 0) {
+    entry.count -= 1;
+  }
 }
 
 /**

@@ -14,17 +14,20 @@ import {
   SYSTEM_PROMPT,
   SYSTEM_PROMPT_STRUCTURED,
 } from '../lib/prompts';
-import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
+import { checkRateLimit, decrementRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { cache, invalidateCache } from '../lib/redis';
 import { validateSessionFromRequest } from '../lib/session';
 
 /**
- * In-flight LLM generation guard.
- * Prevents concurrent LLM calls for the same profile (e.g., rapid double-requests
+ * In-flight LLM generation guards.
+ * Prevent concurrent LLM calls for the same user/profile (e.g., rapid refresh
  * or race condition from fire-and-forget caching).
- * Maps profileId -> Promise of the in-flight generation result.
+ * If a second request arrives while the first is still generating, it reuses
+ * the in-flight promise instead of starting a new LLM call.
  */
 const inflightChartGenerations = new Map<string, Promise<any>>();
+const inflightTeaserGenerations = new Map<string, Promise<any>>();
+const inflightDailyGenerations = new Map<string, Promise<any>>();
 
 /**
  * Helper function to extract client IP from request
@@ -41,6 +44,14 @@ function getClientIP(request: Request): string {
   }
 
   return 'unknown';
+}
+
+/**
+ * Build a stable key for teaser in-flight dedup.
+ * Uses IP + birthDate + gender since teaser is pre-auth (no userId).
+ */
+function getTeaserInflightKey(ip: string, body: any): string {
+  return `teaser:${ip}:${body.birthDate}:${body.gender}`;
 }
 
 /**
@@ -66,67 +77,93 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
   // Generate teaser result (BEFORE auth)
   .post('/teaser', async ({ body, set, request }) => {
-    // Rate limiting for guest users (by IP)
     const clientIP = getClientIP(request);
-    const rateLimitResult = await checkRateLimit(clientIP, RATE_LIMITS.teaser);
+    const inflightKey = getTeaserInflightKey(clientIP, body);
 
-    if (rateLimitResult.limited) {
-      set.status = 429;
+    // Check if there's already an in-flight generation for this user+profile
+    const existingGeneration = inflightTeaserGenerations.get(inflightKey);
+    if (existingGeneration) {
+      console.log('[Fortune] POST /teaser - Reusing in-flight generation for:', inflightKey);
+      return existingGeneration;
+    }
+
+    // Wrap everything in a tracked promise (set synchronously before any await)
+    const generationPromise = (async () => {
+      // Rate limiting for guest users (by IP)
+      const rateLimitResult = await checkRateLimit(clientIP, RATE_LIMITS.teaser);
+
+      if (rateLimitResult.limited) {
+        set.status = 429;
+        set.headers = {
+          ...set.headers,  // Preserve existing headers (including CORS)
+          'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+        };
+        return {
+          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+          resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+        };
+      }
+
+      // Add rate limit headers to successful requests
       set.headers = {
         ...set.headers,  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
-        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-        'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
       };
-      return {
-        error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-        code: 'RATE_LIMIT_EXCEEDED',
-        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-        resetAt: new Date(rateLimitResult.resetAt).toISOString(),
-      };
-    }
 
-    // Add rate limit headers to successful requests
-    set.headers = {
-      ...set.headers,  // Preserve existing headers (including CORS)
-      'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
-      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-      'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-    };
+      try {
+        const profile = BirthProfileSchema.parse(body);
 
-    try {
-      const profile = BirthProfileSchema.parse(body);
+        const birthDate = new Date(profile.birthDate);
+        const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
 
-      const birthDate = new Date(profile.birthDate);
-      const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
+        // Calculate astrology
+        const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
+        const thaiAstrology = calculateThaiAstrology(birthDate);
 
-      // Calculate astrology
-      const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
-      const thaiAstrology = calculateThaiAstrology(birthDate);
+        // Generate AI reading using comprehensive prompt
+        const prompt = buildTeaserPrompt(
+          profile.name || 'ผู้มาเยือน',
+          birthDate,
+          baziChart,
+          thaiAstrology
+        );
 
-      // Generate AI reading using comprehensive prompt
-      const prompt = buildTeaserPrompt(
-        profile.name || 'ผู้มาเยือน',
-        birthDate,
-        baziChart,
-        thaiAstrology
-      );
+        const reading = await generateFortuneReading(prompt, 250);
 
-      const reading = await generateFortuneReading(prompt, 250);
+        return {
+          elementType: baziChart.element,
+          personality: thaiAstrology.personality,
+          todaySnippet: reading,
+          luckyColor: thaiAstrology.color,
+          luckyNumber: thaiAstrology.luckyNumber,
+        };
+      } catch (error) {
+        console.error('Teaser generation error:', error);
 
-      return {
-        elementType: baziChart.element,
-        personality: thaiAstrology.personality,
-        todaySnippet: reading,
-        luckyColor: thaiAstrology.color,
-        luckyNumber: thaiAstrology.luckyNumber,
-      };
-    } catch (error) {
-      console.error('Teaser generation error:', error);
-      set.status = 500;
-      return { error: 'Failed to generate teaser' };
-    }
+        // Refund rate limit token — don't punish users for server-side failures
+        await decrementRateLimit(clientIP).catch((err) =>
+          console.error('[Teaser] Failed to refund rate limit:', err)
+        );
+
+        set.status = 500;
+        return { error: 'Failed to generate teaser' };
+      }
+    })();
+
+    // Track synchronously (before first await yields)
+    inflightTeaserGenerations.set(inflightKey, generationPromise);
+    generationPromise.finally(() => {
+      inflightTeaserGenerations.delete(inflightKey);
+    });
+
+    return generationPromise;
   }, {
     body: BirthProfileSchema,
   })
@@ -328,80 +365,99 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         };
       }
 
-      // Only apply rate limiting if we need to generate NEW content
-      console.log('[Fortune] No cached reading found, checking rate limit before generating');
-      const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.daily);
+      // No cached reading — check in-flight guard before rate limit
+      const dailyInflightKey = `daily:${profile.id}:${todayStr}`;
+      const existingDailyGen = inflightDailyGenerations.get(dailyInflightKey);
+      if (existingDailyGen) {
+        console.log('[Fortune] GET /daily - Reusing in-flight generation for:', dailyInflightKey);
+        return existingDailyGen;
+      }
 
-      if (rateLimitResult.limited) {
-        set.status = 429;
+      // Wrap rate limit + LLM generation in a tracked promise
+      const dailyGenPromise = (async () => {
+        // Only apply rate limiting if we need to generate NEW content
+        console.log('[Fortune] No cached reading found, checking rate limit before generating');
+        const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.daily);
+
+        if (rateLimitResult.limited) {
+          set.status = 429;
+          set.headers = {
+            ...set.headers,  // Preserve existing headers (including CORS)
+            'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+          };
+          return {
+            error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+            code: 'RATE_LIMIT_EXCEEDED',
+            retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+            resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+          };
+        }
+
+        // Add rate limit headers
         set.headers = {
           ...set.headers,  // Preserve existing headers (including CORS)
           'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
-          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
         };
+
+        // Generate new structured daily reading
+        const baziChart = calculateBazi(
+          profile.birthDate,
+          profile.birthHour || undefined,
+          profile.gender as 'male' | 'female'
+        );
+        const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+
+        // Get user's display name from the user table (prefer displayName over OAuth name)
+        const [userData] = await db
+          .select({ name: user.name, displayName: user.displayName })
+          .from(user)
+          .where(eq(user.id, userId))
+          .limit(1);
+        const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
+
+        const prompt = buildStructuredDailyPrompt(
+          userName,
+          profile.birthDate,
+          new Date(),
+          baziChart,
+          thaiAstrology
+        );
+
+        const structuredReading = await generateStructuredDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+
+        // Save to database (content stores JSON string)
+        const [newReading] = await db
+          .insert(dailyReadings)
+          .values({
+            profileId: profile.id,
+            date: todayStr, // Use YYYY-MM-DD string format
+            content: JSON.stringify(structuredReading),
+            luckyColor: thaiAstrology.color,
+            luckyNumber: thaiAstrology.luckyNumber,
+            luckyDirection: thaiAstrology.luckyDirection,
+            elementEnergy: baziChart.element,
+          })
+          .returning();
+
+        // Return with parsed structured content
         return {
-          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-          code: 'RATE_LIMIT_EXCEEDED',
-          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-          resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+          ...newReading,
+          structuredContent: structuredReading,
         };
-      }
+      })();
 
-      // Add rate limit headers
-      set.headers = {
-        ...set.headers,  // Preserve existing headers (including CORS)
-        'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
-        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-        'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-      };
+      // Track synchronously (before first await yields)
+      inflightDailyGenerations.set(dailyInflightKey, dailyGenPromise);
+      dailyGenPromise.finally(() => {
+        inflightDailyGenerations.delete(dailyInflightKey);
+      });
 
-      // Generate new structured daily reading
-      const baziChart = calculateBazi(
-        profile.birthDate,
-        profile.birthHour || undefined,
-        profile.gender as 'male' | 'female'
-      );
-      const thaiAstrology = calculateThaiAstrology(profile.birthDate);
-
-      // Get user's display name from the user table (prefer displayName over OAuth name)
-      const [userData] = await db
-        .select({ name: user.name, displayName: user.displayName })
-        .from(user)
-        .where(eq(user.id, userId))
-        .limit(1);
-      const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
-
-      const prompt = buildStructuredDailyPrompt(
-        userName,
-        profile.birthDate,
-        new Date(),
-        baziChart,
-        thaiAstrology
-      );
-
-      const structuredReading = await generateStructuredDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
-
-      // Save to database (content stores JSON string)
-      const [newReading] = await db
-        .insert(dailyReadings)
-        .values({
-          profileId: profile.id,
-          date: todayStr, // Use YYYY-MM-DD string format
-          content: JSON.stringify(structuredReading),
-          luckyColor: thaiAstrology.color,
-          luckyNumber: thaiAstrology.luckyNumber,
-          luckyDirection: thaiAstrology.luckyDirection,
-          elementEnergy: baziChart.element,
-        })
-        .returning();
-
-      // Return with parsed structured content
-      return {
-        ...newReading,
-        structuredContent: structuredReading,
-      };
+      return dailyGenPromise;
     } catch (error) {
       console.error('Daily reading error:', error);
       set.status = 500;
