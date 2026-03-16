@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
-import { generateFortuneReading, generateStructuredFortuneReading, generateStructuredDailyReading } from '../lib/gemini';
+import { generateFortuneReading, generateStructuredFortuneReading, generateStructuredDailyReading, generateEnhancedDailyReading } from '../lib/gemini';
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives, user } from '../../lib/db';
 import { BirthProfileSchema, type BaziChart, type StructuredChartResponse, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../lib/shared';
@@ -14,6 +14,7 @@ import {
   SYSTEM_PROMPT,
   SYSTEM_PROMPT_STRUCTURED,
 } from '../lib/prompts';
+import { buildTodayPrompt } from '../lib/prompts/today';
 import { checkRateLimit, decrementRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { cache, invalidateCache } from '../lib/redis';
 import { validateSessionFromRequest } from '../lib/session';
@@ -421,15 +422,16 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             .limit(1);
           const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
 
-          const prompt = buildStructuredDailyPrompt(
+          const prompt = buildTodayPrompt(
             userName,
             profile.birthDate,
             new Date(),
             baziChart,
-            thaiAstrology
+            thaiAstrology,
+            profile.mbtiType,
           );
 
-          const structuredReading = await generateStructuredDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+          const structuredReading = await generateEnhancedDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
 
           // Save to database (content stores JSON string)
           const [newReading] = await db

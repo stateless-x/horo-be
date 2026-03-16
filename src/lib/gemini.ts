@@ -371,3 +371,116 @@ export async function generateStructuredDailyReading(
     `Failed to generate structured daily reading after ${maxRetries + 1} attempts: ${lastError?.message}`
   );
 }
+
+/**
+ * Generate an enhanced daily reading with MBTI integration using Gemini's JSON mode.
+ * Extended schema includes luckyNumbers, luckyColor, warnings, and suggestions.
+ */
+export async function generateEnhancedDailyReading(
+  prompt: string,
+  systemPrompt: string,
+): Promise<Record<string, unknown>> {
+  const categorySchema = {
+    type: "object" as const,
+    properties: {
+      reading: { type: "string" as const },
+      score: { type: "integer" as const },
+      tip: { type: "string" as const },
+    },
+    required: ["reading", "score", "tip"],
+  };
+
+  const responseSchema = {
+    type: "object" as const,
+    properties: {
+      overallReading: { type: "string" as const },
+      categories: {
+        type: "object" as const,
+        properties: {
+          career: categorySchema,
+          love: categorySchema,
+          finance: categorySchema,
+          health: categorySchema,
+        },
+        required: ["career", "love", "finance", "health"],
+      },
+      luckyNumbers: {
+        type: "array" as const,
+        items: { type: "integer" as const },
+      },
+      luckyColor: { type: "string" as const },
+      luckyMoment: { type: "string" as const },
+      warnings: {
+        type: "array" as const,
+        items: { type: "string" as const },
+      },
+      suggestions: {
+        type: "array" as const,
+        items: { type: "string" as const },
+      },
+      dos: {
+        type: "array" as const,
+        items: { type: "string" as const },
+      },
+      donts: {
+        type: "array" as const,
+        items: { type: "string" as const },
+      },
+    },
+    required: [
+      "overallReading", "categories", "luckyNumbers", "luckyColor",
+      "luckyMoment", "warnings", "suggestions", "dos", "donts",
+    ],
+  };
+
+  const maxRetries = 2;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: systemPrompt,
+          maxOutputTokens: 4000,
+          temperature: 0.8,
+          responseMimeType: "application/json",
+          responseSchema,
+          thinkingConfig: {
+            thinkingBudget: 0,
+          },
+          httpOptions: {
+            timeout: 25_000,
+          },
+        },
+      });
+
+      const text = response.text;
+
+      if (!text) {
+        throw new Error("Empty response from Gemini");
+      }
+
+      return JSON.parse(text);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(
+        `[Gemini] Enhanced daily generation attempt ${attempt + 1}/${maxRetries + 1} failed:`,
+        lastError.message
+      );
+
+      if (!isRetryableError(error)) {
+        throw lastError;
+      }
+
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  throw new Error(
+    `Failed to generate enhanced daily reading after ${maxRetries + 1} attempts: ${lastError?.message}`
+  );
+}

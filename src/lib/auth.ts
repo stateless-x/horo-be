@@ -9,6 +9,12 @@ export const auth = betterAuth({
     provider: 'pg',
     schema,
   }),
+  user: {
+    additionalFields: {
+      onboardingCompleted: { type: "boolean", defaultValue: false, input: false },
+      displayName: { type: "string", required: false, input: false },
+    },
+  },
   socialProviders: {
     google: {
       clientId: config.oauth.google.clientId,

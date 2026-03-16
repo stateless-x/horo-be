@@ -15,7 +15,7 @@ import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance, type
  *
  * Enhanced version: Includes actionable guidance for practical, personalized advice.
  */
-function buildMbtiContext(mbtiType: string | null | undefined): string {
+export function buildMbtiContext(mbtiType: string | null | undefined): string {
   if (!mbtiType) return '';
 
   const info = getMbtiInfo(mbtiType);
