@@ -1308,6 +1308,17 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       let savedProfile;
 
+      // Check if any LLM-relevant fields changed (fields that affect fortune reading)
+      const newIsTimeUnknown = profile.birthTime?.isUnknown || false;
+      const newMbtiType = profile.mbtiType || null;
+      const llmFieldsChanged = !existingProfile
+        || existingProfile.birthDate.getTime() !== birthDate.getTime()
+        || existingProfile.birthHour !== (birthHour ?? null)
+        || existingProfile.birthTimePeriod !== (profile.birthTime?.period ?? null)
+        || existingProfile.gender !== profile.gender
+        || existingProfile.isTimeUnknown !== newIsTimeUnknown
+        || existingProfile.mbtiType !== newMbtiType;
+
       if (existingProfile) {
         // Update existing profile
         [savedProfile] = await db
@@ -1317,8 +1328,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             birthHour,
             birthTimePeriod: profile.birthTime?.period,
             gender: profile.gender,
-            isTimeUnknown: profile.birthTime?.isUnknown || false,
-            mbtiType: profile.mbtiType || null,
+            isTimeUnknown: newIsTimeUnknown,
+            mbtiType: newMbtiType,
             updatedAt: new Date(),
           })
           .where(eq(birthProfiles.userId, userId))
@@ -1331,24 +1342,40 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           birthHour,
           birthTimePeriod: profile.birthTime?.period,
           gender: profile.gender,
-          isTimeUnknown: profile.birthTime?.isUnknown || false,
-          mbtiType: profile.mbtiType || null,
+          isTimeUnknown: newIsTimeUnknown,
+          mbtiType: newMbtiType,
         }).returning();
       }
 
-      // Recalculate and update Bazi chart
-      const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
+      // Only recalculate astrology and clear cache if LLM-relevant fields changed
+      if (llmFieldsChanged) {
+        console.log('[Fortune] LLM-relevant fields changed, recalculating astrology and clearing cache');
 
-      const [existingChart] = await db
-        .select()
-        .from(baziCharts)
-        .where(eq(baziCharts.profileId, savedProfile.id))
-        .limit(1);
+        // Recalculate and update Bazi chart
+        const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
 
-      if (existingChart) {
-        await db
-          .update(baziCharts)
-          .set({
+        const [existingChart] = await db
+          .select()
+          .from(baziCharts)
+          .where(eq(baziCharts.profileId, savedProfile.id))
+          .limit(1);
+
+        if (existingChart) {
+          await db
+            .update(baziCharts)
+            .set({
+              yearPillar: JSON.stringify(baziChart.yearPillar),
+              monthPillar: JSON.stringify(baziChart.monthPillar),
+              dayPillar: JSON.stringify(baziChart.dayPillar),
+              hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
+              dayMaster: baziChart.dayMaster,
+              primaryElement: baziChart.element,
+              elementStrength: JSON.stringify({}),
+            })
+            .where(eq(baziCharts.profileId, savedProfile.id));
+        } else {
+          await db.insert(baziCharts).values({
+            profileId: savedProfile.id,
             yearPillar: JSON.stringify(baziChart.yearPillar),
             monthPillar: JSON.stringify(baziChart.monthPillar),
             dayPillar: JSON.stringify(baziChart.dayPillar),
@@ -1356,34 +1383,34 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             dayMaster: baziChart.dayMaster,
             primaryElement: baziChart.element,
             elementStrength: JSON.stringify({}),
-          })
-          .where(eq(baziCharts.profileId, savedProfile.id));
-      } else {
-        await db.insert(baziCharts).values({
-          profileId: savedProfile.id,
-          yearPillar: JSON.stringify(baziChart.yearPillar),
-          monthPillar: JSON.stringify(baziChart.monthPillar),
-          dayPillar: JSON.stringify(baziChart.dayPillar),
-          hourPillar: baziChart.hourPillar ? JSON.stringify(baziChart.hourPillar) : null,
-          dayMaster: baziChart.dayMaster,
-          primaryElement: baziChart.element,
-          elementStrength: JSON.stringify({}),
-        });
-      }
+          });
+        }
 
-      // Recalculate and update Thai astrology
-      const thaiAstro = calculateThaiAstrology(birthDate);
+        // Recalculate and update Thai astrology
+        const thaiAstro = calculateThaiAstrology(birthDate);
 
-      const [existingThaiAstro] = await db
-        .select()
-        .from(thaiAstrologyData)
-        .where(eq(thaiAstrologyData.profileId, savedProfile.id))
-        .limit(1);
+        const [existingThaiAstro] = await db
+          .select()
+          .from(thaiAstrologyData)
+          .where(eq(thaiAstrologyData.profileId, savedProfile.id))
+          .limit(1);
 
-      if (existingThaiAstro) {
-        await db
-          .update(thaiAstrologyData)
-          .set({
+        if (existingThaiAstro) {
+          await db
+            .update(thaiAstrologyData)
+            .set({
+              day: thaiAstro.day,
+              color: thaiAstro.color,
+              planet: thaiAstro.planet,
+              buddhaPosition: thaiAstro.buddhaPosition,
+              personality: thaiAstro.personality,
+              luckyNumber: thaiAstro.luckyNumber,
+              luckyDirection: thaiAstro.luckyDirection,
+            })
+            .where(eq(thaiAstrologyData.profileId, savedProfile.id));
+        } else {
+          await db.insert(thaiAstrologyData).values({
+            profileId: savedProfile.id,
             day: thaiAstro.day,
             color: thaiAstro.color,
             planet: thaiAstro.planet,
@@ -1391,29 +1418,22 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             personality: thaiAstro.personality,
             luckyNumber: thaiAstro.luckyNumber,
             luckyDirection: thaiAstro.luckyDirection,
-          })
-          .where(eq(thaiAstrologyData.profileId, savedProfile.id));
+          });
+        }
+
+        // Clear cached chart narrative to force regeneration on next view
+        await db
+          .delete(chartNarratives)
+          .where(eq(chartNarratives.profileId, savedProfile.id));
+        await invalidateCache(`profile:${userId}`, `chart:narrative:${savedProfile.id}`);
       } else {
-        await db.insert(thaiAstrologyData).values({
-          profileId: savedProfile.id,
-          day: thaiAstro.day,
-          color: thaiAstro.color,
-          planet: thaiAstro.planet,
-          buddhaPosition: thaiAstro.buddhaPosition,
-          personality: thaiAstro.personality,
-          luckyNumber: thaiAstro.luckyNumber,
-          luckyDirection: thaiAstro.luckyDirection,
-        });
+        console.log('[Fortune] Only non-LLM fields changed, skipping astrology recalculation and cache clear');
+        // Still invalidate profile cache so display name updates show
+        await invalidateCache(`profile:${userId}`);
       }
 
-      // Clear cached chart narrative to force regeneration on next view
-      await db
-        .delete(chartNarratives)
-        .where(eq(chartNarratives.profileId, savedProfile.id));
-      await invalidateCache(`profile:${userId}`, `chart:narrative:${savedProfile.id}`);
-
       console.log('[Fortune] Profile updated successfully:', savedProfile.id);
-      return { success: true, profileId: savedProfile.id };
+      return { success: true, profileId: savedProfile.id, fortuneRegenerated: llmFieldsChanged };
     } catch (error) {
       console.error('[Fortune] POST /update-profile error:', error);
       set.status = 500;
