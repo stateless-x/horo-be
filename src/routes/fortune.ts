@@ -562,8 +562,32 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'Birth profile not found' };
       }
 
-      // Check Redis L1 cache, then DB for cached structured reading
+      // Check year boundary BEFORE cache() to ensure Redis L1 is also bypassed
       const chartCacheKey = `chart:narrative:${profile.id}`;
+      let yearBoundaryExpired = false;
+
+      const [existingNarrative] = await db
+        .select({ updatedAt: chartNarratives.updatedAt, createdAt: chartNarratives.createdAt })
+        .from(chartNarratives)
+        .where(eq(chartNarratives.profileId, profile.id))
+        .limit(1);
+
+      if (existingNarrative) {
+        const lastUpdated = existingNarrative.updatedAt || existingNarrative.createdAt;
+        // Use Bangkok timezone for year boundary (target audience is Thai users)
+        const bangkokNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+        const currentYear = bangkokNow.getFullYear();
+        const readingYear = new Date(lastUpdated.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' })).getFullYear();
+
+        if (readingYear < currentYear) {
+          console.log(`[Fortune] GET /chart - Year boundary crossed (reading: ${readingYear}, current: ${currentYear}), will regenerate for profile:`, profile.id);
+          await db.delete(chartNarratives).where(eq(chartNarratives.profileId, profile.id));
+          await invalidateCache(chartCacheKey);
+          yearBoundaryExpired = true;
+        }
+      }
+
+      // Check Redis L1 cache, then DB for cached structured reading
       const cachedChart = await cache<StructuredChartResponse | null>(chartCacheKey, 86400, async () => {
         const [dbCached] = await db
           .select()
@@ -587,6 +611,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           await db
             .delete(chartNarratives)
             .where(eq(chartNarratives.profileId, profile.id));
+          yearBoundaryExpired = true; // System-initiated expiry — bypass rate limit
           return null;
         }
 
@@ -620,35 +645,44 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       // and the map.set() below runs before any internal await yields
       const generationPromise = (async () => {
         try {
-          // Rate limit check is inside the promise so no gap between guard check and set
-          console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
-          const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+          // Skip rate limit for system-initiated expiry (year boundary or 365-day)
+          if (yearBoundaryExpired) {
+            console.log('[Fortune] GET /chart - Auto-expiry detected, bypassing rate limit for profile:', profile.id);
+            set.headers = {
+              ...set.headers,
+              'X-Cache-Status': 'EXPIRED_YEARLY',
+            };
+          } else {
+            // Rate limit check is inside the promise so no gap between guard check and set
+            console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
+            const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
 
-          if (rateLimitResult.limited) {
-            set.status = 429;
+            if (rateLimitResult.limited) {
+              set.status = 429;
+              set.headers = {
+                ...set.headers,
+                'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+                'X-RateLimit-Remaining': '0',
+                'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+                'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+              };
+              return {
+                error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+                code: 'RATE_LIMIT_EXCEEDED',
+                retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+                resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+              };
+            }
+
+            // Add rate limit headers for LLM generation
             set.headers = {
               ...set.headers,
               'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-              'X-RateLimit-Remaining': '0',
+              'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
               'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-              'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-            };
-            return {
-              error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-              code: 'RATE_LIMIT_EXCEEDED',
-              retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-              resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+              'X-Cache-Status': 'MISS',
             };
           }
-
-          // Add rate limit headers for LLM generation
-          set.headers = {
-            ...set.headers,
-            'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-            'X-Cache-Status': 'MISS',
-          };
 
           // ---- Step 1: Deterministic calculation + parallel DB fetch ----
           const birthHour = profile.birthHour ?? undefined;
