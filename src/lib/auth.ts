@@ -17,10 +17,21 @@ import * as schema from '../../lib/db/schema';
  * - Automatic database schema generation
  *
  * OAuth State Management:
- * - Uses database for OAuth state persistence (storeStateStrategy: "database")
- * - This prevents state_mismatch errors in cross-origin OAuth flows
- * - OAuth state is stored in the database during the authorization phase
- * - State is validated and cleaned up during the callback phase
+ * - Uses cookie strategy for OAuth state persistence (storeStateStrategy: "cookie")
+ * - The OAuth state (callbackURL, codeVerifier, etc.) is AES-256 encrypted and stored
+ *   in an "oauth_state" cookie on the backend domain during sign-in initiation.
+ * - When Google/Twitter redirects back to the callback URL, the browser sends this
+ *   cookie automatically and better-auth decrypts + validates it.
+ *
+ * Why cookie strategy (not database):
+ * - The database strategy depends on drizzle-orm for verification table reads/writes.
+ *   Our installed drizzle-orm@0.37 is below better-auth 1.4.x's required >=0.41, which
+ *   caused silent failures where the verification row was written but could not be found
+ *   on callback, producing "State mismatch: verification not found" errors.
+ * - The cookie strategy has zero database dependency during the OAuth flow.
+ * - With sameSite: 'none' + secure: true, the oauth_state cookie is sent back on both
+ *   GET callbacks (Google) and POST callbacks (Twitter/X), satisfying both providers.
+ * - The state data is encrypted with the BETTER_AUTH_SECRET, so it cannot be forged.
  */
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -55,68 +66,61 @@ export const auth = betterAuth({
       : []
     ),
   ],
-  // Advanced configuration for cross-subdomain cookie sharing
+  // Advanced configuration for cross-origin cookie handling
   advanced: {
     useSecureCookies: config.env === 'production',
-    // Default cookie attributes for all cookies
-    // CRITICAL: SameSite=None is required for OAuth state cookies to work with POST callbacks
-    // Twitter/X and some other OAuth providers use POST for callbacks, which don't send
-    // SameSite=Lax cookies (the default). Setting SameSite=None allows the state cookie
-    // to be sent with POST requests, preventing state_mismatch errors.
+    // CRITICAL: SameSite=None is required for OAuth state cookies to survive the
+    // provider redirect chain. Without it:
+    // - Google (GET callback): SameSite=Lax would work, but Twitter/X would not
+    // - Twitter/X (POST callback): SameSite=Lax blocks the cookie entirely
     //
-    // This is a known issue in Better Auth 1.4.4+ - see:
+    // SameSite=None allows the oauth_state cookie (set on backend domain during sign-in)
+    // to be sent back when the provider redirects the browser to the backend callback URL.
+    //
+    // SameSite=None requires Secure=true (enforced by useSecureCookies in production).
+    //
+    // References:
     // - https://github.com/better-auth/better-auth/issues/5243
     // - https://github.com/better-auth/better-auth/issues/7023
-    //
-    // Note: SameSite=None requires Secure=true, which is handled by useSecureCookies
     defaultCookieAttributes: {
       sameSite: 'none' as const,
       secure: true,
     },
-    // Enable cross-subdomain cookies for proper session sharing
-    // IMPORTANT: Use punycode domain (xn--y3cbx6azb.com) instead of Thai (สายมู.com)
-    // Browsers automatically convert Thai domains to punycode, so cookies must use punycode
-    // Otherwise, cookie domain won't match and authentication will fail with 401 errors
-    //
-    // NOTE: crossSubDomainCookies is only needed if frontend and backend are on different subdomains
-    // If both are on the same domain (e.g., both on xn--y3cbx6azb.com), this should be disabled
-    // to allow browser default cookie behavior (cookies set without explicit domain work better)
+    // crossSubDomainCookies disabled: frontend and backend are on different domains entirely
+    // (สายมู.com vs Railway), not subdomains of the same parent domain.
+    // Enabling this would require matching domains and would not help here.
     crossSubDomainCookies: {
-      enabled: false, // Disabled for now - enable only if using different subdomains
-      // Domain in punycode format without leading dot (Better Auth adds it automatically)
+      enabled: false,
       domain: 'xn--y3cbx6azb.com',
     },
   },
-  // Account configuration for OAuth
-  // CRITICAL: OAuth state management moved to account options in Better Auth v1.4+
+  // Account configuration for OAuth state management
   account: {
-    // Store OAuth state in database for reliable cross-origin flows
-    // Options: "database" | "cookie"
-    // - "database": More reliable for cross-origin scenarios, uses database to store state
-    // - "cookie": Stores state in cookies, can fail with strict cookie policies
-    // We use "database" because:
-    // 1. More reliable for production environments with HTTPS
-    // 2. Not affected by third-party cookie blocking
-    // 3. Works consistently across different browsers and devices
-    storeStateStrategy: 'database',
-    // Skip the additional signed cookie check when using database strategy.
-    // With database strategy, better-auth does a double check: DB lookup + cookie comparison.
-    // The cookie check fails in cross-origin OAuth flows (frontend on สายมู.com, backend on Railway)
-    // because the signed state cookie set during OAuth initiation doesn't persist through the
-    // Twitter/X redirect chain. The database check alone provides sufficient CSRF protection.
-    // This is the same approach used by better-auth's own oauth-proxy plugin.
-    skipStateCookieCheck: true,
+    // Use cookie strategy for OAuth state storage.
+    //
+    // The "cookie" strategy encrypts the full OAuth state (callbackURL, codeVerifier,
+    // expiresAt, etc.) with AES-256 using BETTER_AUTH_SECRET and stores it in an
+    // "oauth_state" cookie on the backend domain. No database reads/writes are needed
+    // during the OAuth flow itself.
+    //
+    // The "database" strategy was previously used but caused intermittent
+    // "State mismatch: verification not found" failures. Root cause: drizzle-orm@0.37
+    // does not meet the >=0.41 peer dependency required by better-auth 1.4.x, which
+    // caused silent DB write/read failures for the verification table.
+    //
+    // The cookie strategy is fully sufficient for CSRF protection: the state is encrypted
+    // and signed, and cannot be forged without the server secret.
+    storeStateStrategy: 'cookie',
   },
   // Session configuration
   session: {
-    // Enable cookie caching for better performance
-    // This caches session data in cookies to reduce database queries
-    // Note: This is for SESSION data, not OAuth state (which is handled by account.storeStateStrategy)
+    // Cache session data in a cookie to reduce database round-trips on every request.
+    // This is for SESSION data only — not related to OAuth state above.
     cookieCache: {
       enabled: true,
       maxAge: 5 * 60, // 5 minutes
     },
-    // Store sessions in database for persistence
+    // Persist sessions in the database (survives server restarts)
     storeSessionInDatabase: true,
   },
 });
