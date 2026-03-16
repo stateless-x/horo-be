@@ -5,6 +5,18 @@ import { SYSTEM_PROMPT } from "./prompts";
 const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
 
 /**
+ * Check if a Gemini error is worth retrying.
+ * Billing/quota/auth errors fail fast — retrying won't help.
+ */
+function isRetryableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('RESOURCE_EXHAUSTED') || message.includes('spending cap')) return false;
+  if (message.includes('PERMISSION_DENIED') || message.includes('403')) return false;
+  if (message.includes('INVALID_ARGUMENT') || message.includes('400')) return false;
+  return true;
+}
+
+/**
  * Generate a fortune reading using Gemini 2.5 Flash
  *
  * All fortune readings use the same mystical narrator system prompt
@@ -51,6 +63,10 @@ export async function generateFortuneReading(
         `[Gemini] Fortune reading attempt ${attempt + 1}/${maxRetries + 1} failed:`,
         lastError.message
       );
+
+      if (!isRetryableError(error)) {
+        throw lastError;
+      }
 
       if (attempt < maxRetries) {
         await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
@@ -221,6 +237,10 @@ export async function generateStructuredFortuneReading(
         lastError.message
       );
 
+      if (!isRetryableError(error)) {
+        throw lastError;
+      }
+
       if (attempt < maxRetries) {
         // Brief delay before retry
         await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
@@ -336,6 +356,10 @@ export async function generateStructuredDailyReading(
         `[Gemini] Structured daily generation attempt ${attempt + 1}/${maxRetries + 1} failed:`,
         lastError.message
       );
+
+      if (!isRetryableError(error)) {
+        throw lastError;
+      }
 
       if (attempt < maxRetries) {
         await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));

@@ -375,80 +375,86 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       // Wrap rate limit + LLM generation in a tracked promise
       const dailyGenPromise = (async () => {
-        // Only apply rate limiting if we need to generate NEW content
-        console.log('[Fortune] No cached reading found, checking rate limit before generating');
-        const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.daily);
+        try {
+          // Only apply rate limiting if we need to generate NEW content
+          console.log('[Fortune] No cached reading found, checking rate limit before generating');
+          const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.daily);
 
-        if (rateLimitResult.limited) {
-          set.status = 429;
+          if (rateLimitResult.limited) {
+            set.status = 429;
+            set.headers = {
+              ...set.headers,  // Preserve existing headers (including CORS)
+              'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
+              'X-RateLimit-Remaining': '0',
+              'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+              'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+            };
+            return {
+              error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+              code: 'RATE_LIMIT_EXCEEDED',
+              retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+              resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+            };
+          }
+
+          // Add rate limit headers
           set.headers = {
             ...set.headers,  // Preserve existing headers (including CORS)
             'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
-            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
             'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
           };
+
+          // Generate new structured daily reading
+          const baziChart = calculateBazi(
+            profile.birthDate,
+            profile.birthHour || undefined,
+            profile.gender as 'male' | 'female'
+          );
+          const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+
+          // Get user's display name from the user table (prefer displayName over OAuth name)
+          const [userData] = await db
+            .select({ name: user.name, displayName: user.displayName })
+            .from(user)
+            .where(eq(user.id, userId))
+            .limit(1);
+          const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
+
+          const prompt = buildStructuredDailyPrompt(
+            userName,
+            profile.birthDate,
+            new Date(),
+            baziChart,
+            thaiAstrology
+          );
+
+          const structuredReading = await generateStructuredDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+
+          // Save to database (content stores JSON string)
+          const [newReading] = await db
+            .insert(dailyReadings)
+            .values({
+              profileId: profile.id,
+              date: todayStr, // Use YYYY-MM-DD string format
+              content: JSON.stringify(structuredReading),
+              luckyColor: thaiAstrology.color,
+              luckyNumber: thaiAstrology.luckyNumber,
+              luckyDirection: thaiAstrology.luckyDirection,
+              elementEnergy: baziChart.element,
+            })
+            .returning();
+
+          // Return with parsed structured content
           return {
-            error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-            code: 'RATE_LIMIT_EXCEEDED',
-            retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-            resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+            ...newReading,
+            structuredContent: structuredReading,
           };
+        } catch (err) {
+          console.error('[Fortune] Daily generation IIFE error:', err);
+          set.status = 500;
+          return { error: 'Failed to generate daily reading' };
         }
-
-        // Add rate limit headers
-        set.headers = {
-          ...set.headers,  // Preserve existing headers (including CORS)
-          'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
-          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-        };
-
-        // Generate new structured daily reading
-        const baziChart = calculateBazi(
-          profile.birthDate,
-          profile.birthHour || undefined,
-          profile.gender as 'male' | 'female'
-        );
-        const thaiAstrology = calculateThaiAstrology(profile.birthDate);
-
-        // Get user's display name from the user table (prefer displayName over OAuth name)
-        const [userData] = await db
-          .select({ name: user.name, displayName: user.displayName })
-          .from(user)
-          .where(eq(user.id, userId))
-          .limit(1);
-        const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
-
-        const prompt = buildStructuredDailyPrompt(
-          userName,
-          profile.birthDate,
-          new Date(),
-          baziChart,
-          thaiAstrology
-        );
-
-        const structuredReading = await generateStructuredDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
-
-        // Save to database (content stores JSON string)
-        const [newReading] = await db
-          .insert(dailyReadings)
-          .values({
-            profileId: profile.id,
-            date: todayStr, // Use YYYY-MM-DD string format
-            content: JSON.stringify(structuredReading),
-            luckyColor: thaiAstrology.color,
-            luckyNumber: thaiAstrology.luckyNumber,
-            luckyDirection: thaiAstrology.luckyDirection,
-            elementEnergy: baziChart.element,
-          })
-          .returning();
-
-        // Return with parsed structured content
-        return {
-          ...newReading,
-          structuredContent: structuredReading,
-        };
       })();
 
       // Track synchronously (before first await yields)
@@ -611,142 +617,133 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       // The IIFE returns a Promise which is assigned synchronously,
       // and the map.set() below runs before any internal await yields
       const generationPromise = (async () => {
-        // Rate limit check is inside the promise so no gap between guard check and set
-        console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
-        const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
+        try {
+          // Rate limit check is inside the promise so no gap between guard check and set
+          console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
+          const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.chart);
 
-        if (rateLimitResult.limited) {
-          set.status = 429;
+          if (rateLimitResult.limited) {
+            set.status = 429;
+            set.headers = {
+              ...set.headers,
+              'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
+              'X-RateLimit-Remaining': '0',
+              'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+              'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+            };
+            return {
+              error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+              code: 'RATE_LIMIT_EXCEEDED',
+              retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+              resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+            };
+          }
+
+          // Add rate limit headers for LLM generation
           set.headers = {
             ...set.headers,
             'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
             'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
+            'X-Cache-Status': 'MISS',
           };
-          return {
-            error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
-            code: 'RATE_LIMIT_EXCEEDED',
-            retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
-            resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+
+          // ---- Step 1: Deterministic calculation + parallel DB fetch ----
+          const birthHour = profile.birthHour ?? undefined;
+          const gender = profile.gender as 'male' | 'female';
+
+          const userDataPromise = db
+            .select({ name: user.name, displayName: user.displayName })
+            .from(user)
+            .where(eq(user.id, userId))
+            .limit(1);
+
+          const enrichedPillars = calculateEnrichedBazi(profile.birthDate, birthHour, gender);
+          const elementProfile = calculateElementProfile(enrichedPillars.day);
+          const pillarInteractions = calculatePillarInteractions(enrichedPillars);
+          const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+
+          const now = new Date();
+          const birthDate = new Date(profile.birthDate);
+          const currentAge = now.getUTCFullYear() - birthDate.getUTCFullYear();
+
+          const [userData] = await userDataPromise;
+          const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
+
+          // ---- Step 2: LLM synthesis ----
+          console.log('[Fortune] GET /chart - Generating structured reading for profile:', profile.id);
+
+          const prompt = buildStructuredChartPrompt(
+            userName,
+            profile.birthDate,
+            enrichedPillars,
+            elementProfile,
+            pillarInteractions,
+            thaiAstrology,
+            currentAge,
+            profile.mbtiType,
+          );
+
+          const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+
+          // ---- Merge deterministic + LLM data ----
+          const birthDateFormatted = profile.birthDate.toLocaleDateString('th-TH', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            timeZone: 'UTC',
+          });
+
+          const response: StructuredChartResponse = {
+            personalityTraits: llmResult.personalityTraits as string[],
+            birthDateFormatted,
+            currentAge,
+            elementProfile,
+            pillars: enrichedPillars,
+            pillarInterpretations: llmResult.pillarInterpretations as StructuredChartResponse['pillarInterpretations'],
+            pillarInteractions,
+            birthStar: {
+              planet: thaiAstrology.planet,
+              planetDescription: (llmResult.birthStarDetails as any).planetDescription,
+              luckyColor: thaiAstrology.color,
+              luckyColorTooltip: (llmResult.birthStarDetails as any).luckyColorTooltip,
+              luckyNumber: thaiAstrology.luckyNumber,
+              luckyNumberTooltip: (llmResult.birthStarDetails as any).luckyNumberTooltip,
+              luckyDirection: thaiAstrology.luckyDirection,
+              luckyDirectionTooltip: (llmResult.birthStarDetails as any).luckyDirectionTooltip,
+              luckyDay: thaiAstrology.day,
+              luckyDayTooltip: (llmResult.birthStarDetails as any).luckyDayTooltip,
+            },
+            fortuneReadings: llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
+            recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
           };
+
+          // ---- Cache in background (non-blocking) ----
+          const profileIdForCache = profile.id;
+          (async () => {
+            try {
+              await db
+                .delete(chartNarratives)
+                .where(eq(chartNarratives.profileId, profileIdForCache));
+              await Promise.all([
+                db.insert(chartNarratives).values({
+                  profileId: profileIdForCache,
+                  structuredReading: JSON.stringify(response),
+                }),
+                invalidateCache(chartCacheKey),
+              ]);
+              console.log('[Fortune] GET /chart - Structured reading cached for profile:', profileIdForCache);
+            } catch (err) {
+              console.error('[Fortune] GET /chart - Cache write failed:', err);
+            }
+          })();
+
+          return response;
+        } catch (err) {
+          console.error('[Fortune] Chart generation IIFE error:', err);
+          set.status = 500;
+          return { error: 'Failed to generate chart reading' };
         }
-
-        // Add rate limit headers for LLM generation
-        set.headers = {
-          ...set.headers,
-          'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
-          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-          'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-          'X-Cache-Status': 'MISS',
-        };
-        // ---- Step 1: Deterministic calculation + parallel DB fetch ----
-        const birthHour = profile.birthHour ?? undefined;
-        const gender = profile.gender as 'male' | 'female';
-
-        // Fire DB query early so it runs in background during sync calculations
-        const userDataPromise = db
-          .select({ name: user.name, displayName: user.displayName })
-          .from(user)
-          .where(eq(user.id, userId))
-          .limit(1);
-
-        // Sync calculations (~1-3ms total, no I/O)
-        const enrichedPillars = calculateEnrichedBazi(profile.birthDate, birthHour, gender);
-        const elementProfile = calculateElementProfile(enrichedPillars.day);
-        const pillarInteractions = calculatePillarInteractions(enrichedPillars);
-        const thaiAstrology = calculateThaiAstrology(profile.birthDate);
-
-        const now = new Date();
-        const birthDate = new Date(profile.birthDate);
-        // Use UTC year since birthDate is stored as UTC midnight
-        const currentAge = now.getUTCFullYear() - birthDate.getUTCFullYear();
-
-        // Await the DB query that started earlier
-        const [userData] = await userDataPromise;
-        const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
-
-        // ---- Step 2: LLM synthesis ----
-        console.log('[Fortune] GET /chart - Generating structured reading for profile:', profile.id);
-
-        const prompt = buildStructuredChartPrompt(
-          userName,
-          profile.birthDate,
-          enrichedPillars,
-          elementProfile,
-          pillarInteractions,
-          thaiAstrology,
-          currentAge,
-          profile.mbtiType,
-        );
-
-        const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
-
-        // ---- Merge deterministic + LLM data ----
-        // Use UTC timezone to ensure date displays correctly (birthDate is stored as UTC midnight)
-        const birthDateFormatted = profile.birthDate.toLocaleDateString('th-TH', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          timeZone: 'UTC',
-        });
-
-        const response: StructuredChartResponse = {
-          // Section 1: Hero
-          personalityTraits: llmResult.personalityTraits as string[],
-          birthDateFormatted,
-          currentAge,
-
-          // Section 2: Element Profile
-          elementProfile,
-
-          // Section 3: Four Pillars
-          pillars: enrichedPillars,
-          pillarInterpretations: llmResult.pillarInterpretations as StructuredChartResponse['pillarInterpretations'],
-          pillarInteractions,
-
-          // Section 4: Birth Star & Lucky Attributes
-          birthStar: {
-            planet: thaiAstrology.planet,
-            planetDescription: (llmResult.birthStarDetails as any).planetDescription,
-            luckyColor: thaiAstrology.color,
-            luckyColorTooltip: (llmResult.birthStarDetails as any).luckyColorTooltip,
-            luckyNumber: thaiAstrology.luckyNumber,
-            luckyNumberTooltip: (llmResult.birthStarDetails as any).luckyNumberTooltip,
-            luckyDirection: thaiAstrology.luckyDirection,
-            luckyDirectionTooltip: (llmResult.birthStarDetails as any).luckyDirectionTooltip,
-            luckyDay: thaiAstrology.day,
-            luckyDayTooltip: (llmResult.birthStarDetails as any).luckyDayTooltip,
-          },
-
-          // Section 5: Fortune Readings
-          fortuneReadings: llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
-
-          // Section 6: Recommendations
-          recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
-        };
-
-        // ---- Cache the structured response in background (non-blocking) ----
-        const profileIdForCache = profile.id;
-        (async () => {
-          try {
-            await db
-              .delete(chartNarratives)
-              .where(eq(chartNarratives.profileId, profileIdForCache));
-            await Promise.all([
-              db.insert(chartNarratives).values({
-                profileId: profileIdForCache,
-                structuredReading: JSON.stringify(response),
-              }),
-              invalidateCache(chartCacheKey),
-            ]);
-            console.log('[Fortune] GET /chart - Structured reading cached for profile:', profileIdForCache);
-          } catch (err) {
-            console.error('[Fortune] GET /chart - Cache write failed:', err);
-          }
-        })();
-
-        return response;
       })();
 
       // Track IMMEDIATELY (synchronous — runs before the first await inside the IIFE yields)
