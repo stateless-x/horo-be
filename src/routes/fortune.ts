@@ -18,6 +18,7 @@ import { buildTodayPrompt } from '../lib/prompts/today';
 import { checkRateLimit, decrementRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { cache, invalidateCache } from '../lib/redis';
 import { validateSessionFromRequest } from '../lib/session';
+import { getTodayBangkokString, getBangkokYear, getYearInBangkok } from '../../lib/shared/utils/date';
 
 /**
  * In-flight LLM generation guards.
@@ -337,8 +338,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       }
 
       // Check if we already have today's reading FIRST (before rate limiting)
-      const today = new Date();
-      const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format
+      // Use Bangkok timezone so "today" matches what Thai users see
+      const todayStr = getTodayBangkokString();
 
       const [existingReading] = await db
         .select()
@@ -575,9 +576,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       if (existingNarrative) {
         const lastUpdated = existingNarrative.updatedAt || existingNarrative.createdAt;
         // Use Bangkok timezone for year boundary (target audience is Thai users)
-        const bangkokNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
-        const currentYear = bangkokNow.getFullYear();
-        const readingYear = new Date(lastUpdated.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' })).getFullYear();
+        const currentYear = getBangkokYear();
+        const readingYear = getYearInBangkok(lastUpdated);
 
         if (readingYear < currentYear) {
           console.log(`[Fortune] GET /chart - Year boundary crossed (reading: ${readingYear}, current: ${currentYear}), will regenerate for profile:`, profile.id);

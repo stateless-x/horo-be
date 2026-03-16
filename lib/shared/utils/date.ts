@@ -42,6 +42,33 @@ export function getBangkokDate(): Date {
 }
 
 /**
+ * Gets today's date string in YYYY-MM-DD format, Bangkok timezone.
+ * Use this for daily reading cache keys and DB lookups to ensure
+ * the "day" matches what Thai users see on their calendar.
+ */
+export function getTodayBangkokString(): string {
+  const d = getBangkokDate();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * Gets the current year in Bangkok timezone.
+ */
+export function getBangkokYear(): number {
+  return getBangkokDate().getFullYear();
+}
+
+/**
+ * Gets the year of a given date in Bangkok timezone.
+ */
+export function getYearInBangkok(date: Date): number {
+  return new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' })).getFullYear();
+}
+
+/**
  * Checks if it's a new day in Bangkok timezone
  */
 export function isMidnightBangkok(): boolean {
