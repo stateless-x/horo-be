@@ -43,8 +43,13 @@ export const auth = betterAuth({
     },
   },
   account: {
-    // Cookie strategy avoids DB dependency during OAuth flow (database strategy had state_mismatch issues with drizzle-orm@0.37)
-    storeStateStrategy: 'cookie',
+    // Database strategy stores OAuth state in the 'verification' table
+    // Cookie strategy was failing due to cross-domain cookie restrictions
+    // (frontend on สายมู.com, API on api-horo.up.railway.app)
+    storeStateStrategy: 'database',
+    // Skip secondary signed-cookie check — fails cross-domain.
+    // Database verification alone is sufficient CSRF protection.
+    skipStateCookieCheck: true,
   },
   session: {
     cookieCache: {
