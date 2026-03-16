@@ -314,13 +314,17 @@ export const SOLAR_TERM_BOUNDARIES: [number, number][] = [
 
 /**
  * Reference date for Day Pillar calculation
- * January 1, 1900 is known to be 甲子 (jia-zi) day, stem index 0, branch index 0
- * Actually: Jan 1, 1900 = 庚子 (geng-zi), stem index 6, branch index 0
+ * January 1, 1900 = 甲戌 (jia-xu) day
+ * Verified against wannianrili.bmcx.com (万年历):
+ *   Jan 1, 1900 = 甲戌, Jan 1, 2000 = 戊午,
+ *   Feb 4, 2024 = 戊戌, Sep 28, 2024 = 乙未,
+ *   Jan 1, 2024 = 甲子, Jun 15, 1990 = 辛亥,
+ *   Mar 15, 1985 = 癸丑
  */
 export const DAY_REFERENCE = {
-  date: new Date(1900, 0, 1), // Jan 1, 1900
-  stemIndex: 6, // 庚 (geng)
-  branchIndex: 0, // 子 (zi)
+  date: new Date(Date.UTC(1900, 0, 1)), // Jan 1, 1900 (UTC)
+  stemIndex: 0, // 甲 (jia)
+  branchIndex: 10, // 戌 (xu)
 };
 
 /**

@@ -19,11 +19,12 @@ function mod(n: number, m: number): number {
 }
 
 /**
- * Count days between two dates (ignoring time)
+ * Count days between two dates (ignoring time).
+ * Uses UTC methods to avoid timezone-dependent off-by-one errors.
  */
 function daysBetween(a: Date, b: Date): number {
-  const utcA = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
-  const utcB = Date.UTC(b.getFullYear(), b.getMonth(), b.getDate());
+  const utcA = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
+  const utcB = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate());
   return Math.round((utcB - utcA) / (1000 * 60 * 60 * 24));
 }
 
@@ -98,7 +99,7 @@ function calculateMonthPillar(yearStemIndex: number, month: number, day: number)
 // ---- Day Pillar ----
 
 function calculateDayPillar(year: number, month: number, day: number): { stemIndex: number; branchIndex: number } {
-  const targetDate = new Date(year, month - 1, day);
+  const targetDate = new Date(Date.UTC(year, month - 1, day));
   const days = daysBetween(DAY_REFERENCE.date, targetDate);
 
   const stemIndex = mod(DAY_REFERENCE.stemIndex + days, 10);

@@ -142,6 +142,11 @@ if (configErrors.length === 0) {
       .use(onboardingRoutes);
 
     console.log('[STARTUP] Auth and routes loaded successfully');
+
+    // Run one-time data migration (non-blocking, fire-and-forget)
+    import('./migrations/fix-day-branch')
+      .then(({ runFixDayBranchMigration }) => runFixDayBranchMigration())
+      .catch((err) => console.error('[STARTUP] Migration import failed:', err));
   } catch (error) {
     console.error('[STARTUP ERROR] Failed to load auth/routes:', error);
     console.error('[STARTUP] Server will run in degraded mode (health check only)');
