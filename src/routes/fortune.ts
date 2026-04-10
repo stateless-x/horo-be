@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
 import { generateFortuneReading, generateStructuredFortuneReading, generateStructuredDailyReading, generateEnhancedDailyReading } from '../lib/gemini';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, calculateCompatibility } from '../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives, user } from '../../lib/db';
 import { BirthProfileSchema, type BaziChart, type StructuredChartResponse, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../lib/shared';
 import { eq, and, desc, lt, sql, count } from 'drizzle-orm';
@@ -18,7 +18,7 @@ import { buildTodayPrompt } from '../lib/prompts/today';
 import { checkRateLimit, decrementRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { cache, invalidateCache } from '../lib/redis';
 import { validateSessionFromRequest } from '../lib/session';
-import { getTodayBangkokString, getBangkokYear, getYearInBangkok } from '../../lib/shared/utils/date';
+import { getTodayBangkokString, getBangkokDate, getBangkokYear, getYearInBangkok, getBangkokYearMonth, getYearMonthInBangkok } from '../../lib/shared/utils/date';
 
 /**
  * In-flight LLM generation guards.
@@ -413,7 +413,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             profile.birthHour || undefined,
             profile.gender as 'male' | 'female'
           );
-          const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+          // Natal: birth-day planet, personality — fixed for this user forever
+          const natalThaiAstrology = calculateThaiAstrology(profile.birthDate);
+          // Daily: today's day color, lucky number, direction — changes every day
+          const todayBangkok = getBangkokDate();
+          const todayThaiAstrology = calculateTodayThaiAstrology(todayBangkok);
 
           // Get user's display name from the user table (prefer displayName over OAuth name)
           const [userData] = await db
@@ -426,24 +430,26 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           const prompt = buildTodayPrompt(
             userName,
             profile.birthDate,
-            new Date(),
+            todayBangkok,
             baziChart,
-            thaiAstrology,
+            natalThaiAstrology,
             profile.mbtiType,
+            todayThaiAstrology,
           );
 
           const structuredReading = await generateEnhancedDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
 
           // Save to database (content stores JSON string)
+          // luckyColor/Number/Direction reflect TODAY's day, not birth day
           const [newReading] = await db
             .insert(dailyReadings)
             .values({
               profileId: profile.id,
               date: todayStr, // Use YYYY-MM-DD string format
               content: JSON.stringify(structuredReading),
-              luckyColor: thaiAstrology.color,
-              luckyNumber: thaiAstrology.luckyNumber,
-              luckyDirection: thaiAstrology.luckyDirection,
+              luckyColor: todayThaiAstrology.color,
+              luckyNumber: todayThaiAstrology.luckyNumber,
+              luckyDirection: todayThaiAstrology.luckyDirection,
               elementEnergy: baziChart.element,
             })
             .returning();
@@ -563,9 +569,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'Birth profile not found' };
       }
 
-      // Check year boundary BEFORE cache() to ensure Redis L1 is also bypassed
+      // Check month boundary BEFORE cache() to ensure Redis L1 is also bypassed
       const chartCacheKey = `chart:narrative:${profile.id}`;
-      let yearBoundaryExpired = false;
+      let monthBoundaryExpired = false;
 
       const [existingNarrative] = await db
         .select({ updatedAt: chartNarratives.updatedAt, createdAt: chartNarratives.createdAt })
@@ -575,15 +581,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       if (existingNarrative) {
         const lastUpdated = existingNarrative.updatedAt || existingNarrative.createdAt;
-        // Use Bangkok timezone for year boundary (target audience is Thai users)
-        const currentYear = getBangkokYear();
-        const readingYear = getYearInBangkok(lastUpdated);
+        // Use Bangkok timezone so month rollover matches what Thai users see
+        const currentYearMonth = getBangkokYearMonth();
+        const readingYearMonth = getYearMonthInBangkok(lastUpdated);
 
-        if (readingYear < currentYear) {
-          console.log(`[Fortune] GET /chart - Year boundary crossed (reading: ${readingYear}, current: ${currentYear}), will regenerate for profile:`, profile.id);
+        if (readingYearMonth < currentYearMonth) {
+          console.log(`[Fortune] GET /chart - Month boundary crossed (reading: ${readingYearMonth}, current: ${currentYearMonth}), will regenerate for profile:`, profile.id);
           await db.delete(chartNarratives).where(eq(chartNarratives.profileId, profile.id));
           await invalidateCache(chartCacheKey);
-          yearBoundaryExpired = true;
+          monthBoundaryExpired = true;
         }
       }
 
@@ -599,19 +605,18 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           return null;
         }
 
-        // Check if cached data is older than 1 year (365 days)
+        // Check if cached data is from a previous month (30-day fallback safety check)
         // Use updatedAt if available, otherwise fall back to createdAt for backward compatibility
         const lastUpdated = dbCached.updatedAt || dbCached.createdAt;
-        const oneYearAgo = new Date();
-        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        const currentYearMonth = getBangkokYearMonth();
+        const readingYearMonth = getYearMonthInBangkok(lastUpdated);
 
-        if (lastUpdated < oneYearAgo) {
-          console.log('[Fortune] GET /chart - Cached data expired (>1 year old), will regenerate for profile:', profile.id);
-          // Delete expired cache to force regeneration
+        if (readingYearMonth < currentYearMonth) {
+          console.log('[Fortune] GET /chart - Cached data expired (previous month), will regenerate for profile:', profile.id);
           await db
             .delete(chartNarratives)
             .where(eq(chartNarratives.profileId, profile.id));
-          yearBoundaryExpired = true; // System-initiated expiry — bypass rate limit
+          monthBoundaryExpired = true; // System-initiated expiry — bypass rate limit
           return null;
         }
 
@@ -645,12 +650,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       // and the map.set() below runs before any internal await yields
       const generationPromise = (async () => {
         try {
-          // Skip rate limit for system-initiated expiry (year boundary or 365-day)
-          if (yearBoundaryExpired) {
+          // Skip rate limit for system-initiated expiry (month boundary)
+          if (monthBoundaryExpired) {
             console.log('[Fortune] GET /chart - Auto-expiry detected, bypassing rate limit for profile:', profile.id);
             set.headers = {
               ...set.headers,
-              'X-Cache-Status': 'EXPIRED_YEARLY',
+              'X-Cache-Status': 'EXPIRED_MONTHLY',
             };
           } else {
             // Rate limit check is inside the promise so no gap between guard check and set
@@ -699,9 +704,23 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           const pillarInteractions = calculatePillarInteractions(enrichedPillars);
           const thaiAstrology = calculateThaiAstrology(profile.birthDate);
 
-          const now = new Date();
+          const now = getBangkokDate();
           const birthDate = new Date(profile.birthDate);
-          const currentAge = now.getUTCFullYear() - birthDate.getUTCFullYear();
+          // Compute exact age in years, months, days
+          let ageYears = now.getFullYear() - birthDate.getUTCFullYear();
+          let ageMonths = now.getMonth() - birthDate.getUTCMonth();
+          let ageDays = now.getDate() - birthDate.getUTCDate();
+          if (ageDays < 0) {
+            ageMonths -= 1;
+            // Days in the previous month
+            const prevMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+            ageDays += prevMonth.getDate();
+          }
+          if (ageMonths < 0) {
+            ageYears -= 1;
+            ageMonths += 12;
+          }
+          const currentAge = `${ageYears} ปี ${ageMonths} เดือน ${ageDays} วัน`;
 
           const [userData] = await userDataPromise;
           const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
@@ -758,16 +777,18 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           const profileIdForCache = profile.id;
           (async () => {
             try {
+              // Invalidate Redis cache BEFORE writing new DB row so any concurrent
+              // request that arrives between the two operations re-fetches from DB
+              // and gets a cache miss (triggering a fresh DB read) rather than
+              // serving the stale Redis entry.
+              await invalidateCache(chartCacheKey);
               await db
                 .delete(chartNarratives)
                 .where(eq(chartNarratives.profileId, profileIdForCache));
-              await Promise.all([
-                db.insert(chartNarratives).values({
-                  profileId: profileIdForCache,
-                  structuredReading: JSON.stringify(response),
-                }),
-                invalidateCache(chartCacheKey),
-              ]);
+              await db.insert(chartNarratives).values({
+                profileId: profileIdForCache,
+                structuredReading: JSON.stringify(response),
+              });
               console.log('[Fortune] GET /chart - Structured reading cached for profile:', profileIdForCache);
             } catch (err) {
               console.error('[Fortune] GET /chart - Cache write failed:', err);

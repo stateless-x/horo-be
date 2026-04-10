@@ -18,14 +18,18 @@ import { buildMbtiContext } from "../prompts";
  * - Overall reading, category scores, lucky attributes
  * - Warnings and actionable suggestions
  * - Dos/donts for the day
+ *
+ * @param natalThaiAstrology - Thai astrology derived from user's birth date (natal planet, personality)
+ * @param todayThaiAstrology - Thai astrology derived from today's date (today's color, lucky number, direction)
  */
 export function buildTodayPrompt(
   name: string,
   birthDate: Date,
   today: Date,
   baziChart: BaziChart,
-  thaiAstrology: ThaiAstrology,
+  natalThaiAstrology: ThaiAstrology,
   mbtiType?: string | null,
+  todayThaiAstrology?: ThaiAstrology,
 ): string {
   const birthDateStr = birthDate.toLocaleDateString("th-TH", {
     year: "numeric",
@@ -42,22 +46,30 @@ export function buildTodayPrompt(
 
   const mbtiContext = buildMbtiContext(mbtiType);
 
+  // Today's lucky attributes: prefer today's day data, fall back to natal if not provided
+  const daily = todayThaiAstrology ?? natalThaiAstrology;
+
   return `ข้อมูลผู้ขอดวง:
 ชื่อ: ${name}
 วันเกิด: ${birthDateStr}
 วันที่ดูดวง: ${todayStr}
 
-โหราศาสตร์จีน (Bazi):
+โหราศาสตร์จีน (Bazi) — ดวงชะตาแต่กำเนิด:
 - องค์ประกอบหลัก: ${baziChart.element}
 - เจ้าวัน: ${baziChart.dayMaster}
 - เสาสี่ที่: ${baziChart.yearPillar.stem}${baziChart.yearPillar.branch} (ปี), ${baziChart.monthPillar.stem}${baziChart.monthPillar.branch} (เดือน), ${baziChart.dayPillar.stem}${baziChart.dayPillar.branch} (วัน)${baziChart.hourPillar ? `, ${baziChart.hourPillar.stem}${baziChart.hourPillar.branch} (ชั่วโมง)` : ""}
 
-โหราศาสตร์ไทย:
-- วัน: ${thaiAstrology.day}
-- ดาว: ${thaiAstrology.planet}
-- สีประจำวัน: ${thaiAstrology.color}
-- ทิศมงคล: ${thaiAstrology.luckyDirection}
-- เลขมงคล: ${thaiAstrology.luckyNumber}
+โหราศาสตร์ไทย — ดวงชะตาแต่กำเนิด (วันเกิดของเจ้า):
+- วันเกิด: ${natalThaiAstrology.day}
+- ดาวประจำตัว: ${natalThaiAstrology.planet}
+- บุคลิกภาพ: ${natalThaiAstrology.personality}
+
+โหราศาสตร์ไทย — พลังของวันนี้ (${todayStr}):
+- วันนี้: ${daily.day}
+- ดาวแห่งวันนี้: ${daily.planet}
+- สีมงคลของวันนี้: ${daily.color}
+- ทิศมงคลของวันนี้: ${daily.luckyDirection}
+- เลขมงคลของวันนี้: ${daily.luckyNumber}
 ${mbtiContext}
 
 คำสั่ง:

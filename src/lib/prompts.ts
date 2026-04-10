@@ -499,7 +499,7 @@ export function buildStructuredChartPrompt(
   elementProfile: ElementProfile,
   pillarInteractions: PillarInteraction[],
   thaiAstrology: ThaiAstrology,
-  currentAge: number,
+  currentAge: string,
   mbtiType?: string | null,
 ): string {
   const birthDateStr = birthDate.toLocaleDateString("th-TH", {

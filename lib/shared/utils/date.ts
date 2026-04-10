@@ -69,6 +69,23 @@ export function getYearInBangkok(date: Date): number {
 }
 
 /**
+ * Gets the current year-month string (YYYY-MM) in Bangkok timezone.
+ * Use for monthly cache boundary checks.
+ */
+export function getBangkokYearMonth(): string {
+  const d = getBangkokDate();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Gets the year-month string (YYYY-MM) of a given date in Bangkok timezone.
+ */
+export function getYearMonthInBangkok(date: Date): string {
+  const d = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
  * Checks if it's a new day in Bangkok timezone
  */
 export function isMidnightBangkok(): boolean {

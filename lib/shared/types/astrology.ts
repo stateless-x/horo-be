@@ -162,7 +162,7 @@ export const StructuredChartResponseSchema = z.object({
   // Section 1: Hero
   personalityTraits: z.array(z.string()),
   birthDateFormatted: z.string(),
-  currentAge: z.number(),
+  currentAge: z.string(),
 
   // Section 2: Element Profile
   elementProfile: ElementProfileSchema,
