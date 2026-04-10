@@ -301,7 +301,7 @@ export const SOLAR_TERM_BOUNDARIES: [number, number][] = [
   [2, 4], // Month 1 (寅): Start of Spring ~Feb 4
   [3, 6], // Month 2 (卯): Insects Awaken ~Mar 6
   [4, 5], // Month 3 (辰): Clear and Bright ~Apr 5
-  [5, 6], // Month 4 (巳): Start of Summer ~May 6
+  [5, 5], // Month 4 (巳): Start of Summer ~May 5
   [6, 6], // Month 5 (午): Grain in Ear ~Jun 6
   [7, 7], // Month 6 (未): Slight Heat ~Jul 7
   [8, 7], // Month 7 (申): Start of Autumn ~Aug 7
