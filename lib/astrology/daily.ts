@@ -116,11 +116,18 @@ const ELEMENT_NAMES_THAI: Record<Element, string> = {
 /**
  * Calculate today's Bazi day pillar.
  * Returns full pillar data including stem, branch, element, and animal.
+ *
+ * IMPORTANT: This function expects a Date object created from getBangkokDate()
+ * which represents Bangkok local time. We use local getters (not UTC) because
+ * the Date was constructed by parsing a Bangkok locale string.
  */
 export function calculateTodayPillar(today: Date): DailyPillar {
-  const year = today.getUTCFullYear();
-  const month = today.getUTCMonth() + 1;
-  const day = today.getUTCDate();
+  // Use local methods (not UTC) because `today` comes from getBangkokDate()
+  // which creates a Date by parsing a Bangkok timezone string.
+  // Using getUTC* would give the wrong day near midnight.
+  const year = today.getFullYear();
+  const month = today.getMonth() + 1;
+  const day = today.getDate();
 
   const targetDate = new Date(Date.UTC(year, month - 1, day));
   const days = daysBetween(DAY_REFERENCE.date, targetDate);
