@@ -411,6 +411,7 @@ export async function generateEnhancedDailyReading(
         items: { type: "integer" as const },
       },
       luckyColor: { type: "string" as const },
+      luckyDirection: { type: "string" as const },
       luckyMoment: { type: "string" as const },
       warnings: {
         type: "array" as const,
@@ -431,7 +432,7 @@ export async function generateEnhancedDailyReading(
     },
     required: [
       "dailyTheme", "overallScore", "overallReading", "categories", "luckyNumbers", "luckyColor",
-      "luckyMoment", "warnings", "suggestions", "dos", "donts",
+      "luckyDirection", "luckyMoment", "warnings", "suggestions", "dos", "donts",
     ],
   };
 
