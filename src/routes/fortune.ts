@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
 import { generateFortuneReading, generateStructuredFortuneReading, generateStructuredDailyReading, generateEnhancedDailyReading } from '../lib/gemini';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, calculateCompatibility } from '../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, calculateCompatibility, getDailyFortuneContext } from '../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, compatibility, chartNarratives, user } from '../../lib/db';
 import { BirthProfileSchema, type BaziChart, type StructuredChartResponse, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../lib/shared';
 import { eq, and, desc, lt, sql, count } from 'drizzle-orm';
@@ -419,6 +419,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           const todayBangkok = getBangkokDate();
           const todayThaiAstrology = calculateTodayThaiAstrology(todayBangkok);
 
+          // Calculate today's Bazi pillar and element harmony (60-day cycle variation)
+          const dailyContext = getDailyFortuneContext(todayBangkok, baziChart);
+
           // Get user's display name from the user table (prefer displayName over OAuth name)
           const [userData] = await db
             .select({ name: user.name, displayName: user.displayName })
@@ -435,6 +438,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             natalThaiAstrology,
             profile.mbtiType,
             todayThaiAstrology,
+            dailyContext,
           );
 
           const structuredReading = await generateEnhancedDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);

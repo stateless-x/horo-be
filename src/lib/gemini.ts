@@ -384,7 +384,7 @@ export async function generateEnhancedDailyReading(
     type: "object" as const,
     properties: {
       reading: { type: "string" as const },
-      score: { type: "integer" as const },
+      score: { type: "integer" as const, minimum: 1, maximum: 5 },
       tip: { type: "string" as const },
     },
     required: ["reading", "score", "tip"],
@@ -393,6 +393,8 @@ export async function generateEnhancedDailyReading(
   const responseSchema = {
     type: "object" as const,
     properties: {
+      dailyTheme: { type: "string" as const },
+      overallScore: { type: "integer" as const, minimum: 1, maximum: 5 },
       overallReading: { type: "string" as const },
       categories: {
         type: "object" as const,
@@ -428,7 +430,7 @@ export async function generateEnhancedDailyReading(
       },
     },
     required: [
-      "overallReading", "categories", "luckyNumbers", "luckyColor",
+      "dailyTheme", "overallScore", "overallReading", "categories", "luckyNumbers", "luckyColor",
       "luckyMoment", "warnings", "suggestions", "dos", "donts",
     ],
   };
