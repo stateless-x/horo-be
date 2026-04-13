@@ -4,7 +4,10 @@ import { user } from './users';
 export const birthProfiles = pgTable('birth_profiles', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: text('user_id').references(() => user.id).notNull(),
-  birthDate: timestamp('birth_date').notNull(),
+  // IMPORTANT: Use withTimezone to preserve UTC dates correctly across timezones
+  // Without this, dates are interpreted in local timezone when retrieved, causing
+  // Bazi day pillar calculations to be off by 1 day in non-UTC timezones.
+  birthDate: timestamp('birth_date', { withTimezone: true }).notNull(),
   birthHour: integer('birth_hour'), // 0-23, null if unknown
   birthTimePeriod: varchar('birth_time_period', { length: 50 }), // Thai time period name
   gender: varchar('gender', { length: 10 }).notNull(), // 'male' | 'female'
