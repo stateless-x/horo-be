@@ -167,8 +167,15 @@ export async function generateStructuredFortuneReading(
                 month: { type: "string" as const },
                 rating: { type: "integer" as const },
                 note: { type: "string" as const },
+                description: { type: "string" as const },
+                highlights: {
+                  type: "array" as const,
+                  items: { type: "string" as const },
+                },
+                advice: { type: "string" as const },
+                warning: { type: "string" as const },
               },
-              required: ["month", "rating", "note"],
+              required: ["month", "rating", "note", "description"],
             },
           },
           dos: {

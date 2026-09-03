@@ -15,6 +15,11 @@ export const auth = betterAuth({
       displayName: { type: "string", required: false, input: false },
     },
   },
+  // Dev-only: lets /api/dev/login create and sign in a local dev user
+  // without OAuth. Never enabled in production.
+  emailAndPassword: {
+    enabled: config.env !== 'production',
+  },
   socialProviders: {
     google: {
       clientId: config.oauth.google.clientId,

@@ -141,6 +141,12 @@ if (configErrors.length === 0) {
       .use(fortuneRoutes)
       .use(onboardingRoutes);
 
+    if (config.env !== 'production') {
+      const devModule = await import('./routes/dev');
+      app = app.use(devModule.devRoutes);
+      console.log('[STARTUP] Dev login route mounted at /api/dev/login');
+    }
+
     console.log('[STARTUP] Auth and routes loaded successfully');
     
   } catch (error) {

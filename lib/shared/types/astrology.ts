@@ -119,6 +119,10 @@ export const MonthlyHighlightSchema = z.object({
   month: z.string(),
   rating: z.number().min(1).max(5),
   note: z.string(),
+  description: z.string().optional(),
+  highlights: z.array(z.string()).optional(),
+  advice: z.string().optional(),
+  warning: z.string().optional(),
 });
 export type MonthlyHighlight = z.infer<typeof MonthlyHighlightSchema>;
 
