@@ -19,7 +19,7 @@ if (redis) {
 
 // Import auth and routes lazily to avoid blocking on database connection
 let auth: any;
-let fortuneRoutes: any;
+let systemsRoutes: any;
 let onboardingRoutes: any;
 
 let app = new Elysia()
@@ -63,8 +63,8 @@ if (configErrors.length === 0) {
     const authModule = await import('./lib/auth');
     auth = authModule.auth;
 
-    const fortuneModule = await import('./routes/fortune');
-    fortuneRoutes = fortuneModule.fortuneRoutes;
+    const systemsModule = await import('./systems');
+    systemsRoutes = systemsModule.systemsRoutes;
 
     const onboardingModule = await import('./routes/onboarding');
     onboardingRoutes = onboardingModule.onboardingRoutes;
@@ -138,7 +138,7 @@ if (configErrors.length === 0) {
             : 'No rate limit found',
         };
       })
-      .use(fortuneRoutes)
+      .use(systemsRoutes)
       .use(onboardingRoutes);
 
     if (config.env !== 'production') {
