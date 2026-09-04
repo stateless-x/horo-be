@@ -127,18 +127,41 @@ export const config = {
 
 // Validate required environment variables (non-blocking)
 // Store validation errors but don't throw immediately
-const required = [
+//
+// IMPORTANT: `configErrors` gates whether auth + all routes mount at all
+// (see src/index.ts). A var for an unrelated feature (e.g. the LLM
+// provider key) must NOT be added here — doing so once already took down
+// the entire /api/auth/* mount in production (missing GEMINI_API_KEY
+// silently 404'd sign-in, tarot/status, and every other route) because the
+// LLM key and the auth-mount gate were coupled through this one list.
+// Feature-specific requirements (e.g. DEEPSEEK_API_KEY) belong in their
+// own list below (`llmRequired`) and must never contribute to
+// `configErrors`.
+//
+// NOTE — this only decouples the LLM key. The vars below are still one
+// list gating one all-or-nothing mount: e.g. a missing TWITTER_CLIENT_ID
+// alone still unmounts Google login, onboarding, and every fortune route
+// too, not just Twitter sign-in. Fixing that would mean mounting auth
+// whenever DATABASE_URL is present and letting better-auth's own
+// per-provider check handle a missing OAuth pair — a larger change to the
+// mount gate in src/index.ts that's out of scope here.
+const authRequired = [
   'DATABASE_URL',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'TWITTER_CLIENT_ID',
   'TWITTER_CLIENT_SECRET',
+];
+
+// Vars required only for LLM-backed fortune-reading routes (src/lib/llm.ts).
+// Missing these must degrade that feature only — never take down auth.
+const llmRequired = [
   'DEEPSEEK_API_KEY',
 ];
 
 export const configErrors: string[] = [];
 
-for (const key of required) {
+for (const key of authRequired) {
   if (!process.env[key]) {
     const error = `Missing required environment variable: ${key}`;
     console.error(`[CONFIG ERROR] ${error}`);
@@ -146,8 +169,27 @@ for (const key of required) {
   }
 }
 
-// Warn if there are config errors but don't block startup
+// Fail loudly: these vars gate the entire auth + route mount (see
+// src/index.ts). This must never be a silent console.warn again — a
+// missing var here means login is completely broken in production.
 if (configErrors.length > 0) {
-  console.warn('[CONFIG] Server will start but some features may not work due to missing env vars');
-  console.warn('[CONFIG] Missing env vars:', configErrors.join(', '));
+  console.error('[CONFIG ERROR] ==========================================');
+  console.error('[CONFIG ERROR] AUTH AND ALL API ROUTES WILL NOT MOUNT.');
+  console.error('[CONFIG ERROR] Missing env vars:', configErrors.join(', '));
+  console.error('[CONFIG ERROR] Set these in Railway and redeploy.');
+  console.error('[CONFIG ERROR] ==========================================');
+}
+
+export const llmConfigErrors: string[] = [];
+
+for (const key of llmRequired) {
+  if (!process.env[key]) {
+    const error = `Missing required environment variable: ${key}`;
+    console.error(`[CONFIG ERROR] ${error}`);
+    llmConfigErrors.push(error);
+  }
+}
+
+if (llmConfigErrors.length > 0) {
+  console.warn('[CONFIG] LLM-backed fortune-reading routes will fail: missing', llmConfigErrors.join(', '));
 }

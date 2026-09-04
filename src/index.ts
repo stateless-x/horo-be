@@ -1,6 +1,6 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { config, configErrors } from './config';
+import { config, configErrors, llmConfigErrors } from './config';
 import { getRedisClient } from './lib/redis';
 
 console.log('[STARTUP] Starting Horo API...');
@@ -33,18 +33,26 @@ let app = new Elysia()
   .get('/', () => ({
     message: 'Horo API',
     version: '0.1.0',
+    // `status`/`configErrors` reflect only vars that block auth + route
+    // mounting entirely. `llmConfigErrors` is reported separately since
+    // it degrades LLM-backed fortune routes only, not auth/login.
     status: configErrors.length > 0 ? 'degraded' : 'ok',
     configErrors: configErrors.length > 0 ? configErrors : undefined,
+    llmConfigErrors: llmConfigErrors.length > 0 ? llmConfigErrors : undefined,
   }))
   .get('/health', () => {
     // Health check always returns 200 to pass Railway checks
-    // but indicates if there are configuration issues
+    // but indicates if there are configuration issues.
+    // Only `configErrors` (auth/routing) affects overall `status` —
+    // llmConfigErrors is surfaced separately and doesn't mark the app
+    // degraded, since login and every other route still work fine.
     const isHealthy = configErrors.length === 0;
     return {
       status: isHealthy ? 'healthy' : 'degraded',
       timestamp: new Date().toISOString(),
       port: config.port,
       issues: configErrors.length > 0 ? configErrors : undefined,
+      llmIssues: llmConfigErrors.length > 0 ? llmConfigErrors : undefined,
     };
   })
   .onError(({ error, code }) => {
