@@ -1,5 +1,5 @@
 import { Elysia } from 'elysia';
-import { fusionRoutes } from './fusion/routes';
+import { fortuneRoutes } from './fortune/routes';
 import { compatibilityRoutes } from './compatibility/routes';
 import { tarotRoutes } from './tarot/routes';
 
@@ -9,6 +9,6 @@ import { tarotRoutes } from './tarot/routes';
  * in this list.
  */
 export const systemsRoutes = new Elysia()
-  .use(fusionRoutes)
+  .use(fortuneRoutes)
   .use(compatibilityRoutes)
   .use(tarotRoutes);

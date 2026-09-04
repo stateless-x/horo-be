@@ -58,7 +58,7 @@ function getTeaserInflightKey(ip: string, body: any): string {
  * Teaser, chart, daily, profile, user-profile, and update-profile endpoints.
  * All LLM calls are handled server-side for security and consistency.
  */
-export const fusionRoutes = new Elysia({ prefix: '/api/fortune' })
+export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
   // Generate teaser result (BEFORE auth)
   .post('/teaser', async ({ body, set, request }) => {

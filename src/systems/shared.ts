@@ -7,7 +7,7 @@ import { cache } from '../lib/redis';
  * Get birth profile with Redis caching (1 hour TTL).
  * Invalidated when profile is created or updated.
  *
- * Used by both the fusion system (daily/chart/user-profile/update-profile)
+ * Used by both the fortune system (daily/chart/user-profile/update-profile)
  * and the compatibility system (compatibility create/history/get) — the
  * only helper genuinely shared across systems.
  */

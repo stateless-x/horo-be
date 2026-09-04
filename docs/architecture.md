@@ -8,7 +8,7 @@ Each fortune-telling product lives in its own folder under `src/systems/`:
 src/systems/
   shared.ts               # helpers genuinely used by 2+ systems (currently: getCachedProfile)
   index.ts                 # mounts every system's routes; exports systemsRoutes
-  fusion/
+  fortune/
     routes.ts              # Bazi x Thai x MBTI: teaser, chart, daily, profile, user-profile, update-profile
   compatibility/
     routes.ts              # compatibility create/history/get/share
@@ -40,14 +40,14 @@ concern and must never change a path.
 systems (`buildMbtiContext`, `SYSTEM_PROMPT`, `SYSTEM_PROMPT_STRUCTURED`,
 `buildCompatibilityPrompt`, `buildTeaserPrompt`, `buildStructuredChartPrompt`).
 It was NOT split into per-system files: `buildMbtiContext` is consumed by
-both `src/lib/prompts/today.ts` (fusion's daily prompt) and
+both `src/lib/prompts/today.ts` (fortune's daily prompt) and
 `buildCompatibilityPrompt` (compatibility), and `SYSTEM_PROMPT` is consumed
 by `lib/llm.ts` (the DeepSeek client), which sits outside `systems/` entirely. Splitting would
 have meant either duplicating `buildMbtiContext` or introducing a
 cross-directory import just to satisfy a folder boundary — not worth it for
 a 636-line file with one genuinely shared helper.
 
-`src/lib/prompts/today.ts` (fusion's actual daily-reading prompt,
+`src/lib/prompts/today.ts` (fortune's actual daily-reading prompt,
 `buildTodayPrompt`) already lives outside `fortune.ts`/`systems/` and was
 left in place.
 
