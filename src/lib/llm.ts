@@ -86,7 +86,13 @@ async function callDeepSeek(
 
     const data = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number };
     };
+    if (data.usage) {
+      console.log(
+        `[DeepSeek] usage: prompt=${data.usage.prompt_tokens} (cache_hit=${data.usage.prompt_cache_hit_tokens ?? 0}) completion=${data.usage.completion_tokens} model=${config.deepseek.model}`,
+      );
+    }
     const text = data.choices?.[0]?.message?.content;
 
     if (!text) {
@@ -302,7 +308,9 @@ export async function generateStructuredFortuneReading(
       const text = await callDeepSeek(messages, {
         maxTokens: 8000,
         temperature: 0.75,
-        timeoutMs: 30_000,
+        // Structured chart responses run 3-5k output tokens; DeepSeek streams
+        // ~25-60 tok/s, so anything under ~2min guarantees an abort mid-generation.
+        timeoutMs: 180_000,
         jsonMode: true,
       });
 
@@ -437,7 +445,8 @@ export async function generateEnhancedDailyReading(
       const text = await callDeepSeek(messages, {
         maxTokens: 4000,
         temperature: 0.8,
-        timeoutMs: 25_000,
+        // Daily readings run 1.5-3k output tokens — same abort math as above.
+        timeoutMs: 120_000,
         jsonMode: true,
       });
 

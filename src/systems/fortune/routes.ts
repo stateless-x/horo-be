@@ -628,7 +628,14 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       const existingGeneration = inflightChartGenerations.get(profile.id);
       if (existingGeneration) {
         console.log('[Fortune] GET /chart - Reusing in-flight generation for profile:', profile.id);
-        return existingGeneration;
+        // The promise resolves with an { error } sentinel on failure, and its
+        // closure only sets the ORIGINATING request's status — map the sentinel
+        // to THIS request's status or the reuser would return the error as 200.
+        const reusedResult = await existingGeneration;
+        if (reusedResult && typeof reusedResult === 'object' && 'error' in reusedResult) {
+          set.status = (reusedResult as { code?: string }).code === 'RATE_LIMIT_EXCEEDED' ? 429 : 500;
+        }
+        return reusedResult;
       }
 
       // Wrap EVERYTHING (rate limit + generation) in a tracked promise
