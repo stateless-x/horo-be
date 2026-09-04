@@ -55,3 +55,18 @@ left in place.
 
 See [`shared-types.md`](./shared-types.md) for how types are shared between
 `horo-be` and `horo-fe`.
+
+### Worked example: tarot skeleton
+
+`src/systems/tarot/routes.ts` and its `.use(tarotRoutes)` line in
+`src/systems/index.ts` are a minimal, disabled system — no reading logic,
+just `GET /api/tarot/status` returning `{ system: 'tarot', enabled: false }`.
+It exists to prove the folder-plus-registry-line seam described above without
+any user-visible change. Use it as the template when scaffolding a real new
+system: copy the file, replace the prefix and handler, add the registry line.
+
+Note its prefix is `/api/tarot`, not `/api/fortune` — `/status` is a
+system-metadata endpoint, not a fortune reading, so the "URL path
+conventions" rule above doesn't apply to it. A real tarot *reading* endpoint
+(e.g. a card draw or interpretation) would live under `/api/fortune/...`
+like every other system's reading endpoints.
