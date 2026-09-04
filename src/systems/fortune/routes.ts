@@ -1,10 +1,10 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
 import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/llm';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext } from '../../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, lt } from 'drizzle-orm';
 import {
   buildTeaserPrompt,
   buildStructuredChartPrompt,
@@ -404,6 +404,43 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
           // Calculate today's Bazi pillar and element harmony (60-day cycle variation)
           const dailyContext = getDailyFortuneContext(todayBangkok, baziChart);
+          // Deterministic category scores, computed once here and used both to tell
+          // the model what to narrate (buildTodayPrompt) and, below, to overwrite
+          // whatever the model returns — the prompt is guidance, this is the guarantee.
+          const dailyCategoryScores = calculateDailyCategoryScores(
+            dailyContext.elementHarmony,
+            dailyContext.branchClash,
+          );
+
+          const recentRows = await db
+            .select({ date: dailyReadings.date, content: dailyReadings.content })
+            .from(dailyReadings)
+            .where(
+              and(
+                eq(dailyReadings.profileId, profile.id),
+                lt(dailyReadings.date, todayStr),
+              ),
+            )
+            .orderBy(desc(dailyReadings.date))
+            .limit(7);
+
+          const recentReadings = recentRows.flatMap((row) => {
+            try {
+              const parsed = JSON.parse(row.content) as Record<string, unknown>;
+              return [{
+                date: row.date,
+                dailyTheme: typeof parsed.dailyTheme === 'string' ? parsed.dailyTheme : undefined,
+                themeKey: typeof parsed.themeKey === 'string' ? parsed.themeKey : undefined,
+                focusKey: typeof parsed.focusKey === 'string' ? parsed.focusKey : undefined,
+                hookLine: typeof parsed.hookLine === 'string' ? parsed.hookLine : undefined,
+                actionTags: Array.isArray(parsed.actionTags)
+                  ? parsed.actionTags.filter((tag): tag is string => typeof tag === 'string')
+                  : undefined,
+              }];
+            } catch {
+              return [];
+            }
+          });
 
           // Get user's display name from the user table (prefer displayName over OAuth name)
           const [userData] = await db
@@ -422,9 +459,37 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             profile.mbtiType,
             todayThaiAstrology,
             dailyContext,
+            recentReadings,
           );
 
-          const structuredReading = await generateEnhancedDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+          const generatedReading = await generateEnhancedDailyReading(prompt, SYSTEM_PROMPT_STRUCTURED);
+
+          // The LLM narrates the scores but does not choose them — overwrite with the
+          // deterministic values so category scores can't drift between regenerations
+          // of the same day, and can't collapse to a uniform reading (see
+          // docs/deterministic-category-scores.md). generateEnhancedDailyReading
+          // already validates categories.{career,love,finance,health}.{reading,score,tip}
+          // exist before returning, so a malformed shape here is a real bug, not
+          // something to paper over with a synthesized default.
+          const categories = generatedReading.categories as Record<DailyCategory, Record<string, unknown>> | undefined;
+          if (!categories || (['career', 'love', 'finance', 'health'] as DailyCategory[]).some((key) => !categories[key])) {
+            throw new Error('generateEnhancedDailyReading returned malformed categories');
+          }
+          const overwrittenCategories = (['career', 'love', 'finance', 'health'] as DailyCategory[]).reduce(
+            (acc, key) => {
+              acc[key] = { ...categories[key], score: dailyCategoryScores[key] };
+              return acc;
+            },
+            {} as Record<DailyCategory, Record<string, unknown>>,
+          );
+          const overallScore = calculateOverallScore(dailyCategoryScores, dailyContext.elementHarmony);
+
+          const structuredReading = {
+            ...generatedReading,
+            categories: overwrittenCategories,
+            overallScore,
+            contentVersion: 2,
+          };
 
           // Save to database (content stores JSON string)
           // luckyColor/Number/Direction reflect TODAY's day, not birth day
