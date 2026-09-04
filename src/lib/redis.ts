@@ -8,16 +8,18 @@
 import Redis from 'ioredis';
 
 let redis: Redis | null = null;
+let redisInitialized = false;
 
 /**
  * Initialize Redis connection
  * Returns null if REDIS_URL is not set (local development)
  */
 export function getRedisClient(): Redis | null {
-  // If already initialized, return existing client
-  if (redis !== undefined) {
+  // If already initialized, return existing client (memoized — do not reconnect)
+  if (redisInitialized) {
     return redis;
   }
+  redisInitialized = true;
 
   const redisUrl = process.env.REDIS_URL;
 
@@ -80,6 +82,22 @@ export function isRedisAvailable(): boolean {
   return redis !== null && redis.status === 'ready';
 }
 
+// Matches full ISO-8601 datetimes (Drizzle `timestamp()` columns) so JSON.parse can
+// revive them back to Date. Deliberately does NOT match bare `YYYY-MM-DD` strings
+// (Drizzle `date()` columns), which the codebase correctly expects to stay strings.
+const ISO_DATETIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * JSON.parse reviver: turns ISO-8601 datetime strings back into Date objects.
+ * Exported so tests can exercise it without a live Redis connection.
+ */
+export function reviveDates(_key: string, value: unknown): unknown {
+  if (typeof value === 'string' && ISO_DATETIME_PATTERN.test(value)) {
+    return new Date(value);
+  }
+  return value;
+}
+
 /**
  * Get-or-set cache with TTL.
  * If Redis has the key, return it. Otherwise call fetcher, cache the result, return it.
@@ -93,7 +111,7 @@ export async function cache<T>(key: string, ttlSeconds: number, fetcher: () => P
     try {
       const cached = await client.get(key);
       if (cached !== null) {
-        return JSON.parse(cached) as T;
+        return JSON.parse(cached, reviveDates) as T;
       }
     } catch (err) {
       console.error('[Redis Cache] Get error:', err);
