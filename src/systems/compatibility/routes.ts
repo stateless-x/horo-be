@@ -1,15 +1,24 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
-import { generateFortuneReading } from '../../lib/llm';
+import { generateStructuredCompatibilityReading } from '../../lib/llm';
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../../lib/astrology';
 import { compatibility } from '../../../lib/db';
-import { RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../../lib/shared';
+import { CompatibilityStructuredContentSchema, MBTI_TYPES, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../../lib/shared';
 import { eq, and, desc, sql, count } from 'drizzle-orm';
 import { buildCompatibilityPrompt } from '../../lib/prompts';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
 import { cache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
+import { parseCompatibilityContent } from '../../lib/compatibility-content';
+
+function getContentFields(analysis: string) {
+  const structuredContent = parseCompatibilityContent(analysis);
+  return {
+    contentVersion: structuredContent?.contentVersion ?? 1,
+    structuredContent,
+  };
+}
 
 /**
  * Compatibility system: relationship-type-aware compatibility readings
@@ -26,11 +35,19 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
     }
 
     try {
-      const { partnerName, partnerBirthDate, relationshipType } = body as {
+      const { partnerName, partnerBirthDate, relationshipType, partnerMbti } = body as {
         partnerName: string;
         partnerBirthDate: string;
         relationshipType: RelationshipType;
+        partnerMbti?: string;
       };
+
+      // Optional partner MBTI: empty/absent means not provided, otherwise must be one of the 16 codes
+      const partnerMbtiType = partnerMbti?.trim().toUpperCase() || null;
+      if (partnerMbtiType && !MBTI_TYPES.some(m => m.code === partnerMbtiType)) {
+        set.status = 400;
+        return { error: 'MBTI ไม่ถูกต้อง' };
+      }
 
       const userId = session.userId;
       const userProfile = await getCachedProfile(userId);
@@ -68,6 +85,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           relationshipType: existing.relationshipType,
           score: existing.score,
           analysis: existing.analysis,
+          ...getContentFields(existing.analysis),
           strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
           challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
           userElement: existing.userElement,
@@ -155,11 +173,24 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           birthDate: partnerBirthDateObj,
           baziChart: partnerBaziChart,
           thaiAstrology: partnerThaiAstrology,
+          mbtiType: partnerMbtiType,
         },
         relationshipType,
+        {
+          score: compatibilityScore.score,
+          scoreExplanation: compatibilityScore.overallAnalysis,
+          strengths: compatibilityScore.strengths,
+          challenges: compatibilityScore.challenges,
+        },
       );
 
-      const reading = await generateFortuneReading(prompt, tokenLimit);
+      const generatedContent = await generateStructuredCompatibilityReading(prompt, tokenLimit);
+      const structuredContent = CompatibilityStructuredContentSchema.parse({
+        contentVersion: 2,
+        scoreExplanation: compatibilityScore.overallAnalysis,
+        ...generatedContent,
+      });
+      const reading = JSON.stringify(structuredContent);
       const shareToken = Math.random().toString(36).substring(2, 15);
 
       // Save to DB
@@ -193,6 +224,8 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         relationshipType: saved.relationshipType,
         score: saved.score,
         analysis: saved.analysis,
+        contentVersion: 2,
+        structuredContent,
         strengths: compatibilityScore.strengths,
         challenges: compatibilityScore.challenges,
         userElement: saved.userElement,
@@ -230,6 +263,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
               relationshipType: existing.relationshipType,
               score: existing.score,
               analysis: existing.analysis,
+              ...getContentFields(existing.analysis),
               strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
               challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
               userElement: existing.userElement,
@@ -254,6 +288,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       relationshipType: t.Union(
         RELATIONSHIP_TYPES.map(rt => t.Literal(rt))
       ),
+      partnerMbti: t.Optional(t.String()),
     }),
   })
 
@@ -407,6 +442,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         elementHarmony: cached.elementHarmony,
         branchHarmony: cached.branchHarmony,
         analysis: cached.analysis,
+        ...getContentFields(cached.analysis),
         strengths: cached.strengths ? JSON.parse(cached.strengths) : [],
         challenges: cached.challenges ? JSON.parse(cached.challenges) : [],
         userElement: cached.userElement,
@@ -445,6 +481,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         relationshipType: result.relationshipType,
         score: result.score,
         analysis: result.analysis,
+        ...getContentFields(result.analysis),
         strengths: result.strengths ? JSON.parse(result.strengths) : [],
         challenges: result.challenges ? JSON.parse(result.challenges) : [],
         userElement: result.userElement,

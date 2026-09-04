@@ -1,5 +1,9 @@
 import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
+import {
+  CompatibilityStructuredContentSchema,
+  type CompatibilityStructuredContent,
+} from "../../lib/shared";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const MAX_TOKENS_CAP = 8192; // deepseek-chat hard limit
@@ -153,6 +157,71 @@ export async function generateFortuneReading(
   throw new Error(
     `Failed to generate fortune reading after ${maxRetries + 1} attempts: ${lastError?.message}`
   );
+}
+
+const STRUCTURED_COMPATIBILITY_SHAPE = `
+Return valid JSON matching exactly this shape (all fields required):
+{
+  "verdict": string,
+  "chemistry": string,
+  "caution": string,
+  "advice": string
+}
+Do not include the score, markdown, or any text outside this JSON object.`;
+
+/** Generate the compact narrative portion of compatibility v2. */
+export async function generateStructuredCompatibilityReading(
+  prompt: string,
+  maxTokens: number = 1000,
+): Promise<Pick<
+  CompatibilityStructuredContent,
+  'verdict' | 'chemistry' | 'caution' | 'advice'
+>> {
+  let effectivePrompt = `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`;
+  let validationRetryUsed = false;
+  let transportFailures = 0;
+
+  while (true) {
+    let text: string;
+    try {
+      text = await callDeepSeek(
+        [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: effectivePrompt },
+        ],
+        {
+          maxTokens,
+          temperature: 0.7,
+          timeoutMs: 60_000,
+          jsonMode: true,
+        },
+      );
+    } catch (error) {
+      if (!isRetryableError(error) || transportFailures >= 2) throw error;
+      transportFailures += 1;
+      await new Promise(resolve => setTimeout(resolve, 1000 * transportFailures));
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const result = CompatibilityStructuredContentSchema.pick({
+        verdict: true,
+        chemistry: true,
+        caution: true,
+        advice: true,
+      }).safeParse(parsed);
+      if (result.success) return result.data;
+
+      if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
+      validationRetryUsed = true;
+      effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all four fields as valid JSON.`;
+    } catch (error) {
+      if (validationRetryUsed) throw error;
+      validationRetryUsed = true;
+      effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
+    }
+  }
 }
 
 /**
@@ -364,7 +433,11 @@ export async function generateStructuredFortuneReading(
 
 function validateEnhancedDailyReading(data: Record<string, unknown>): string | null {
   const missing = findMissingFields(data, [
+    "themeKey",
+    "focusKey",
+    "actionTags",
     "dailyTheme",
+    "hookLine",
     "overallScore",
     "overallReading",
     "categories",
@@ -373,10 +446,26 @@ function validateEnhancedDailyReading(data: Record<string, unknown>): string | n
     "luckyDirection",
     "luckyMoment",
     "warnings",
-    "suggestions",
     "dos",
     "donts",
   ]);
+
+  if (typeof data.themeKey !== "string" || data.themeKey.length === 0) {
+    missing.push("themeKey(valid string)");
+  }
+  if (!["career", "love", "finance", "health"].includes(String(data.focusKey))) {
+    missing.push("focusKey(valid category)");
+  }
+  if (
+    !Array.isArray(data.actionTags)
+    || data.actionTags.length !== 2
+    || data.actionTags.some((tag) => typeof tag !== "string")
+  ) {
+    missing.push("actionTags(exactly 2 strings)");
+  }
+  if (typeof data.hookLine !== "string" || data.hookLine.length === 0) {
+    missing.push("hookLine(valid string)");
+  }
 
   if (typeof data.categories === "object" && data.categories !== null) {
     const categories = data.categories as Record<string, unknown>;
@@ -402,7 +491,11 @@ function validateEnhancedDailyReading(data: Record<string, unknown>): string | n
 const STRUCTURED_ENHANCED_DAILY_SHAPE = `
 Return valid JSON matching exactly this shape (all fields required):
 {
+  "themeKey": string,
+  "focusKey": "career" | "love" | "finance" | "health",
+  "actionTags": string[],
   "dailyTheme": string,
+  "hookLine": string,
   "overallScore": integer (1-5),
   "overallReading": string,
   "categories": {
@@ -416,7 +509,6 @@ Return valid JSON matching exactly this shape (all fields required):
   "luckyDirection": string,
   "luckyMoment": string,
   "warnings": string[],
-  "suggestions": string[],
   "dos": string[],
   "donts": string[]
 }
@@ -424,7 +516,8 @@ Do not include any text outside this JSON object.`;
 
 /**
  * Generate an enhanced daily reading with MBTI integration using DeepSeek's JSON mode.
- * Extended schema includes luckyNumbers, luckyColor, warnings, and suggestions.
+ * Extended schema includes a shareable hook, novelty metadata, lucky attributes,
+ * warnings, and actions.
  */
 export async function generateEnhancedDailyReading(
   prompt: string,
@@ -443,9 +536,10 @@ export async function generateEnhancedDailyReading(
       ];
 
       const text = await callDeepSeek(messages, {
-        maxTokens: 4000,
-        temperature: 0.8,
-        // Daily readings run 1.5-3k output tokens — same abort math as above.
+        maxTokens: 3000,
+        temperature: 0.75,
+        // The v2 daily contract is deliberately compact, while retaining
+        // enough headroom for Thai tokenization and valid closing JSON.
         timeoutMs: 120_000,
         jsonMode: true,
       });

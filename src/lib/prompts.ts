@@ -132,8 +132,15 @@ export function buildCompatibilityPrompt(
     birthDate: Date;
     baziChart: BaziChart;
     thaiAstrology: ThaiAstrology;
+    mbtiType?: string | null;
   },
   relationshipType: RelationshipType = 'romantic',
+  scoreContext: {
+    score: number;
+    scoreExplanation: string;
+    strengths: string[];
+    challenges: string[];
+  },
 ): string {
   const mbtiGuidance = person1.mbtiType ? getMbtiActionableGuidance(person1.mbtiType) : null;
 
@@ -165,6 +172,12 @@ export function buildCompatibilityPrompt(
     p2Element: person2.baziChart.element,
     p2ThaiDay: person2.thaiAstrology.day,
     p2Planet: person2.thaiAstrology.planet,
+    p2Mbti: Boolean(person2.mbtiType),
+    p2MbtiType: person2.mbtiType ?? '',
+    score: scoreContext.score,
+    scoreExplanation: scoreContext.scoreExplanation,
+    deterministicStrengths: scoreContext.strengths.map(item => `- ${item}`).join('\n'),
+    deterministicChallenges: scoreContext.challenges.map(item => `- ${item}`).join('\n'),
     mbtiContext: buildMbtiContext(person1.mbtiType),
     mbtiGuidanceBlock,
     focusBlock: RELATIONSHIP_FOCUS[relationshipType],
