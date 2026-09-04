@@ -9,8 +9,10 @@ FROM base AS deps
 # Copy package files
 COPY package.json bun.lock* ./
 
-# Install dependencies
-RUN bun install --frozen-lockfile || bun install
+# Install dependencies. NO `|| bun install` fallback: a lockfile mismatch must
+# FAIL the build, not silently re-resolve floating ranges to newer versions
+# (that once floated better-auth past its pin and broke OAuth via a schema drift).
+RUN bun install --frozen-lockfile
 
 # Build stage
 FROM base AS builder
