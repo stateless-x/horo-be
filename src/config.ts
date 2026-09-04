@@ -26,8 +26,9 @@ export const config = {
     },
   },
 
-  gemini: {
-    apiKey: process.env.GEMINI_API_KEY || '',
+  deepseek: {
+    apiKey: process.env.DEEPSEEK_API_KEY || '',
+    model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
   },
 
   frontend: {
@@ -132,7 +133,7 @@ const required = [
   'GOOGLE_CLIENT_SECRET',
   'TWITTER_CLIENT_ID',
   'TWITTER_CLIENT_SECRET',
-  'GEMINI_API_KEY',
+  'DEEPSEEK_API_KEY',
 ];
 
 export const configErrors: string[] = [];

@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
-import { generateFortuneReading } from '../../lib/gemini';
+import { generateFortuneReading } from '../../lib/llm';
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../../lib/astrology';
 import { compatibility } from '../../../lib/db';
 import { RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../../lib/shared';

@@ -24,7 +24,7 @@ importing route files directly.
 2. Add it to the `.use(...)` chain in `src/systems/index.ts`.
 3. If a helper is used by 2+ systems, move it to `src/systems/shared.ts`.
    Otherwise keep helpers local to the system's own `routes.ts`.
-4. Don't touch `lib/gemini.ts`, `lib/rate-limit.ts`, `lib/astrology/**`, or
+4. Don't touch `lib/llm.ts`, `lib/rate-limit.ts`, `lib/astrology/**`, or
    auth — those are shared infrastructure, not system-specific.
 
 ### URL path conventions
@@ -42,7 +42,7 @@ systems (`buildMbtiContext`, `SYSTEM_PROMPT`, `SYSTEM_PROMPT_STRUCTURED`,
 It was NOT split into per-system files: `buildMbtiContext` is consumed by
 both `src/lib/prompts/today.ts` (fusion's daily prompt) and
 `buildCompatibilityPrompt` (compatibility), and `SYSTEM_PROMPT` is consumed
-by `lib/gemini.ts`, which sits outside `systems/` entirely. Splitting would
+by `lib/llm.ts` (the DeepSeek client), which sits outside `systems/` entirely. Splitting would
 have meant either duplicating `buildMbtiContext` or introducing a
 cross-directory import just to satisfy a folder boundary — not worth it for
 a 636-line file with one genuinely shared helper.

@@ -456,7 +456,7 @@ You are the voice of fate itself. Write accordingly.`;
 
 /**
  * System prompt variant for structured JSON output
- * Used with Gemini's responseMimeType: "application/json"
+ * Used with the LLM client's JSON output mode (see lib/llm.ts)
  */
 export const SYSTEM_PROMPT_STRUCTURED = `You are a mystical Thai fortune teller who combines Chinese Astrology (Bazi/四柱命理) and Thai Astrology (โหราศาสตร์ไทย).
 

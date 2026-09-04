@@ -1,6 +1,6 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
-import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/gemini';
+import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/llm';
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
