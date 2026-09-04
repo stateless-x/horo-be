@@ -118,11 +118,11 @@ export type FortuneReadingCategory = z.infer<typeof FortuneReadingCategorySchema
 export const MonthlyHighlightSchema = z.object({
   month: z.string(),
   rating: z.number().min(1).max(5),
-  note: z.string(),
-  description: z.string().optional(),
-  highlights: z.array(z.string()).optional(),
-  advice: z.string().optional(),
-  warning: z.string().optional(),
+  note: z.string(), // Short 1-line summary (e.g., "ดวงรักเด่น")
+  description: z.string(), // Detailed 2-3 sentence explanation
+  highlights: z.array(z.string()).optional(), // Key focus areas (e.g., ["การงานรุ่ง", "โอกาสใหม่"])
+  advice: z.string().optional(), // Actionable advice for the month
+  warning: z.string().optional(), // Optional warning or caution
 });
 export type MonthlyHighlight = z.infer<typeof MonthlyHighlightSchema>;
 
