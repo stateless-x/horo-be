@@ -332,7 +332,7 @@ Return valid JSON matching exactly this shape (all fields required):
     "luckyDayTooltip": string
   },
   "fortuneReadings": [
-    { "key": string, "score": integer, "reading": string, "tips": string[], "warnings": string[] }
+    { "key": string, "score": integer (0-100, provided; copy it exactly), "reading": string, "tips": string[], "warnings": string[] }
   ],
   "recommendations": {
     "luckyColors": string[],
