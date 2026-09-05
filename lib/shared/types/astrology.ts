@@ -113,6 +113,14 @@ export const FortuneReadingCategorySchema = z.object({
    * them on read (see systems/fortune/routes.ts).
    */
   score: z.number().min(1).max(100),
+  /**
+   * One short line that previews this category for the reading month, in the
+   * เจ้า voice. Shown on the collapsed row, where tips[0] used to be clipped.
+   * The prompt asks for at most 40 Thai characters; the cap here is in UTF-16
+   * code units, where Thai vowel signs and tone marks each count separately.
+   * Optional so narratives cached before this field still parse.
+   */
+  hook: z.string().max(60).optional(),
   reading: z.string(),
   tips: z.array(z.string()),
   warnings: z.array(z.string()),
@@ -194,5 +202,17 @@ export const StructuredChartResponseSchema = z.object({
 
   // Section 6: Recommendations
   recommendations: RecommendationsSchema,
+
+  /**
+   * The month this narrative was written for, recorded at generation time.
+   * Computed from the Bangkok clock (getReadingPeriod), never narrated by the
+   * model. Optional so narratives cached before this field still parse; the
+   * frontend falls back to the clock when it is absent.
+   */
+  readingPeriod: z.object({
+    yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    monthTh: z.string(),
+    yearBe: z.number().int(),
+  }).optional(),
 });
 export type StructuredChartResponse = z.infer<typeof StructuredChartResponseSchema>;

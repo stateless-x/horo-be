@@ -235,7 +235,11 @@ function findMissingFields(obj: Record<string, unknown>, requiredFields: string[
   return requiredFields.filter((field) => !(field in obj));
 }
 
-function validateStructuredFortuneReading(data: Record<string, unknown>): string | null {
+/**
+ * Exported for tests: a generation missing a required per-category field (such
+ * as the hook) must trigger the validation retry rather than reaching the DB.
+ */
+export function validateStructuredFortuneReading(data: Record<string, unknown>): string | null {
   const requiredTop = [
     "personalityTraits",
     "pillarInterpretations",
@@ -277,7 +281,7 @@ function validateStructuredFortuneReading(data: Record<string, unknown>): string
         missing.push(`fortuneReadings[${i}]`);
         return;
       }
-      for (const field of ["key", "score", "reading", "tips", "warnings"]) {
+      for (const field of ["key", "score", "hook", "reading", "tips", "warnings"]) {
         if (!(field in (item as object))) missing.push(`fortuneReadings[${i}].${field}`);
       }
     });
@@ -332,7 +336,7 @@ Return valid JSON matching exactly this shape (all fields required):
     "luckyDayTooltip": string
   },
   "fortuneReadings": [
-    { "key": string, "score": integer (0-100, provided; copy it exactly), "reading": string, "tips": string[], "warnings": string[] }
+    { "key": string, "score": integer (0-100, provided; copy it exactly), "hook": string (one short line, max 40 Thai characters, previews the category for the reading month), "reading": string, "tips": string[], "warnings": string[] }
   ],
   "recommendations": {
     "luckyColors": string[],

@@ -1,4 +1,4 @@
-import { BE_OFFSET } from '../constants/thai-time';
+import { BE_OFFSET, THAI_MONTHS_FULL } from '../constants/thai-time';
 
 /**
  * Converts Gregorian year to Buddhist Era year
@@ -91,4 +91,29 @@ export function getYearMonthInBangkok(date: Date): string {
 export function isMidnightBangkok(): boolean {
   const bangkokDate = getBangkokDate();
   return bangkokDate.getHours() === 0 && bangkokDate.getMinutes() === 0;
+}
+
+/**
+ * The month a chart narrative is written for.
+ *
+ * A chart regenerates when the Bangkok-time month rolls over, so the month has
+ * to travel with the narrative: the model is told which month to write about,
+ * and the stored response records it. Without this the frontend can only guess
+ * the period from the clock, which is wrong for any chart read after its month.
+ *
+ * yearMonth is the Gregorian regeneration key and matches getBangkokYearMonth.
+ */
+export function getReadingPeriod(date: Date = getBangkokDate()): {
+  yearMonth: string;
+  monthTh: string;
+  yearBe: number;
+} {
+  const monthIndex = date.getMonth();
+  const year = date.getFullYear();
+
+  return {
+    yearMonth: `${year}-${String(monthIndex + 1).padStart(2, '0')}`,
+    monthTh: THAI_MONTHS_FULL[monthIndex],
+    yearBe: toBuddhistYear(year),
+  };
 }

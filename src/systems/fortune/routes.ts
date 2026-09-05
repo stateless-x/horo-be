@@ -14,7 +14,7 @@ import { buildTodayPrompt } from '../../lib/prompts/today';
 import { checkRateLimit, decrementRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
 import { cache, invalidateCache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
-import { getTodayBangkokString, getBangkokDate, getBangkokYearMonth, getYearMonthInBangkok } from '../../../lib/shared/utils/date';
+import { getTodayBangkokString, getBangkokDate, getBangkokYearMonth, getYearMonthInBangkok, getReadingPeriod } from '../../../lib/shared/utils/date';
 import { getCachedProfile } from '../shared';
 
 /**
@@ -807,6 +807,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             ageMonths += 12;
           }
           const currentAge = `${ageYears} ปี ${ageMonths} เดือน ${ageDays} วัน`;
+          // Same Bangkok clock as currentAge, so the month the model is told to
+          // write about is the month this response is stamped with.
+          const readingPeriod = getReadingPeriod(now);
 
           const [userData] = await userDataPromise;
           const userName = userData?.displayName || userData?.name || 'ผู้มาเยือน';
@@ -824,6 +827,8 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             currentAge,
             profile.mbtiType,
             chartCategoryScores,
+            readingPeriod,
+            now,
           );
 
           const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
@@ -864,6 +869,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
               chartCategoryScores,
             ),
             recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
+            readingPeriod,
           };
 
           // ---- Cache in background (non-blocking) ----

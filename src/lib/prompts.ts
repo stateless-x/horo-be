@@ -13,6 +13,8 @@
 import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType } from "../../lib/shared";
 import type { FortuneCategoryKey } from "../../lib/shared/types/astrology";
 import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance } from "../../lib/shared";
+import { getReadingPeriod, toBuddhistYear } from "../../lib/shared/utils/date";
+import { THAI_MONTHS_FULL } from "../../lib/shared/constants/thai-time";
 import { renderPrompt } from "./prompts/render";
 
 import systemMd from "./prompts/md/system.md" with { type: "text" };
@@ -210,6 +212,13 @@ export function buildStructuredChartPrompt(
    * in so the model narrates to the number instead of inventing its own.
    */
   categoryScores?: Record<FortuneCategoryKey, number>,
+  /**
+   * The month this narrative is written for (getReadingPeriod), plus today's
+   * date. A model has no clock, so without these it lands its month references
+   * on arbitrary months and the chart reads as stale the day it is generated.
+   */
+  readingPeriod?: { yearMonth: string; monthTh: string; yearBe: number },
+  today: Date = new Date(),
 ): string {
   const birthDateStr = birthDate.toLocaleDateString("th-TH", {
     year: "numeric",
@@ -227,7 +236,14 @@ export function buildStructuredChartPrompt(
     thaiAstrology,
   };
 
+  const period = readingPeriod ?? getReadingPeriod();
+  const todayTh = `${today.getDate()} ${THAI_MONTHS_FULL[today.getMonth()]} ${toBuddhistYear(today.getFullYear())}`;
+
   return renderPrompt(chartMd, {
+    readingMonthTh: period.monthTh,
+    readingYearBe: period.yearBe,
+    readingYearMonth: period.yearMonth,
+    todayTh,
     mbti: Boolean(mbtiType),
     mbtiType: mbtiType ?? '',
     // Compact JSON: pretty-print whitespace only inflates the token bill.
