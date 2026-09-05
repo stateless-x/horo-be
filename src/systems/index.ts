@@ -2,6 +2,7 @@ import { Elysia } from 'elysia';
 import { fortuneRoutes } from './fortune/routes';
 import { compatibilityRoutes } from './compatibility/routes';
 import { tarotRoutes } from './tarot/routes';
+import { contentRoutes } from './content/routes';
 
 /**
  * All fortune-telling systems, mounted together.
@@ -11,4 +12,5 @@ import { tarotRoutes } from './tarot/routes';
 export const systemsRoutes = new Elysia()
   .use(fortuneRoutes)
   .use(compatibilityRoutes)
-  .use(tarotRoutes);
+  .use(tarotRoutes)
+  .use(contentRoutes);

@@ -3,6 +3,7 @@ export * from './types/user';
 export * from './types/astrology';
 export * from './types/reading';
 export * from './types/compatibility';
+export * from './types/loading-lines';
 
 // Constants
 export * from './constants/thai-time';
