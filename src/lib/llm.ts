@@ -318,6 +318,21 @@ export function validateStructuredFortuneReading(data: Record<string, unknown>):
   return missing.length > 0 ? `Missing required fields: ${missing.join(", ")}` : null;
 }
 
+/**
+ * Fields the validator asks for but the schema marks optional and the frontend
+ * renders a fallback for: the reading hooks and the pillar summary/tips/warning.
+ * Missing them is worth ONE retry, not a failed generation.
+ */
+const SOFT_FIELD_RE = /^(fortuneReadings\[\d+\]\.hook|pillarInterpretations\[\d+\]\.(summary|tips|warning))$/;
+
+/** True when every field named in a validator message is a soft field. */
+export function isSoftValidationError(message: string): boolean {
+  const prefix = "Missing required fields: ";
+  if (!message.startsWith(prefix)) return false;
+  const fields = message.slice(prefix.length).split(", ").map((f) => f.trim()).filter(Boolean);
+  return fields.length > 0 && fields.every((f) => SOFT_FIELD_RE.test(f));
+}
+
 /** Shape description appended to the prompt so DeepSeek's json_object mode
  * (which has no server-side schema enforcement, unlike Gemini's responseSchema)
  * knows exactly what to produce. Faithful translation of gemini.ts's responseSchema. */
@@ -398,7 +413,7 @@ export async function generateStructuredFortuneReading(
           }). Return ONLY valid JSON, no markdown fences, no extra text.`;
           continue;
         }
-        throw new Error("Empty response from DeepSeek");
+        throw new Error("Structured reading was not valid JSON after retry");
       }
 
       const validationError = validateStructuredFortuneReading(parsed);
@@ -408,7 +423,14 @@ export async function generateStructuredFortuneReading(
           effectivePrompt = `${effectivePrompt}\n\nYour previous response was invalid: ${validationError}. Return the complete JSON object with all required fields.`;
           continue;
         }
-        throw new Error("Empty response from DeepSeek");
+        // Second miss. If only optional-in-schema fields are absent, ship the
+        // reading: the frontend falls back for each of them, and failing the
+        // whole chart over a missing hook would show the user an error.
+        if (isSoftValidationError(validationError)) {
+          console.warn(`[DeepSeek] Accepting structured reading with soft fields missing after retry: ${validationError}`);
+          return parsed;
+        }
+        throw new Error(`Structured reading failed validation after retry: ${validationError}`);
       }
 
       return parsed;

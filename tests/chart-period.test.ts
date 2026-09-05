@@ -8,7 +8,7 @@ import {
 import { calculateThaiAstrology } from '../lib/astrology';
 import { getReadingPeriod } from '../lib/shared/utils/date';
 import { buildStructuredChartPrompt } from '../src/lib/prompts';
-import { validateStructuredFortuneReading } from '../src/lib/llm';
+import { validateStructuredFortuneReading, isSoftValidationError } from '../src/lib/llm';
 
 describe('getReadingPeriod', () => {
   test('stamps a September date with the Thai month and BE year', () => {
@@ -200,5 +200,21 @@ describe('chart prompt pillar content', () => {
     const section = pillarSectionOfPrompt();
     expect(section).toContain('warning');
     expect(section).toContain('120 ตัวอักษรไทย');
+  });
+});
+
+
+describe('isSoftValidationError', () => {
+  test('missing hooks and pillar extras are soft', () => {
+    expect(isSoftValidationError('Missing required fields: fortuneReadings[2].hook, pillarInterpretations[0].warning, pillarInterpretations[3].tips')).toBe(true);
+  });
+  test('a missing hard field is not soft, even alongside soft ones', () => {
+    expect(isSoftValidationError('Missing required fields: fortuneReadings[2].hook, fortuneReadings[2].reading')).toBe(false);
+    expect(isSoftValidationError('Missing required fields: pillarInterpretations[1].interpretation')).toBe(false);
+    expect(isSoftValidationError('Missing required fields: recommendations.monthlyHighlights[0].month')).toBe(false);
+  });
+  test('non-validator messages are not soft', () => {
+    expect(isSoftValidationError('Empty response from DeepSeek')).toBe(false);
+    expect(isSoftValidationError('')).toBe(false);
   });
 });
