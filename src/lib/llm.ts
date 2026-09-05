@@ -496,13 +496,13 @@ Return valid JSON matching exactly this shape (all fields required):
   "actionTags": string[],
   "dailyTheme": string,
   "hookLine": string,
-  "overallScore": integer (1-5),
+  "overallScore": integer (0-100),
   "overallReading": string,
   "categories": {
-    "career": { "reading": string, "score": integer (1-5), "tip": string },
-    "love": { "reading": string, "score": integer (1-5), "tip": string },
-    "finance": { "reading": string, "score": integer (1-5), "tip": string },
-    "health": { "reading": string, "score": integer (1-5), "tip": string }
+    "career": { "reading": string, "score": integer (0-100), "tip": string },
+    "love": { "reading": string, "score": integer (0-100), "tip": string },
+    "finance": { "reading": string, "score": integer (0-100), "tip": string },
+    "health": { "reading": string, "score": integer (0-100), "tip": string }
   },
   "luckyNumbers": integer[],
   "luckyColor": string,

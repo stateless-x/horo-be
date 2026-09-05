@@ -10,6 +10,7 @@ import {
   type ElementHarmony,
   type ElementRelationship,
   type BranchClash,
+  normalizeLegacyDailyScore,
 } from '../lib/astrology';
 import type { Element } from '../lib/shared';
 
@@ -67,7 +68,7 @@ describe('daily category scores', () => {
     expect(uniformCount).toBe(0);
   });
 
-  test('bounded — every score is an integer in 1..5 across the full sweep', () => {
+  test('bounded — every score is an integer in 1..100 across the full sweep', () => {
     for (const favorability of FAVORABILITIES) {
       for (const relationship of RELATIONSHIPS) {
         for (const clashType of CLASH_STATES) {
@@ -75,7 +76,7 @@ describe('daily category scores', () => {
           for (const value of Object.values(scores)) {
             expect(Number.isInteger(value)).toBe(true);
             expect(value).toBeGreaterThanOrEqual(1);
-            expect(value).toBeLessThanOrEqual(5);
+            expect(value).toBeLessThanOrEqual(100);
           }
         }
       }
@@ -180,30 +181,30 @@ describe('daily category scores', () => {
     for (const value of Object.values(scores)) {
       expect(Number.isInteger(value)).toBe(true);
       expect(value).toBeGreaterThanOrEqual(1);
-      expect(value).toBeLessThanOrEqual(5);
+      expect(value).toBeLessThanOrEqual(100);
     }
   });
 });
 
 describe('calculateOverallScore', () => {
-  test('a challenging day never displays more than 2 of 5', () => {
+  test('a challenging day never displays more than 45 of 100', () => {
     for (const relationship of RELATIONSHIPS) {
       for (const clashType of CLASH_STATES) {
         const eh = harmony(relationship, 'challenging');
         const overall = calculateOverallScore(calculateDailyCategoryScores(eh, clash(clashType)), eh);
-        expect(overall).toBeLessThanOrEqual(2);
+        expect(overall).toBeLessThanOrEqual(45);
         expect(overall).toBeGreaterThanOrEqual(1);
       }
     }
   });
 
-  test('a very_favorable day never displays fewer than 4 of 5', () => {
+  test('a very_favorable day never displays fewer than 75 of 100', () => {
     for (const relationship of RELATIONSHIPS) {
       for (const clashType of CLASH_STATES) {
         const eh = harmony(relationship, 'very_favorable');
         const overall = calculateOverallScore(calculateDailyCategoryScores(eh, clash(clashType)), eh);
-        expect(overall).toBeGreaterThanOrEqual(4);
-        expect(overall).toBeLessThanOrEqual(5);
+        expect(overall).toBeGreaterThanOrEqual(75);
+        expect(overall).toBeLessThanOrEqual(100);
       }
     }
   });
@@ -222,7 +223,7 @@ describe('calculateOverallScore', () => {
     expect(Math.max(...worst)).toBeLessThan(Math.min(...best));
   });
 
-  test('is bounded 1-5 and integral for every favorability', () => {
+  test('is bounded 1-100 and integral for every favorability', () => {
     for (const favorability of FAVORABILITIES) {
       for (const relationship of RELATIONSHIPS) {
         for (const clashType of CLASH_STATES) {
@@ -230,9 +231,23 @@ describe('calculateOverallScore', () => {
           const overall = calculateOverallScore(calculateDailyCategoryScores(eh, clash(clashType)), eh);
           expect(Number.isInteger(overall)).toBe(true);
           expect(overall).toBeGreaterThanOrEqual(1);
-          expect(overall).toBeLessThanOrEqual(5);
+          expect(overall).toBeLessThanOrEqual(100);
         }
       }
+    }
+  });
+});
+
+describe('normalizeLegacyDailyScore', () => {
+  test('upgrades cached 1-5 scores onto the 0-100 scale', () => {
+    expect(normalizeLegacyDailyScore(1)).toBe(20);
+    expect(normalizeLegacyDailyScore(3)).toBe(60);
+    expect(normalizeLegacyDailyScore(5)).toBe(100);
+  });
+
+  test('leaves already-migrated scores alone', () => {
+    for (const value of [22, 38, 62, 78, 89, 100]) {
+      expect(normalizeLegacyDailyScore(value)).toBe(value);
     }
   });
 });

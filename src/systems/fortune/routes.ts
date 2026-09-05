@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
 import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/llm';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, type DailyCategory } from '../../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
 import { eq, and, desc, lt } from 'drizzle-orm';
@@ -341,6 +341,16 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         let structuredContent = null;
         try {
           structuredContent = JSON.parse(existingReading.content);
+          // Rows written under the old 1-5 scale would render as ~3% bars.
+          if (structuredContent && typeof structuredContent === 'object') {
+            if (typeof structuredContent.overallScore === 'number') {
+              structuredContent.overallScore = normalizeLegacyDailyScore(structuredContent.overallScore);
+            }
+            for (const cat of Object.values(structuredContent.categories ?? {})) {
+              const c = cat as { score?: number };
+              if (typeof c?.score === 'number') c.score = normalizeLegacyDailyScore(c.score);
+            }
+          }
         } catch {
           // Legacy plain text content - return as-is
         }

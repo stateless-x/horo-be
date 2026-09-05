@@ -3,21 +3,24 @@ import type { ElementRelationship, ElementHarmony, BranchClash } from './daily';
 export type DailyCategory = 'career' | 'love' | 'finance' | 'health';
 
 /**
- * Base score per element-harmony favorability level. Chosen so that after adding
- * the widest affinity/clash swings below, every combination still lands inside
- * 1..5 without saturating (see ELEMENT_AFFINITY and BRANCH_MODIFIER comments).
+ * Base score per element-harmony favorability level, on 0-100. Chosen so that
+ * after the widest affinity/clash swings below, every combination still lands
+ * inside 1..100 without saturating at either end.
+ *
+ * favorable and neutral differ here (they did not on the old 1-5 scale, where
+ * both rounded to 3) — the wider range is enough to separate them honestly.
  */
 const BASE_SCORE: Record<ElementHarmony['favorability'], number> = {
-  very_favorable: 4,
-  favorable: 3,
-  neutral: 3,
-  challenging: 2,
+  very_favorable: 78,
+  favorable: 64,
+  neutral: 58,
+  challenging: 38,
 };
 
 /**
  * Per-category, per-element-relationship affinity, added to the base score.
- * Values are 0 or +1 only — kept small and non-negative so BASE_SCORE.challenging
- * (2) never needs to go below 1 after the branch-clash penalty is also applied.
+ * Values are 0 or +11 only — non-negative so BASE_SCORE.challenging (38) never
+ * needs to go below 1 after the branch-clash penalty is also applied.
  *
  * Each column encodes which categories the day's element relationship favors:
  * - career (metal — decisiveness, structure): favored when the user's day
@@ -36,9 +39,9 @@ const BASE_SCORE: Record<ElementHarmony['favorability'], number> = {
  */
 const ELEMENT_AFFINITY: Record<DailyCategory, Record<ElementRelationship, number>> = {
   career: {
-    producing: 1,
-    produced_by: 1,
-    controlling: 1,
+    producing: 11,
+    produced_by: 11,
+    controlling: 11,
     controlled_by: 0,
     same: 0,
     neutral: 0,
@@ -47,25 +50,25 @@ const ELEMENT_AFFINITY: Record<DailyCategory, Record<ElementRelationship, number
     producing: 0,
     produced_by: 0,
     controlling: 0,
-    controlled_by: 1,
-    same: 1,
-    neutral: 1,
+    controlled_by: 11,
+    same: 11,
+    neutral: 11,
   },
   love: {
     producing: 0,
-    produced_by: 1,
+    produced_by: 11,
     controlling: 0,
     controlled_by: 0,
-    same: 1,
+    same: 11,
     neutral: 0,
   },
   health: {
-    producing: 1,
+    producing: 11,
     produced_by: 0,
-    controlling: 1,
-    controlled_by: 1,
+    controlling: 11,
+    controlled_by: 11,
     same: 0,
-    neutral: 1,
+    neutral: 11,
   },
 };
 
@@ -78,10 +81,10 @@ type ClashState = 'none' | 'year' | 'day';
  * Categories untouched by the clash type get no penalty.
  */
 const BRANCH_MODIFIER: Record<DailyCategory, Record<ClashState, number>> = {
-  career: { none: 0, year: -1, day: 0 },
-  finance: { none: 0, year: -1, day: 0 },
-  love: { none: 0, year: 0, day: -1 },
-  health: { none: 0, year: 0, day: -1 },
+  career: { none: 0, year: -16, day: 0 },
+  finance: { none: 0, year: -16, day: 0 },
+  love: { none: 0, year: 0, day: -16 },
+  health: { none: 0, year: 0, day: -16 },
 };
 
 function clashState(branchClash: BranchClash): ClashState {
@@ -90,7 +93,7 @@ function clashState(branchClash: BranchClash): ClashState {
 }
 
 /**
- * Calculate a deterministic 1-5 score for one daily category from the
+ * Calculate a deterministic 0-100 score for one daily category from the
  * element-harmony relationship and any Earthly Branch clash. Same inputs
  * always yield the same score — no LLM sampling involved.
  */
@@ -104,7 +107,7 @@ export function calculateCategoryScore(
     ELEMENT_AFFINITY[category][elementHarmony.relationship] +
     BRANCH_MODIFIER[category][clashState(branchClash)];
 
-  return Math.max(1, Math.min(5, Math.round(raw)));
+  return Math.max(1, Math.min(100, Math.round(raw)));
 }
 
 /**
@@ -126,20 +129,20 @@ export function calculateDailyCategoryScores(
 }
 
 /**
- * Bounds for the headline overall score, per favorability. Without these the
- * rounded mean lets a `challenging` day display 3/5 — the same as a good day —
- * because a 2.5 mean rounds up. Capping keeps the hero score honest while
- * leaving the within-tier variation the mean provides.
+ * Bounds for the headline overall score, per favorability. Without these a
+ * challenging day's mean could land in the same range as a good one. Capping
+ * keeps the hero score honest while leaving the within-tier variation the mean
+ * provides. Bands do not overlap across the challenging/favorable divide.
  */
 const OVERALL_BOUNDS: Record<ElementHarmony['favorability'], { min: number; max: number }> = {
-  very_favorable: { min: 4, max: 5 },
-  favorable: { min: 3, max: 4 },
-  neutral: { min: 3, max: 4 },
-  challenging: { min: 1, max: 2 },
+  very_favorable: { min: 75, max: 100 },
+  favorable: { min: 58, max: 78 },
+  neutral: { min: 50, max: 70 },
+  challenging: { min: 1, max: 45 },
 };
 
 /**
- * Headline 1-5 score for the day: the mean of the four category scores, held
+ * Headline 0-100 score for the day: the mean of the four category scores, held
  * inside the band its favorability allows.
  */
 export function calculateOverallScore(
@@ -149,4 +152,15 @@ export function calculateOverallScore(
   const mean = (scores.career + scores.love + scores.finance + scores.health) / 4;
   const { min, max } = OVERALL_BOUNDS[elementHarmony.favorability];
   return Math.max(min, Math.min(max, Math.round(mean)));
+}
+
+/**
+ * Upgrade a daily reading cached before scores moved to 0-100.
+ *
+ * Daily rows are JSON.parse'd without re-validation, so a legacy 1-5 score
+ * would render as a 3% bar. Same rule as normalizeLegacyChartScore: a value of
+ * 5 or less can only be from the old scale, since this scorer's own floor is 22.
+ */
+export function normalizeLegacyDailyScore(score: number): number {
+  return score <= 5 ? Math.round((score / 5) * 100) : score;
 }
