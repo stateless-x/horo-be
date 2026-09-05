@@ -682,17 +682,20 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           return null;
         }
 
-        // Cached rows are not re-validated, so a narrative written under the
-        // old 1-5 scale would render as a ~3% bar. Upgrade it on read.
-        const parsed = JSON.parse(dbCached.structuredReading) as StructuredChartResponse;
-        if (Array.isArray(parsed?.fortuneReadings)) {
-          parsed.fortuneReadings = parsed.fortuneReadings.map((reading) => ({
-            ...reading,
-            score: normalizeLegacyChartScore(reading.score),
-          }));
-        }
-        return parsed;
+        return JSON.parse(dbCached.structuredReading) as StructuredChartResponse;
       });
+
+      // Upgrade legacy 1-5 scores AFTER the cache read, not inside the fetcher.
+      // The fetcher only runs on a Redis miss, so a chart cached before the
+      // 0-100 deploy would otherwise be served on the old scale for its whole
+      // 24h TTL (observed: 4/3/4/3/3/3 rendering as 4% bars). Normalizing
+      // here covers Redis hits and DB reads alike, with no cache flush.
+      if (cachedChart && Array.isArray(cachedChart.fortuneReadings)) {
+        cachedChart.fortuneReadings = cachedChart.fortuneReadings.map((reading) => ({
+          ...reading,
+          score: normalizeLegacyChartScore(reading.score),
+        }));
+      }
 
       if (cachedChart) {
         console.log('[Fortune] GET /chart - Cache hit (not counted toward rate limit) for profile:', profile.id);
