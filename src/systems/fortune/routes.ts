@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
 import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/llm';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, type DailyCategory } from '../../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
 import { eq, and, desc, lt } from 'drizzle-orm';
@@ -672,7 +672,16 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           return null;
         }
 
-        return JSON.parse(dbCached.structuredReading);
+        // Cached rows are not re-validated, so a narrative written under the
+        // old 1-5 scale would render as a ~3% bar. Upgrade it on read.
+        const parsed = JSON.parse(dbCached.structuredReading) as StructuredChartResponse;
+        if (Array.isArray(parsed?.fortuneReadings)) {
+          parsed.fortuneReadings = parsed.fortuneReadings.map((reading) => ({
+            ...reading,
+            score: normalizeLegacyChartScore(reading.score),
+          }));
+        }
+        return parsed;
       });
 
       if (cachedChart) {
@@ -762,6 +771,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           const elementProfile = calculateElementProfile(enrichedPillars.day);
           const pillarInteractions = calculatePillarInteractions(enrichedPillars);
           const thaiAstrology = calculateThaiAstrology(profile.birthDate);
+          const chartCategoryScores = calculateChartCategoryScores(
+            elementProfile,
+            enrichedPillars,
+            pillarInteractions,
+          );
 
           const now = getBangkokDate();
           const birthDate = new Date(profile.birthDate);
@@ -796,6 +810,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             thaiAstrology,
             currentAge,
             profile.mbtiType,
+            chartCategoryScores,
           );
 
           const llmResult = await generateStructuredFortuneReading(prompt, SYSTEM_PROMPT_STRUCTURED);
@@ -828,7 +843,13 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
               luckyDay: thaiAstrology.day,
               luckyDayTooltip: (llmResult.birthStarDetails as any).luckyDayTooltip,
             },
-            fortuneReadings: llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
+            // Scores come from calculateChartCategoryScores, never the LLM: the
+            // model narrates each area, but the number must be reproducible for
+            // an identical birth chart. Keeps the LLM's reading/tips/warnings.
+            fortuneReadings: applyChartScores(
+              llmResult.fortuneReadings as StructuredChartResponse['fortuneReadings'],
+              chartCategoryScores,
+            ),
             recommendations: llmResult.recommendations as StructuredChartResponse['recommendations'],
           };
 

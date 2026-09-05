@@ -107,7 +107,12 @@ export type FortuneCategoryKey = z.infer<typeof FortuneCategoryKeySchema>;
 // Fortune reading per category (for Section 5)
 export const FortuneReadingCategorySchema = z.object({
   key: FortuneCategoryKeySchema,
-  score: z.number().min(1).max(5),
+  /**
+   * 0-100, computed deterministically by calculateChartCategoryScores.
+   * Legacy cached narratives hold a 1-5 value; normalizeChartScores upgrades
+   * them on read (see systems/fortune/routes.ts).
+   */
+  score: z.number().min(1).max(100),
   reading: z.string(),
   tips: z.array(z.string()),
   warnings: z.array(z.string()),

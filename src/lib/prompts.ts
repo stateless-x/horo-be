@@ -11,6 +11,7 @@
  */
 
 import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType } from "../../lib/shared";
+import type { FortuneCategoryKey } from "../../lib/shared/types/astrology";
 import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance } from "../../lib/shared";
 import { renderPrompt } from "./prompts/render";
 
@@ -204,6 +205,11 @@ export function buildStructuredChartPrompt(
   thaiAstrology: ThaiAstrology,
   currentAge: string,
   mbtiType?: string | null,
+  /**
+   * Deterministic 0-100 category scores (calculateChartCategoryScores). Passed
+   * in so the model narrates to the number instead of inventing its own.
+   */
+  categoryScores?: Record<FortuneCategoryKey, number>,
 ): string {
   const birthDateStr = birthDate.toLocaleDateString("th-TH", {
     year: "numeric",
@@ -228,5 +234,11 @@ export function buildStructuredChartPrompt(
     deterministicJson: JSON.stringify(deterministicData),
     mbtiContext: buildMbtiContext(mbtiType),
     name,
+    lifeOverviewScoreValue: categoryScores?.life_overview ?? '',
+    loveScoreValue: categoryScores?.love ?? '',
+    careerScoreValue: categoryScores?.career ?? '',
+    financeScoreValue: categoryScores?.finance ?? '',
+    healthScoreValue: categoryScores?.health ?? '',
+    familyScoreValue: categoryScores?.family ?? '',
   });
 }
