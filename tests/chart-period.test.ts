@@ -88,12 +88,19 @@ describe('structured fortune validation', () => {
     warnings: ['คำเตือน'],
   };
 
-  function payload(readings: unknown[]) {
+  const pillarFixture = {
+    pillarKey: 'year',
+    interpretation: 'a',
+    pillarRelationships: 'b',
+    summary: 'เสาปีบอกรากฐานชีวิตของเจ้า',
+    tips: ['ฟังความเห็นครอบครัวก่อนตัดสินใจใหญ่', 'วางแผนการเงินระยะยาวไว้ล่วงหน้า'],
+    warning: 'บางครั้งเจ้ายึดติดกับความมั่นคงจนพลาดโอกาสใหม่ ลองเปิดใจดูบ้าง',
+  };
+
+  function payload(readings: unknown[], pillarInterpretations: unknown[] = [pillarFixture]) {
     return {
       personalityTraits: ['มีวินัย'],
-      pillarInterpretations: [
-        { pillarKey: 'year', interpretation: 'a', pillarRelationships: 'b' },
-      ],
+      pillarInterpretations,
       birthStarDetails: {
         planetDescription: 'a',
         luckyColorTooltip: 'b',
@@ -125,5 +132,73 @@ describe('structured fortune validation', () => {
     const error = validateStructuredFortuneReading(payload([withoutHook]));
 
     expect(error).toContain('fortuneReadings[0].hook');
+  });
+
+  test('rejects a pillar missing summary so the generation retries', () => {
+    const { summary, ...withoutSummary } = pillarFixture;
+    const error = validateStructuredFortuneReading(payload([category], [withoutSummary]));
+
+    expect(error).toContain('pillarInterpretations[0].summary');
+  });
+
+  test('rejects a pillar missing tips or warning so the generation retries', () => {
+    const { tips, ...withoutTips } = pillarFixture;
+    const { warning, ...withoutWarning } = pillarFixture;
+
+    expect(validateStructuredFortuneReading(payload([category], [withoutTips]))).toContain(
+      'pillarInterpretations[0].tips',
+    );
+    expect(validateStructuredFortuneReading(payload([category], [withoutWarning]))).toContain(
+      'pillarInterpretations[0].warning',
+    );
+  });
+});
+
+describe('chart prompt pillar content', () => {
+  function pillarSectionOfPrompt() {
+    const birthDate = new Date(Date.UTC(1994, 10, 26));
+    const pillars = calculateEnrichedBazi(birthDate, 2, 'male');
+    const elementProfile = calculateElementProfile(pillars.day);
+    const interactions = calculatePillarInteractions(pillars);
+    const scores = calculateChartCategoryScores(elementProfile, pillars, interactions);
+
+    const prompt = buildStructuredChartPrompt(
+      'Purin',
+      birthDate,
+      pillars,
+      elementProfile,
+      interactions,
+      calculateThaiAstrology(birthDate),
+      '31 ปี 9 เดือน 10 วัน',
+      'INTP',
+      scores,
+      { yearMonth: '2026-09', monthTh: 'กันยายน', yearBe: 2569 },
+      new Date(2026, 8, 5),
+    );
+
+    // Isolate the pillarInterpretations instructions from the rest of the
+    // prompt (fortuneReadings and recommendations also mention tips/warning)
+    // so these assertions can only pass if the pillar section itself asks
+    // for the three new fields, not because the words appear elsewhere.
+    const start = prompt.indexOf('pillarInterpretations:');
+    const end = prompt.indexOf('birthStarDetails:');
+    return prompt.slice(start, end);
+  }
+
+  test('asks for a pillar summary capped at 60 Thai characters', () => {
+    const section = pillarSectionOfPrompt();
+    expect(section).toContain('summary');
+    expect(section).toContain('60 ตัวอักษรไทย');
+  });
+
+  test('asks for pillar tips as concrete actions', () => {
+    const section = pillarSectionOfPrompt();
+    expect(section).toContain('tips');
+  });
+
+  test('asks for a pillar warning phrased as a heads-up, capped at 120 Thai characters', () => {
+    const section = pillarSectionOfPrompt();
+    expect(section).toContain('warning');
+    expect(section).toContain('120 ตัวอักษรไทย');
   });
 });

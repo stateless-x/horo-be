@@ -156,6 +156,29 @@ export const PillarInterpretationSchema = z.object({
   pillarKey: z.enum(['year', 'month', 'day', 'hour']),
   interpretation: z.string(),
   pillarRelationships: z.string(),
+  /**
+   * One sentence stating what this pillar means for the reader, in the เจ้า
+   * voice. Shown on the pillar card, where the modal used to be the only
+   * place this information appeared. The prompt asks for at most 60 Thai
+   * characters; the cap here is in UTF-16 code units, where Thai vowel signs
+   * and tone marks each count separately. Optional so narratives cached
+   * before this field still parse.
+   */
+  summary: z.string().max(90).optional(),
+  /**
+   * Two short, concrete actions that help the reader steer their life in
+   * this pillar's domain. Each entry mirrors summary's Thai-character cap
+   * (60) widened to 90 UTF-16 code units for the same reason. Optional so
+   * narratives cached before this field still parse.
+   */
+  tips: z.array(z.string().max(90)).max(3).optional(),
+  /**
+   * One thing to watch, phrased as a friend's heads-up rather than a threat
+   * (คำเตือนในดวงไม่ใช่คำสาป), matching the loader copy's register. Longer
+   * than summary/tips because it needs room to soften the delivery. Optional
+   * so narratives cached before this field still parse.
+   */
+  warning: z.string().max(120).optional(),
 });
 export type PillarInterpretation = z.infer<typeof PillarInterpretationSchema>;
 

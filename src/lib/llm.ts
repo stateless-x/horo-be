@@ -255,7 +255,7 @@ export function validateStructuredFortuneReading(data: Record<string, unknown>):
         missing.push(`pillarInterpretations[${i}]`);
         return;
       }
-      for (const field of ["pillarKey", "interpretation", "pillarRelationships"]) {
+      for (const field of ["pillarKey", "interpretation", "pillarRelationships", "summary", "tips", "warning"]) {
         if (!(field in (item as object))) missing.push(`pillarInterpretations[${i}].${field}`);
       }
     });
@@ -326,7 +326,7 @@ Return valid JSON matching exactly this shape (all fields required):
 {
   "personalityTraits": string[],
   "pillarInterpretations": [
-    { "pillarKey": string, "interpretation": string, "pillarRelationships": string }
+    { "pillarKey": string, "interpretation": string, "pillarRelationships": string, "summary": string (one sentence, max 60 Thai characters, what this pillar means for the reader), "tips": string[] (2 items, max 60 Thai characters each, concrete actions), "warning": string (one heads-up, max 120 Thai characters, a friend's tone not a threat) }
   ],
   "birthStarDetails": {
     "planetDescription": string,
