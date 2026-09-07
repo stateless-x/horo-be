@@ -120,7 +120,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           thaiAstrology
         );
 
-        const reading = await generateFortuneReading(prompt, 250);
+        const reading = await generateFortuneReading(prompt, 140);
 
         return {
           elementType: baziChart.element,

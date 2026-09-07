@@ -91,9 +91,15 @@ export function buildTeaserPrompt(
     day: "numeric",
   });
 
+  const currentPeriod = new Date().toLocaleDateString("th-TH", {
+    year: "numeric",
+    month: "long",
+  });
+
   return renderPrompt(teaserMd, {
     name,
     birthDateStr: dateStr,
+    currentPeriod,
     element: baziChart.element,
     dayMaster: baziChart.dayMaster,
     yearPillar: `${baziChart.yearPillar.stem}${baziChart.yearPillar.branch}`,
