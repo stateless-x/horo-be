@@ -14,6 +14,7 @@ import { db } from '../src/lib/db';
 import { user, account } from '../lib/db/schema/users';
 import { birthProfiles, baziCharts } from '../lib/db/schema/profiles';
 import { dailyReadings, chartNarratives, compatibility } from '../lib/db/schema/readings';
+import { surfaceViews } from '../lib/db/schema/analytics';
 import { sql, count, eq, and, isNotNull } from 'drizzle-orm';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
@@ -161,6 +162,34 @@ async function fetchStats() {
     .from(birthProfiles)
     .groupBy(sql`EXTRACT(YEAR FROM birth_date AT TIME ZONE 'UTC')`);
 
+  // ── 18. Surface views: which dashboard tab users actually open ───────────
+  // uniqueUsers = distinct people who opened the surface at least once.
+  // viewDays = total (user, day) pairs, i.e. how many days of use it drove.
+  const surfaceTotals = await db
+    .select({
+      surface: surfaceViews.surface,
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${surfaceViews.userId})`.as('unique_users'),
+      viewDays: count(),
+    })
+    .from(surfaceViews)
+    .groupBy(surfaceViews.surface);
+
+  // ── 19. Surface views by MBTI ────────────────────────────────────────────
+  // Left join: a viewer without a birth profile (or without an MBTI) still
+  // counts, under the 'unknown' bucket, so the totals here reconcile with #18.
+  // Assumes one birth profile per user, which the profile-save path upserts on
+  // (fortune/routes.ts) — there is no DB unique constraint enforcing it.
+  const surfaceByMbti = await db
+    .select({
+      surface: surfaceViews.surface,
+      mbti: birthProfiles.mbtiType,
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${surfaceViews.userId})`.as('unique_users'),
+      viewDays: count(),
+    })
+    .from(surfaceViews)
+    .leftJoin(birthProfiles, eq(surfaceViews.userId, birthProfiles.userId))
+    .groupBy(surfaceViews.surface, birthProfiles.mbtiType);
+
   // ── Build output ──────────────────────────────────────────────────────────
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
@@ -227,6 +256,41 @@ async function fetchStats() {
     if (temperamentMap[key] !== undefined) temperamentMap[key] += Number(m.count);
   }
 
+  // Surface views → { today: {uniqueUsers, viewDays}, fortune: {...} }
+  const emptySurface = () => ({ uniqueUsers: 0, viewDays: 0 });
+  const surfaceTotalsMap: Record<string, { uniqueUsers: number; viewDays: number }> = {
+    today: emptySurface(),
+    fortune: emptySurface(),
+  };
+  for (const row of surfaceTotals) {
+    surfaceTotalsMap[row.surface] = {
+      uniqueUsers: Number(row.uniqueUsers),
+      viewDays: Number(row.viewDays),
+    };
+  }
+
+  // By MBTI: every one of the 16 types plus an 'unknown' bucket, so the chart
+  // has a stable x-axis even before a type has any views.
+  const surfaceMbtiMap: Record<string, { today: { uniqueUsers: number; viewDays: number }; fortune: { uniqueUsers: number; viewDays: number } }> = {};
+  for (const key of [...mbtiOrder, 'unknown']) {
+    surfaceMbtiMap[key] = { today: emptySurface(), fortune: emptySurface() };
+  }
+  for (const row of surfaceByMbti) {
+    const key = row.mbti ?? 'unknown';
+    const bucket = surfaceMbtiMap[key];
+    if (!bucket) continue; // ignore an MBTI value outside the known 16
+    if (row.surface !== 'today' && row.surface !== 'fortune') continue;
+    bucket[row.surface] = {
+      uniqueUsers: Number(row.uniqueUsers),
+      viewDays: Number(row.viewDays),
+    };
+  }
+  const surfaceMbtiArray = [...mbtiOrder, 'unknown'].map((mbti) => ({
+    mbti,
+    today: surfaceMbtiMap[mbti].today,
+    fortune: surfaceMbtiMap[mbti].fortune,
+  }));
+
   const onboardingRate = totalUsers > 0 ? ((Number(onboardingCompleted) / Number(totalUsers)) * 100).toFixed(1) : '0.0';
   const profileRate = totalUsers > 0 ? ((Number(totalProfiles) / Number(totalUsers)) * 100).toFixed(1) : '0.0';
   const dropOff = Number(totalUsers) - Number(onboardingCompleted);
@@ -260,6 +324,11 @@ async function fetchStats() {
     mbtiMale,
     generations: { genZ, milLate, genAlphaZ, milEarly, genXOlder },
     temperament: temperamentMap,
+    surfaceViews: {
+      today: surfaceTotalsMap.today,
+      fortune: surfaceTotalsMap.fortune,
+      byMbti: surfaceMbtiArray,
+    },
   };
 
   // Print JSON to stdout
