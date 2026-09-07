@@ -21,6 +21,7 @@ if (redis) {
 let auth: any;
 let systemsRoutes: any;
 let onboardingRoutes: any;
+let analyticsRoutes: any;
 
 let app = new Elysia()
   .use(cors({
@@ -76,6 +77,9 @@ if (configErrors.length === 0) {
 
     const onboardingModule = await import('./routes/onboarding');
     onboardingRoutes = onboardingModule.onboardingRoutes;
+
+    const analyticsModule = await import('./routes/analytics');
+    analyticsRoutes = analyticsModule.analyticsRoutes;
 
     // IMPORTANT: Reassign app to capture the chained routes
     // Mount Better Auth handler using .mount() instead of .all()
@@ -147,7 +151,8 @@ if (configErrors.length === 0) {
         };
       })
       .use(systemsRoutes)
-      .use(onboardingRoutes);
+      .use(onboardingRoutes)
+      .use(analyticsRoutes);
 
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');

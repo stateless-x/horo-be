@@ -70,6 +70,13 @@ export const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 20, // 20 completions per hour (accommodates retries + manual refreshes)
   },
+  // Surface view tracking (analytics). The client only fires once per surface
+  // per Bangkok day, so this is a ceiling on a misbehaving client, not a
+  // limit users should ever reach in normal use.
+  analyticsView: {
+    windowMs: 60 * 60 * 1000, // 1 hour
+    maxRequests: 20, // 20 view pings per hour per user
+  },
   // Invite creation (prevent spam)
   inviteCreate: {
     windowMs: 60 * 60 * 1000, // 1 hour

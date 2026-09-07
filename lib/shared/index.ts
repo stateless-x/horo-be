@@ -4,6 +4,7 @@ export * from './types/astrology';
 export * from './types/reading';
 export * from './types/compatibility';
 export * from './types/loading-lines';
+export * from './types/analytics';
 
 // Constants
 export * from './constants/thai-time';
