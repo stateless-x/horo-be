@@ -77,6 +77,14 @@ export const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 20, // 20 view pings per hour per user
   },
+  // Product event tracking (analytics). Higher than analyticsView because one
+  // session legitimately fires many: ~10 category opens plus tabs, shares and
+  // compatibility checks. Still a ceiling on a misbehaving client rather than a
+  // limit real use reaches.
+  analyticsEvent: {
+    windowMs: 60 * 60 * 1000, // 1 hour
+    maxRequests: 120, // 120 events per hour per user
+  },
   // Invite creation (prevent spam)
   inviteCreate: {
     windowMs: 60 * 60 * 1000, // 1 hour

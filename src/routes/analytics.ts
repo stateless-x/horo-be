@@ -1,10 +1,11 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../lib/db';
-import { surfaceViews } from '../../lib/db/schema';
+import { surfaceViews, productEvents } from '../../lib/db/schema';
 import { validateSessionFromRequest } from '../lib/session';
 import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { getTodayBangkokString } from '../../lib/shared/utils/date';
-import type { TrackedSurface } from '../../lib/shared/types/analytics';
+import type { TrackedSurface, TrackedEvent } from '../../lib/shared/types/analytics';
+import { buildProductEventRow } from '../lib/analytics-events';
 
 /**
  * Analytics Routes
@@ -79,5 +80,121 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
         // caught by the compiler — add it in both places.
         surface: t.Union([t.Literal('today'), t.Literal('fortune')]),
       }),
+    }
+  )
+  /**
+   * Generic product event. Supersedes /view: `surface_viewed` events land here
+   * with the same one-per-day guarantee, plus category/tab/share/compatibility
+   * actions. /view is kept working for clients that have not reloaded yet.
+   */
+  .post(
+    '/event',
+    async ({ request, set, body }) => {
+      try {
+        const session = await validateSessionFromRequest(request);
+
+        if (!session) {
+          set.status = 401;
+          return {
+            error: 'Unauthorized - Invalid or expired session',
+            code: 'UNAUTHORIZED',
+          };
+        }
+
+        const rateLimitResult = await checkRateLimit(session.userId, RATE_LIMITS.analyticsEvent);
+
+        if (rateLimitResult.limited) {
+          set.status = 429;
+          return {
+            error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+            code: 'RATE_LIMIT_EXCEEDED',
+            retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+            resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+          };
+        }
+
+        // Bangkok day, so a "once per day" event matches the calendar day Thai
+        // users see and the day boundary the daily reading already uses.
+        const viewDate = getTodayBangkokString();
+
+        // Throws on a value outside the vocabulary, which the catch below turns
+        // into a 500 rather than writing an unqueryable row.
+        const row = buildProductEventRow(body as TrackedEvent, session.userId, viewDate);
+
+        // ON CONFLICT DO NOTHING ... RETURNING yields zero rows only when a
+        // deduped event already fired today. Rows with a NULL dedupKey never
+        // conflict (Postgres NULLS DISTINCT), so those always report recorded.
+        const inserted = await db
+          .insert(productEvents)
+          .values(row)
+          .onConflictDoNothing({
+            target: [
+              productEvents.userId,
+              productEvents.event,
+              productEvents.dedupKey,
+              productEvents.viewDate,
+            ],
+          })
+          .returning({ id: productEvents.id });
+
+        return { recorded: inserted.length > 0 };
+      } catch (error) {
+        console.error('[Analytics] Error recording product event:', error);
+        set.status = 500;
+        return {
+          error: error instanceof Error ? error.message : 'Failed to record product event',
+          code: 'INTERNAL_ERROR',
+        };
+      }
+    },
+    {
+      // Literals spelled out because Elysia's body typing needs literal members
+      // rather than a mapped readonly tuple, same as /view above. The
+      // `as TrackedEvent` cast is backed by buildProductEventRow re-validating
+      // every enum member at runtime, so a drift between this schema and the
+      // shared vocabulary fails the request instead of writing a bad row.
+      body: t.Union([
+        t.Object({
+          event: t.Literal('surface_viewed'),
+          surface: t.Union([
+            t.Literal('today'),
+            t.Literal('fortune'),
+            t.Literal('compatibility'),
+            t.Literal('settings'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('category_opened'),
+          surface: t.Union([t.Literal('today'), t.Literal('fortune')]),
+          category: t.Union([
+            t.Literal('life_overview'),
+            t.Literal('love'),
+            t.Literal('career'),
+            t.Literal('finance'),
+            t.Literal('health'),
+            t.Literal('family'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('tab_opened'),
+          surface: t.Literal('fortune'),
+          tab: t.Union([t.Literal('overview'), t.Literal('readings'), t.Literal('details')]),
+        }),
+        t.Object({
+          event: t.Literal('compatibility_checked'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('reading_shared'),
+          surface: t.Union([t.Literal('today'), t.Literal('fortune')]),
+        }),
+      ]),
     }
   );

@@ -14,8 +14,9 @@ import { db } from '../src/lib/db';
 import { user, account } from '../lib/db/schema/users';
 import { birthProfiles, baziCharts } from '../lib/db/schema/profiles';
 import { dailyReadings, chartNarratives, compatibility } from '../lib/db/schema/readings';
-import { surfaceViews } from '../lib/db/schema/analytics';
+import { surfaceViews, productEvents } from '../lib/db/schema/analytics';
 import { sql, count, eq, and, isNotNull } from 'drizzle-orm';
+import { TRACKED_EVENT_NAMES } from '../lib/shared/types/analytics';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -190,6 +191,94 @@ async function fetchStats() {
     .leftJoin(birthProfiles, eq(surfaceViews.userId, birthProfiles.userId))
     .groupBy(surfaceViews.surface, birthProfiles.mbtiType);
 
+  // ── 20. Product events: the generic event stream ──────────────────────────
+  // NOTE: 'surface_viewed' in product_events supersedes surface_views (#18/#19)
+  // for new data; the older table is frozen and kept for history.
+  const eventTotals = await db
+    .select({
+      event: productEvents.event,
+      count: count(),
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+    })
+    .from(productEvents)
+    .groupBy(productEvents.event);
+
+  // ── 21. Category opens: which reading areas users actually expand ─────────
+  // openDays = (user, surface, category, day) rows, since the event dedups per
+  // Bangkok day — so this is "days of interest", not raw taps.
+  const categoryOpens = await db
+    .select({
+      surface: productEvents.surface,
+      category: productEvents.category,
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+      openDays: count(),
+    })
+    .from(productEvents)
+    .where(eq(productEvents.event, 'category_opened'))
+    .groupBy(productEvents.surface, productEvents.category);
+
+  // ── 22. Tab opens on the fortune surface ─────────────────────────────────
+  const tabOpens = await db
+    .select({
+      tab: productEvents.detail,
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+      openDays: count(),
+    })
+    .from(productEvents)
+    .where(eq(productEvents.event, 'tab_opened'))
+    .groupBy(productEvents.detail);
+
+  // ── 23. Compatibility checks by relationship type ────────────────────────
+  // Not deduped, so count is every check performed.
+  const compatibilityByType = await db
+    .select({
+      relationshipType: productEvents.detail,
+      count: count(),
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+    })
+    .from(productEvents)
+    .where(eq(productEvents.event, 'compatibility_checked'))
+    .groupBy(productEvents.detail);
+
+  // ── 24. Shares by surface ────────────────────────────────────────────────
+  const sharesBySurface = await db
+    .select({
+      surface: productEvents.surface,
+      count: count(),
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+    })
+    .from(productEvents)
+    .where(eq(productEvents.event, 'reading_shared'))
+    .groupBy(productEvents.surface);
+
+  // ── 25. Surface views + category opens by MBTI ───────────────────────────
+  // Same left-join shape as #19: a user without a birth profile still counts,
+  // under the 'unknown' bucket, so totals reconcile with #20/#21.
+  const eventSurfaceByMbti = await db
+    .select({
+      surface: productEvents.surface,
+      mbti: birthProfiles.mbtiType,
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+      viewDays: count(),
+    })
+    .from(productEvents)
+    .leftJoin(birthProfiles, eq(productEvents.userId, birthProfiles.userId))
+    .where(eq(productEvents.event, 'surface_viewed'))
+    .groupBy(productEvents.surface, birthProfiles.mbtiType);
+
+  const eventCategoryByMbti = await db
+    .select({
+      surface: productEvents.surface,
+      category: productEvents.category,
+      mbti: birthProfiles.mbtiType,
+      uniqueUsers: sql<number>`COUNT(DISTINCT ${productEvents.userId})`.as('unique_users'),
+      openDays: count(),
+    })
+    .from(productEvents)
+    .leftJoin(birthProfiles, eq(productEvents.userId, birthProfiles.userId))
+    .where(eq(productEvents.event, 'category_opened'))
+    .groupBy(productEvents.surface, productEvents.category, birthProfiles.mbtiType);
+
   // ── Build output ──────────────────────────────────────────────────────────
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
@@ -291,6 +380,64 @@ async function fetchStats() {
     fortune: surfaceMbtiMap[mbti].fortune,
   }));
 
+  // Product events → normalised, numeric (pg returns COUNT as a string).
+  const eventTotalsMap: Record<string, { count: number; uniqueUsers: number }> = {};
+  for (const key of TRACKED_EVENT_NAMES) eventTotalsMap[key] = { count: 0, uniqueUsers: 0 };
+  for (const row of eventTotals) {
+    eventTotalsMap[row.event] = { count: Number(row.count), uniqueUsers: Number(row.uniqueUsers) };
+  }
+
+  const categoryOpensArray = categoryOpens.map((row) => ({
+    surface: row.surface ?? 'unknown',
+    category: row.category ?? 'unknown',
+    uniqueUsers: Number(row.uniqueUsers),
+    openDays: Number(row.openDays),
+  }));
+
+  const tabOpensArray = tabOpens.map((row) => ({
+    tab: row.tab ?? 'unknown',
+    uniqueUsers: Number(row.uniqueUsers),
+    openDays: Number(row.openDays),
+  }));
+
+  const compatibilityByTypeArray = compatibilityByType.map((row) => ({
+    relationshipType: row.relationshipType ?? 'unknown',
+    count: Number(row.count),
+    uniqueUsers: Number(row.uniqueUsers),
+  }));
+
+  const sharesBySurfaceArray = sharesBySurface.map((row) => ({
+    surface: row.surface ?? 'unknown',
+    count: Number(row.count),
+    uniqueUsers: Number(row.uniqueUsers),
+  }));
+
+  // By MBTI: stable x-axis over all 16 types plus 'unknown', same as #19.
+  const mbtiBuckets = [...mbtiOrder, 'unknown'];
+
+  const eventSurfaceMbtiArray = mbtiBuckets.map((mbti) => ({
+    mbti,
+    surfaces: eventSurfaceByMbti
+      .filter((row) => (row.mbti ?? 'unknown') === mbti)
+      .map((row) => ({
+        surface: row.surface ?? 'unknown',
+        uniqueUsers: Number(row.uniqueUsers),
+        viewDays: Number(row.viewDays),
+      })),
+  }));
+
+  const eventCategoryMbtiArray = mbtiBuckets.map((mbti) => ({
+    mbti,
+    categories: eventCategoryByMbti
+      .filter((row) => (row.mbti ?? 'unknown') === mbti)
+      .map((row) => ({
+        surface: row.surface ?? 'unknown',
+        category: row.category ?? 'unknown',
+        uniqueUsers: Number(row.uniqueUsers),
+        openDays: Number(row.openDays),
+      })),
+  }));
+
   const onboardingRate = totalUsers > 0 ? ((Number(onboardingCompleted) / Number(totalUsers)) * 100).toFixed(1) : '0.0';
   const profileRate = totalUsers > 0 ? ((Number(totalProfiles) / Number(totalUsers)) * 100).toFixed(1) : '0.0';
   const dropOff = Number(totalUsers) - Number(onboardingCompleted);
@@ -328,6 +475,17 @@ async function fetchStats() {
       today: surfaceTotalsMap.today,
       fortune: surfaceTotalsMap.fortune,
       byMbti: surfaceMbtiArray,
+    },
+    events: {
+      totals: eventTotalsMap,
+      categoryOpens: categoryOpensArray,
+      tabOpens: tabOpensArray,
+      compatibilityByType: compatibilityByTypeArray,
+      sharesBySurface: sharesBySurfaceArray,
+      byMbti: {
+        surfaceViewed: eventSurfaceMbtiArray,
+        categoryOpened: eventCategoryMbtiArray,
+      },
     },
   };
 
