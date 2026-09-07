@@ -1,4 +1,4 @@
-บุคลิกภาพ MBTI ของเจ้า: {{code}} ({{nameTh}})
+บุคลิกภาพ MBTI ของคุณ: {{code}} ({{nameTh}})
 - ฟังก์ชันหลัก: {{dominantFunction}}
 - ฟังก์ชันเสริม: {{auxiliaryFunction}}
 - จุดเด่นที่ควรใช้: {{strengths}}
