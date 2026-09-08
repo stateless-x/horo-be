@@ -2,6 +2,7 @@ import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
 import { config, configErrors, llmConfigErrors } from './config';
 import { getRedisClient } from './lib/redis';
+import { HTTP_SERVER_OPTIONS } from './lib/http-server-options';
 
 console.log('[STARTUP] Starting Horo API...');
 console.log('[STARTUP] Attempting to listen on port:', config.port);
@@ -23,7 +24,7 @@ let systemsRoutes: any;
 let onboardingRoutes: any;
 let analyticsRoutes: any;
 
-let app = new Elysia()
+let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
   .use(cors({
     origin: config.cors.allowedOrigins,
     credentials: true,
