@@ -44,11 +44,62 @@ export const FORTUNE_TABS = ['overview', 'readings', 'details'] as const;
 
 export type FortuneTabKey = (typeof FORTUNE_TABS)[number];
 
+/**
+ * Cross-surface calls to action worth counting, named `<from>_<to>`.
+ *
+ * Deliberately a short closed list rather than a free-form string: an id typed
+ * at a call site would land in the table misspelled and quietly split one CTA's
+ * numbers across two rows. Every button that moves a reader from one surface to
+ * another gets an entry here first.
+ *
+ * Not every clickable thing belongs here — a control that only changes what is
+ * already on screen is a `tab_opened`, and a click that produces a reading has
+ * its own event. This is for "left this surface for that one".
+ */
+export const TRACKED_CTAS = [
+  /** /dashboard/today → /dashboard/fortune, the monthly-reading band. */
+  'today_monthly_chart',
+  /** /dashboard/fortune → /dashboard/compatibility, from the read-next block. */
+  'fortune_compatibility',
+  /** /dashboard/fortune → /dashboard/today, from the read-next block. */
+  'fortune_today',
+] as const;
+
+export type TrackedCta = (typeof TRACKED_CTAS)[number];
+
+export const COMPATIBILITY_FAILURE_CLASSES = [
+  'rate_limited',
+  'timeout',
+  'validation',
+  'authentication',
+  'profile_missing',
+  'network',
+  'server',
+  'unknown',
+] as const;
+
+export type CompatibilityFailureClass = (typeof COMPATIBILITY_FAILURE_CLASSES)[number];
+
+export const COMPATIBILITY_RESULT_ORIGINS = ['fresh', 'cache', 'history'] as const;
+
+export type CompatibilityResultOrigin = (typeof COMPATIBILITY_RESULT_ORIGINS)[number];
+
+export const COMPATIBILITY_SHARE_PLATFORMS = ['line', 'facebook', 'twitter', 'copy'] as const;
+
+export type CompatibilitySharePlatform = (typeof COMPATIBILITY_SHARE_PLATFORMS)[number];
+
 export const TRACKED_EVENT_NAMES = [
   'surface_viewed',
   'category_opened',
   'tab_opened',
+  'cta_clicked',
+  'relationship_selected',
+  'calculation_started',
+  'calculation_failed',
   'compatibility_checked',
+  'result_opened',
+  'guidance_opened',
+  'compatibility_share_initiated',
   'reading_shared',
 ] as const;
 
@@ -62,7 +113,26 @@ export type TrackedEvent =
   | { event: 'surface_viewed'; surface: TrackedEventSurface }
   | { event: 'category_opened'; surface: 'today' | 'fortune'; category: FortuneCategoryKey }
   | { event: 'tab_opened'; surface: 'fortune'; tab: FortuneTabKey }
+  | { event: 'cta_clicked'; surface: TrackedEventSurface; cta: TrackedCta }
+  | { event: 'relationship_selected'; relationshipType: RelationshipType }
+  | { event: 'calculation_started'; relationshipType: RelationshipType }
+  | {
+      event: 'calculation_failed';
+      relationshipType: RelationshipType;
+      failureClass: CompatibilityFailureClass;
+    }
   | { event: 'compatibility_checked'; relationshipType: RelationshipType }
+  | {
+      event: 'result_opened';
+      relationshipType: RelationshipType;
+      origin: CompatibilityResultOrigin;
+    }
+  | { event: 'guidance_opened'; relationshipType: RelationshipType }
+  | {
+      event: 'compatibility_share_initiated';
+      relationshipType: RelationshipType;
+      platform: CompatibilitySharePlatform;
+    }
   | { event: 'reading_shared'; surface: 'today' | 'fortune' };
 
 /**
@@ -85,9 +155,18 @@ export function dedupKeyFor(event: TrackedEvent): string | null {
       return `${event.surface}:${event.category}`;
     case 'tab_opened':
       return event.tab;
-    // Every check and every share is a distinct action worth counting, so these
-    // deliberately opt out of dedup.
+    case 'relationship_selected':
+      return event.relationshipType;
+    case 'guidance_opened':
+      return `next_steps:${event.relationshipType}`;
+    // Every check, every share and every CTA click is a distinct action worth
+    // counting, so these deliberately opt out of dedup.
+    case 'cta_clicked':
+    case 'calculation_started':
+    case 'calculation_failed':
     case 'compatibility_checked':
+    case 'result_opened':
+    case 'compatibility_share_initiated':
     case 'reading_shared':
       return null;
   }

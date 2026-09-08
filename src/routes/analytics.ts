@@ -142,7 +142,7 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
         console.error('[Analytics] Error recording product event:', error);
         set.status = 500;
         return {
-          error: error instanceof Error ? error.message : 'Failed to record product event',
+          error: 'Failed to record product event',
           code: 'INTERNAL_ERROR',
         };
       }
@@ -181,6 +181,63 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
           tab: t.Union([t.Literal('overview'), t.Literal('readings'), t.Literal('details')]),
         }),
         t.Object({
+          event: t.Literal('cta_clicked'),
+          surface: t.Union([
+            t.Literal('today'),
+            t.Literal('fortune'),
+            t.Literal('compatibility'),
+            t.Literal('settings'),
+          ]),
+          cta: t.Union([
+            t.Literal('today_monthly_chart'),
+            t.Literal('fortune_compatibility'),
+            t.Literal('fortune_today'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('relationship_selected'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('calculation_started'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('calculation_failed'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+          failureClass: t.Union([
+            t.Literal('rate_limited'),
+            t.Literal('timeout'),
+            t.Literal('validation'),
+            t.Literal('authentication'),
+            t.Literal('profile_missing'),
+            t.Literal('network'),
+            t.Literal('server'),
+            t.Literal('unknown'),
+          ]),
+        }),
+        t.Object({
           event: t.Literal('compatibility_checked'),
           relationshipType: t.Union([
             t.Literal('romantic'),
@@ -189,6 +246,50 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
             t.Literal('boss'),
             t.Literal('coworker'),
             t.Literal('family'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('result_opened'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+          origin: t.Union([
+            t.Literal('fresh'),
+            t.Literal('cache'),
+            t.Literal('history'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('guidance_opened'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+        }),
+        t.Object({
+          event: t.Literal('compatibility_share_initiated'),
+          relationshipType: t.Union([
+            t.Literal('romantic'),
+            t.Literal('talking'),
+            t.Literal('friend'),
+            t.Literal('boss'),
+            t.Literal('coworker'),
+            t.Literal('family'),
+          ]),
+          platform: t.Union([
+            t.Literal('line'),
+            t.Literal('facebook'),
+            t.Literal('twitter'),
+            t.Literal('copy'),
           ]),
         }),
         t.Object({

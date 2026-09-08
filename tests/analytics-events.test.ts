@@ -35,6 +35,36 @@ describe('buildProductEventRow', () => {
     expect(onToday.category).toBe('love');
   });
 
+  test('cta_clicked lands the cta id in detail and never dedups', () => {
+    const row = buildProductEventRow(
+      { event: 'cta_clicked', surface: 'today', cta: 'today_monthly_chart' },
+      USER,
+      DATE,
+    );
+
+    expect(row).toEqual({
+      userId: USER,
+      event: 'cta_clicked',
+      surface: 'today',
+      category: null,
+      detail: 'today_monthly_chart',
+      viewDate: DATE,
+      // Null so a reader who clicks the band twice in a day counts twice —
+      // clicks are the metric, not "did they ever click".
+      dedupKey: null,
+    });
+  });
+
+  test('cta_clicked rejects a cta id outside the vocabulary', () => {
+    expect(() =>
+      buildProductEventRow(
+        { event: 'cta_clicked', surface: 'today', cta: 'today_montly_chart' } as unknown as TrackedEvent,
+        USER,
+        DATE,
+      ),
+    ).toThrow(/Invalid cta/);
+  });
+
   test('tab_opened dedups on the tab and pins the surface to fortune', () => {
     const row = buildProductEventRow({ event: 'tab_opened', surface: 'fortune', tab: 'readings' }, USER, DATE);
 
@@ -49,6 +79,65 @@ describe('buildProductEventRow', () => {
     expect(row.dedupKey).toBeNull();
     expect(row.surface).toBeNull();
     expect(row.detail).toBe('romantic');
+  });
+
+  test('compatibility lifecycle events map bounded context without personal input', () => {
+    expect(buildProductEventRow(
+      { event: 'relationship_selected', relationshipType: 'friend' },
+      USER,
+      DATE,
+    )).toMatchObject({
+      surface: 'compatibility',
+      category: null,
+      detail: 'friend',
+      dedupKey: 'friend',
+    });
+
+    expect(buildProductEventRow(
+      { event: 'calculation_failed', relationshipType: 'boss', failureClass: 'timeout' },
+      USER,
+      DATE,
+    )).toMatchObject({
+      surface: 'compatibility',
+      category: 'timeout',
+      detail: 'boss',
+      dedupKey: null,
+    });
+
+    expect(buildProductEventRow(
+      { event: 'result_opened', relationshipType: 'family', origin: 'history' },
+      USER,
+      DATE,
+    )).toMatchObject({
+      surface: 'compatibility',
+      category: 'history',
+      detail: 'family',
+      dedupKey: null,
+    });
+  });
+
+  test('guidance dedups daily per relationship type and share actions count every occurrence', () => {
+    const guidance = buildProductEventRow(
+      { event: 'guidance_opened', relationshipType: 'romantic' },
+      USER,
+      DATE,
+    );
+    const share = buildProductEventRow(
+      { event: 'compatibility_share_initiated', relationshipType: 'romantic', platform: 'copy' },
+      USER,
+      DATE,
+    );
+
+    expect(guidance).toMatchObject({
+      category: 'next_steps',
+      detail: 'romantic',
+      dedupKey: 'next_steps:romantic',
+    });
+    expect(share).toMatchObject({
+      category: 'copy',
+      detail: 'romantic',
+      dedupKey: null,
+    });
   });
 
   test('reading_shared yields a null dedupKey and keeps the surface', () => {
@@ -68,5 +157,27 @@ describe('buildProductEventRow', () => {
     const bad = { event: 'compatibility_checked', relationshipType: 'nemesis' } as unknown as TrackedEvent;
 
     expect(() => buildProductEventRow(bad, USER, DATE)).toThrow(/Invalid relationshipType: nemesis/);
+  });
+
+  test('rejects failure, result origin, and share platform values outside the vocabulary', () => {
+    const badFailure = {
+      event: 'calculation_failed',
+      relationshipType: 'friend',
+      failureClass: 'raw-server-message',
+    } as unknown as TrackedEvent;
+    const badOrigin = {
+      event: 'result_opened',
+      relationshipType: 'friend',
+      origin: 'somewhere',
+    } as unknown as TrackedEvent;
+    const badPlatform = {
+      event: 'compatibility_share_initiated',
+      relationshipType: 'friend',
+      platform: 'email',
+    } as unknown as TrackedEvent;
+
+    expect(() => buildProductEventRow(badFailure, USER, DATE)).toThrow(/Invalid failureClass/);
+    expect(() => buildProductEventRow(badOrigin, USER, DATE)).toThrow(/Invalid origin/);
+    expect(() => buildProductEventRow(badPlatform, USER, DATE)).toThrow(/Invalid platform/);
   });
 });
