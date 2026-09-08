@@ -165,18 +165,36 @@ Return valid JSON matching exactly this shape (all fields required):
   "verdict": string,
   "chemistry": string,
   "caution": string,
-  "advice": string
+  "advice": string,
+  "nextSteps": {
+    "action": string,
+    "conversationStarter": string,
+    "watchFor": string
+  }
 }
+Length limits: action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
 Do not include the score, markdown, or any text outside this JSON object.`;
+
+type GeneratedCompatibilityContent = Pick<
+  CompatibilityStructuredContent,
+  'verdict' | 'chemistry' | 'caution' | 'advice'
+> & {
+  nextSteps: NonNullable<CompatibilityStructuredContent['nextSteps']>;
+};
+
+const GeneratedCompatibilityContentSchema = CompatibilityStructuredContentSchema.pick({
+  verdict: true,
+  chemistry: true,
+  caution: true,
+  advice: true,
+  nextSteps: true,
+}).required();
 
 /** Generate the compact narrative portion of compatibility v2. */
 export async function generateStructuredCompatibilityReading(
   prompt: string,
   maxTokens: number = 1000,
-): Promise<Pick<
-  CompatibilityStructuredContent,
-  'verdict' | 'chemistry' | 'caution' | 'advice'
->> {
+): Promise<GeneratedCompatibilityContent> {
   let effectivePrompt = `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`;
   let validationRetryUsed = false;
   let transportFailures = 0;
@@ -205,17 +223,12 @@ export async function generateStructuredCompatibilityReading(
 
     try {
       const parsed = JSON.parse(text) as Record<string, unknown>;
-      const result = CompatibilityStructuredContentSchema.pick({
-        verdict: true,
-        chemistry: true,
-        caution: true,
-        advice: true,
-      }).safeParse(parsed);
+      const result = GeneratedCompatibilityContentSchema.safeParse(parsed);
       if (result.success) return result.data;
 
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       validationRetryUsed = true;
-      effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all four fields as valid JSON.`;
+      effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
     } catch (error) {
       if (validationRetryUsed) throw error;
       validationRetryUsed = true;

@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../lib/astrology';
+import type { RelationshipType } from '../lib/shared';
 import { buildCompatibilityPrompt } from '../src/lib/prompts';
 
-function buildPrompt(partnerMbti?: string | null, userMbti: string | null = 'INTP') {
+function buildPrompt(
+  partnerMbti?: string | null,
+  userMbti: string | null = 'INTP',
+  relationshipType: RelationshipType = 'romantic',
+) {
   const userBirthDate = new Date(Date.UTC(1994, 10, 26));
   const partnerBirthDate = new Date(Date.UTC(2001, 5, 15));
   const userBazi = calculateBazi(userBirthDate, 2, 'male');
@@ -24,7 +29,7 @@ function buildPrompt(partnerMbti?: string | null, userMbti: string | null = 'INT
       thaiAstrology: calculateThaiAstrology(partnerBirthDate),
       mbtiType: partnerMbti,
     },
-    'romantic',
+    relationshipType,
     {
       score: score.score,
       scoreExplanation: score.overallAnalysis,
@@ -54,5 +59,22 @@ describe('compatibility prompt partner MBTI', () => {
 
     expect(prompt).toContain('MBTI: ENFP');
     expect(prompt).not.toContain('กฎพิเศษสำหรับการใช้ข้อมูล MBTI');
+  });
+});
+
+describe('compatibility prompt relationship focus', () => {
+  test.each([
+    ['romantic', ['ความคาดหวังร่วมกัน', 'ซ่อมแซมบทสนทนา']],
+    ['talking', ['จังหวะการคุย', 'โดยไม่เร่งสถานะ']],
+    ['friend', ['เช็กอินอย่างเป็นธรรมชาติ', 'เสนอเวลาอื่นได้']],
+    ['boss', ['ลำดับความสำคัญ', 'ขอบเขตแบบมืออาชีพ']],
+    ['coworker', ['เจ้าของงาน', 'จุดส่งมอบ']],
+    ['family', ['ความคาดหวังที่ต่างกัน', 'ขอบเขตด้วยถ้อยคำที่เคารพกัน']],
+  ] as const)('focuses %s advice on its real interaction', (relationshipType, expectedPhrases) => {
+    const prompt = buildPrompt(null, 'INTP', relationshipType);
+
+    for (const phrase of expectedPhrases) {
+      expect(prompt).toContain(phrase);
+    }
   });
 });

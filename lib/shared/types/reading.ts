@@ -20,6 +20,11 @@ export const CompatibilityStructuredContentSchema = z.object({
   chemistry: z.string().min(1).max(500),
   caution: z.string().min(1).max(500),
   advice: z.string().min(1).max(500),
+  nextSteps: z.object({
+    action: z.string().trim().min(1).max(180),
+    conversationStarter: z.string().trim().min(1).max(220),
+    watchFor: z.string().trim().min(1).max(180),
+  }).optional(),
 });
 export type CompatibilityStructuredContent = z.infer<typeof CompatibilityStructuredContentSchema>;
 
