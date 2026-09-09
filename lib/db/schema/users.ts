@@ -19,6 +19,7 @@ export const user = pgTable('user', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
   onboardingCompleted: boolean('onboardingCompleted').notNull().default(false),
+  signupSource: text('signupSource'), // where the signup came from (e.g. 'x', 'facebook', 'direct'), written once
 });
 
 export const session = pgTable('session', {

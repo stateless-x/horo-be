@@ -4,7 +4,7 @@ import { generateStructuredFortuneReading, generateEnhancedDailyReading, generat
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
-import { eq, and, desc, lt } from 'drizzle-orm';
+import { eq, and, desc, lt, isNull } from 'drizzle-orm';
 import {
   buildTeaserPrompt,
   buildStructuredChartPrompt,
@@ -286,6 +286,17 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             set: thaiData,
           }),
       ]);
+
+      // First-touch signup attribution: only write when the column is still NULL,
+      // so a returning user is never re-attributed. Best-effort — never blocks the save.
+      const rawSource = profile.signupSource?.trim().toLowerCase();
+      const signupSource = rawSource && rawSource.length <= 64 ? rawSource : undefined;
+      if (signupSource) {
+        await db.update(user)
+          .set({ signupSource })
+          .where(and(eq(user.id, userId), isNull(user.signupSource)))
+          .catch((err) => console.warn('[Fortune] signupSource write failed (non-critical):', err));
+      }
 
       await invalidateCache(`profile:${userId}`);
       console.log('[Fortune] Profile saved successfully:', savedProfile.id);

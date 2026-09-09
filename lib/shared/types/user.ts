@@ -16,6 +16,7 @@ export const BirthProfileSchema = z.object({
   gender: GenderSchema,
   birthTime: BirthTimeSchema.optional(),
   mbtiType: z.string().max(4).optional(), // e.g. 'INTP', undefined if unknown
+  signupSource: z.string().optional(), // attribution; normalised/length-checked in the route, never rejected here
 });
 export type BirthProfile = z.infer<typeof BirthProfileSchema>;
 
