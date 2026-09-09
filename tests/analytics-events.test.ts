@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { buildProductEventRow } from '../src/lib/analytics-events';
+import { buildProductEventRow, normalizeSignupSource } from '../src/lib/analytics-events';
 import type { TrackedEvent } from '../lib/shared/types/analytics';
 
 const USER = 'user_123';
@@ -179,5 +179,25 @@ describe('buildProductEventRow', () => {
     expect(() => buildProductEventRow(badFailure, USER, DATE)).toThrow(/Invalid failureClass/);
     expect(() => buildProductEventRow(badOrigin, USER, DATE)).toThrow(/Invalid origin/);
     expect(() => buildProductEventRow(badPlatform, USER, DATE)).toThrow(/Invalid platform/);
+  });
+});
+
+describe('normalizeSignupSource', () => {
+  test('keeps a normal channel name', () => {
+    expect(normalizeSignupSource('x')).toBe('x');
+  });
+
+  test('lowercases and trims, so X and x are one channel not two', () => {
+    expect(normalizeSignupSource('  X_KhonKhui  ')).toBe('x_khonkhui');
+  });
+
+  test('drops a missing or blank value rather than storing an empty string', () => {
+    expect(normalizeSignupSource(undefined)).toBeUndefined();
+    expect(normalizeSignupSource('   ')).toBeUndefined();
+  });
+
+  test('drops an over-long value instead of letting it fail the profile save', () => {
+    expect(normalizeSignupSource('a'.repeat(65))).toBeUndefined();
+    expect(normalizeSignupSource('a'.repeat(64))).toBe('a'.repeat(64));
   });
 });

@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
 import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/llm';
+import { normalizeSignupSource } from '../../lib/analytics-events';
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
@@ -289,8 +290,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       // First-touch signup attribution: only write when the column is still NULL,
       // so a returning user is never re-attributed. Best-effort — never blocks the save.
-      const rawSource = profile.signupSource?.trim().toLowerCase();
-      const signupSource = rawSource && rawSource.length <= 64 ? rawSource : undefined;
+      const signupSource = normalizeSignupSource(profile.signupSource);
       if (signupSource) {
         await db.update(user)
           .set({ signupSource })

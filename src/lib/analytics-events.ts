@@ -128,3 +128,16 @@ function assertMember(allowed: readonly string[], value: string, field: string):
     throw new Error(`[Analytics] Invalid ${field}: ${value}`);
   }
 }
+
+/**
+ * The signup source to store, or undefined to store nothing.
+ *
+ * Kept separate from the route so the rules are testable: the value arrives
+ * from a client that anyone can call, so an over-long or blank string must be
+ * dropped rather than written or allowed to fail the profile save.
+ */
+export function normalizeSignupSource(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim().toLowerCase();
+  if (!trimmed || trimmed.length > 64) return undefined;
+  return trimmed;
+}
