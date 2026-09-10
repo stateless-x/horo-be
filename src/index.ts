@@ -125,11 +125,13 @@ if (configErrors.length === 0) {
         let redisDeleted = 0;
         let memoryDeleted = false;
 
-        // Try to delete from Redis first
+        // Try to delete from Redis first. Keys are `ratelimit:<bucket>:<id>`,
+        // so the bucket sits between the prefix and the user — a
+        // `ratelimit:<userId>*` pattern would match nothing.
         const redis = getRedisClient();
         if (redis) {
           try {
-            const keys = await redis.keys(`ratelimit:${userId}*`);
+            const keys = await redis.keys(`ratelimit:*:${userId}`);
             if (keys.length > 0) {
               redisDeleted = await redis.del(...keys);
             }
@@ -138,8 +140,11 @@ if (configErrors.length === 0) {
           }
         }
 
-        // Also delete from in-memory
-        memoryDeleted = resetRateLimit(userId);
+        // Also clear every in-memory bucket for this user.
+        const { RATE_LIMITS } = await import('./lib/rate-limit');
+        memoryDeleted = Object.values(RATE_LIMITS)
+          .map((limit) => resetRateLimit(userId, limit))
+          .some(Boolean);
 
         return {
           success: true,

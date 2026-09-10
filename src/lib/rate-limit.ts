@@ -12,8 +12,28 @@
 import { getRedisClient } from './redis';
 
 interface RateLimitConfig {
+  /**
+   * Bucket name. Part of the storage key, so each limit counts on its own
+   * counter.
+   *
+   * Without it every limit sharing an identifier shared one counter: a signed-in
+   * user's onboarding, profile save, analytics pings and chart generation all
+   * incremented `ratelimit:<userId>`, so the smallest max among them (3) became
+   * the effective limit for all of them, and the first endpoint hit set the TTL
+   * for the rest. A new user could exhaust the counter during onboarding and be
+   * refused their very first daily reading.
+   */
+  name: string;
   windowMs: number; // Time window in milliseconds
   maxRequests: number; // Max requests per window
+}
+
+/**
+ * Storage key for one bucket. The single place a key is built, so a refund can
+ * never target a different key than the check that spent it.
+ */
+function rateLimitKey(identifier: string, config: RateLimitConfig): string {
+  return `ratelimit:${config.name}:${identifier}`;
 }
 
 interface RateLimitEntry {
@@ -32,41 +52,49 @@ export const RATE_LIMITS = {
   // Public teaser endpoint — generous enough for shared IPs (corporate NAT, mobile carrier)
   // Failed LLM calls are refunded via decrementRateLimit(), so only successes count
   teaser: {
+    name: 'teaser',
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     maxRequests: 5, // 5 teasers per day per IP
   },
   // Daily reading (once per day, but allow retries)
   daily: {
+    name: 'daily',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 5, // 5 requests per hour per user
   },
   // Full chart LLM generation (expensive - only counted on cache miss)
   chart: {
+    name: 'chart',
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     maxRequests: 3, // 3 LLM generations per day per user (prevents abuse from repeated profile edits)
   },
   // Chart regeneration (cache bust + triggers LLM)
   chartRegenerate: {
+    name: 'chartRegenerate',
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     maxRequests: 3, // 3 regenerations per day per user
   },
   // Compatibility reading (expensive) - hourly burst limit
   compatibility: {
+    name: 'compatibility',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 5, // 5 compatibility checks per hour per user
   },
   // Compatibility daily limit (prevent spam, protect LLM costs)
   compatibilityDaily: {
+    name: 'compatibilityDaily',
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     maxRequests: 5, // 5 unique people per day per user
   },
   // Profile save (prevent spam, generous for users correcting mistakes)
   profileSave: {
+    name: 'profileSave',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 20, // 20 profile saves per hour (allows users to edit/correct data)
   },
   // Onboarding completion (prevent runaway bugs, generous for edge cases)
   onboardingComplete: {
+    name: 'onboardingComplete',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 20, // 20 completions per hour (accommodates retries + manual refreshes)
   },
@@ -74,6 +102,7 @@ export const RATE_LIMITS = {
   // per Bangkok day, so this is a ceiling on a misbehaving client, not a
   // limit users should ever reach in normal use.
   analyticsView: {
+    name: 'analyticsView',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 20, // 20 view pings per hour per user
   },
@@ -82,11 +111,13 @@ export const RATE_LIMITS = {
   // compatibility checks. Still a ceiling on a misbehaving client rather than a
   // limit real use reaches.
   analyticsEvent: {
+    name: 'analyticsEvent',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 120, // 120 events per hour per user
   },
   // Invite creation (prevent spam)
   inviteCreate: {
+    name: 'inviteCreate',
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 10, // 10 invites per hour per user
   },
@@ -124,7 +155,7 @@ async function checkRateLimitRedis(
   if (!redis) return null;
 
   try {
-    const key = `ratelimit:${identifier}`;
+    const key = rateLimitKey(identifier, config);
     const now = Date.now();
     const windowSeconds = Math.ceil(config.windowMs / 1000);
 
@@ -163,7 +194,7 @@ function checkRateLimitMemory(
   config: RateLimitConfig
 ): { limited: boolean; remaining: number; resetAt: number } {
   const now = Date.now();
-  const key = identifier;
+  const key = rateLimitKey(identifier, config);
 
   let entry = rateLimitStore.get(key);
 
@@ -225,12 +256,13 @@ export async function checkRateLimit(
  */
 export async function decrementRateLimit(
   identifier: string,
+  config: RateLimitConfig,
 ): Promise<void> {
   // Try Redis first
   const redis = getRedisClient();
   if (redis) {
     try {
-      const key = `ratelimit:${identifier}`;
+      const key = rateLimitKey(identifier, config);
       const luaScript = `
         local count = redis.call('get', KEYS[1])
         if count and tonumber(count) > 0 then
@@ -247,7 +279,7 @@ export async function decrementRateLimit(
   }
 
   // Fall back to in-memory
-  const entry = rateLimitStore.get(identifier);
+  const entry = rateLimitStore.get(rateLimitKey(identifier, config));
   if (entry && entry.count > 0) {
     entry.count -= 1;
   }
@@ -338,13 +370,16 @@ setInterval(cleanupRateLimitStore, 5 * 60 * 1000);
 /**
  * Get current rate limit status for debugging
  */
-export function getRateLimitStatus(identifier: string): RateLimitEntry | null {
-  return rateLimitStore.get(identifier) || null;
+export function getRateLimitStatus(
+  identifier: string,
+  config: RateLimitConfig,
+): RateLimitEntry | null {
+  return rateLimitStore.get(rateLimitKey(identifier, config)) || null;
 }
 
 /**
  * Manually reset rate limit for an identifier (for admin purposes)
  */
-export function resetRateLimit(identifier: string): boolean {
-  return rateLimitStore.delete(identifier);
+export function resetRateLimit(identifier: string, config: RateLimitConfig): boolean {
+  return rateLimitStore.delete(rateLimitKey(identifier, config));
 }

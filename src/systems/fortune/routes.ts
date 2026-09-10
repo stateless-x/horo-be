@@ -134,7 +134,7 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         console.error('Teaser generation error:', error);
 
         // Refund rate limit token — don't punish users for server-side failures
-        await decrementRateLimit(clientIP).catch((err) =>
+        await decrementRateLimit(clientIP, RATE_LIMITS.teaser).catch((err) =>
           console.error('[Teaser] Failed to refund rate limit:', err)
         );
 

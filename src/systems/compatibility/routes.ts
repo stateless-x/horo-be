@@ -98,10 +98,14 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         };
       }
 
-      // Check both hourly burst limit AND daily limit (both must pass)
+      // Check both hourly burst limit AND daily limit (both must pass).
+      // The identifier is the bare user id: the bucket name in each config
+      // already separates these two counters, and every other limit, from one
+      // another. Hand-written `compat:` / `compat-daily:` prefixes used to do
+      // that job and would now double up in the key.
       const [hourlyResult, dailyResult] = await Promise.all([
-        checkRateLimit(`compat:${session.userId}`, RATE_LIMITS.compatibility),
-        checkRateLimit(`compat-daily:${session.userId}`, RATE_LIMITS.compatibilityDaily),
+        checkRateLimit(session.userId, RATE_LIMITS.compatibility),
+        checkRateLimit(session.userId, RATE_LIMITS.compatibilityDaily),
       ]);
 
       // Use whichever limit is more restrictive
