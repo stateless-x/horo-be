@@ -4,6 +4,7 @@ import {
   CompatibilityStructuredContentSchema,
   type CompatibilityStructuredContent,
 } from "../../lib/shared";
+import { CHART_BUDGET, DAILY_BUDGET } from "../../lib/shared/types/generation-budget";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const MAX_TOKENS_CAP = 8192; // deepseek-chat hard limit
@@ -409,9 +410,10 @@ export async function generateStructuredFortuneReading(
       const text = await callDeepSeek(messages, {
         maxTokens: 8000,
         temperature: 0.75,
-        // Structured chart responses run 3-5k output tokens; DeepSeek streams
-        // ~25-60 tok/s, so anything under ~2min guarantees an abort mid-generation.
-        timeoutMs: 180_000,
+        // See generation-budget.ts: three attempts have to fit one 255s socket,
+        // so 180s here put the ladder at 543s and made attempts 2 and 3
+        // undeliverable rather than slow.
+        timeoutMs: CHART_BUDGET.perAttemptMs,
         jsonMode: true,
       });
 
@@ -580,14 +582,11 @@ export async function generateEnhancedDailyReading(
         // The v2 daily contract is deliberately compact, while retaining
         // enough headroom for Thai tokenization and valid closing JSON.
         //
-        // Bounded by the socket, not by generation speed: Bun caps idleTimeout
-        // at 255s (see http-server-options.ts), and this path runs up to three
-        // attempts with 1s/2s backoff between them. At the previous 120s an
-        // attempt-2 response landed at ~241s and attempt 3 could never be
-        // delivered at all — the socket closed while the model was still
-        // writing, so the retry was unservable rather than merely slow.
-        // 80s keeps the whole ladder (80+1+80+2+80 = 243s) inside the ceiling.
-        timeoutMs: 80_000,
+        // Budgets live in lib/shared/types/generation-budget.ts, which derives
+        // them from the socket ceiling and is asserted by tests. Restating a
+        // number here is what let the client timeout and the loading screen's
+        // escape hatch drift out of agreement with it.
+        timeoutMs: DAILY_BUDGET.perAttemptMs,
         jsonMode: true,
       });
 
