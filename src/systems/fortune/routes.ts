@@ -17,17 +17,16 @@ import { cache, invalidateCache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getTodayBangkokString, getBangkokDate, getBangkokYearMonth, getYearMonthInBangkok, getReadingPeriod } from '../../../lib/shared/utils/date';
 import { getCachedProfile } from '../shared';
+import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
 
-/**
- * In-flight LLM generation guards.
- * Prevent concurrent LLM calls for the same user/profile (e.g., rapid refresh
- * or race condition from fire-and-forget caching).
- * If a second request arrives while the first is still generating, it reuses
- * the in-flight promise instead of starting a new LLM call.
- */
-const inflightChartGenerations = new Map<string, Promise<any>>();
-const inflightTeaserGenerations = new Map<string, Promise<any>>();
-const inflightDailyGenerations = new Map<string, Promise<any>>();
+function isGenerationError(value: unknown): value is { error: string; code?: string } {
+  return typeof value === 'object' && value !== null && 'error' in value;
+}
+
+function applySharedErrorStatus(set: { status?: number | string }, value: unknown): void {
+  if (!isGenerationError(value)) return;
+  set.status = value.code === 'RATE_LIMIT_EXCEEDED' ? 429 : 500;
+}
 
 /**
  * Helper function to extract client IP from request
@@ -47,14 +46,6 @@ function getClientIP(request: Request): string {
 }
 
 /**
- * Build a stable key for teaser in-flight dedup.
- * Uses IP + birthDate + gender since teaser is pre-auth (no userId).
- */
-function getTeaserInflightKey(ip: string, body: any): string {
-  return `teaser:${ip}:${body.birthDate}:${body.gender}`;
-}
-
-/**
  * Fusion system: the Bazi x Thai x MBTI product.
  * Teaser, chart, daily, profile, user-profile, and update-profile endpoints.
  * All LLM calls are handled server-side for security and consistency.
@@ -64,17 +55,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
   // Generate teaser result (BEFORE auth)
   .post('/teaser', async ({ body, set, request }) => {
     const clientIP = getClientIP(request);
-    const inflightKey = getTeaserInflightKey(clientIP, body);
-
-    // Check if there's already an in-flight generation for this user+profile
-    const existingGeneration = inflightTeaserGenerations.get(inflightKey);
-    if (existingGeneration) {
-      console.log('[Fortune] POST /teaser - Reusing in-flight generation for:', inflightKey);
-      return existingGeneration;
-    }
-
-    // Wrap everything in a tracked promise (set synchronously before any await)
-    const generationPromise = (async () => {
+    const profile = BirthProfileSchema.parse(body);
+    const flight = await generationSingleFlight.run({
+      operation: 'teaser',
+      key: generationKey('teaser', clientIP, profile),
+      lockTtlMs: 60_000,
+      waitTimeoutMs: 55_000,
+      resultTtlSeconds: (value) => isGenerationError(value) ? 5 : 15 * 60,
+      isFailure: isGenerationError,
+      run: async () => {
       // Rate limiting for guest users (by IP)
       const rateLimitResult = await checkRateLimit(clientIP, RATE_LIMITS.teaser);
 
@@ -104,8 +93,6 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       };
 
       try {
-        const profile = BirthProfileSchema.parse(body);
-
         const birthDate = new Date(profile.birthDate);
         const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
 
@@ -141,15 +128,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         set.status = 500;
         return { error: 'Failed to generate teaser' };
       }
-    })();
-
-    // Track synchronously (before first await yields)
-    inflightTeaserGenerations.set(inflightKey, generationPromise);
-    generationPromise.finally(() => {
-      inflightTeaserGenerations.delete(inflightKey);
+      },
     });
 
-    return generationPromise;
+    if (flight.source !== 'started') applySharedErrorStatus(set, flight.value);
+    return flight.value;
   }, {
     body: BirthProfileSchema,
   })
@@ -381,16 +364,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         };
       }
 
-      // No cached reading — check in-flight guard before rate limit
-      const dailyInflightKey = `daily:${profile.id}:${todayStr}`;
-      const existingDailyGen = inflightDailyGenerations.get(dailyInflightKey);
-      if (existingDailyGen) {
-        console.log('[Fortune] GET /daily - Reusing in-flight generation for:', dailyInflightKey);
-        return existingDailyGen;
-      }
-
-      // Wrap rate limit + LLM generation in a tracked promise
-      const dailyGenPromise = (async () => {
+      // Coordinate rate limit + generation across every backend instance.
+      const flight = await generationSingleFlight.run({
+        operation: 'daily',
+        key: generationKey('daily', profile.id, todayStr),
+        lockTtlMs: 300_000,
+        waitTimeoutMs: 250_000,
+        resultTtlSeconds: (value) => isGenerationError(value) ? 5 : 60,
+        isFailure: isGenerationError,
+        run: async () => {
         try {
           // Only apply rate limiting if we need to generate NEW content
           console.log('[Fortune] No cached reading found, checking rate limit before generating');
@@ -535,7 +517,26 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
               luckyDirection: todayThaiAstrology.luckyDirection,
               elementEnergy: baziChart.element,
             })
+            .onConflictDoNothing({ target: [dailyReadings.profileId, dailyReadings.date] })
             .returning();
+
+          if (!newReading) {
+            const [winner] = await db
+              .select()
+              .from(dailyReadings)
+              .where(
+                and(
+                  eq(dailyReadings.profileId, profile.id),
+                  eq(dailyReadings.date, todayStr),
+                ),
+              )
+              .limit(1);
+            if (!winner) throw new Error('Daily reading conflict resolved without a stored row');
+            return {
+              ...winner,
+              structuredContent: JSON.parse(winner.content),
+            };
+          }
 
           // Return with parsed structured content
           return {
@@ -547,15 +548,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           set.status = 500;
           return { error: 'Failed to generate daily reading' };
         }
-      })();
-
-      // Track synchronously (before first await yields)
-      inflightDailyGenerations.set(dailyInflightKey, dailyGenPromise);
-      dailyGenPromise.finally(() => {
-        inflightDailyGenerations.delete(dailyInflightKey);
+        },
       });
 
-      return dailyGenPromise;
+      if (flight.source !== 'started') applySharedErrorStatus(set, flight.value);
+      return flight.value;
     } catch (error) {
       console.error('Daily reading error:', error);
       set.status = 500;
@@ -608,9 +605,13 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       // Delete cached narrative to force regeneration
       await db
+        .update(birthProfiles)
+        .set({ updatedAt: new Date() })
+        .where(eq(birthProfiles.id, profile.id));
+      await db
         .delete(chartNarratives)
         .where(eq(chartNarratives.profileId, profile.id));
-      await invalidateCache(`chart:narrative:${profile.id}`);
+      await invalidateCache(`profile:${session.userId}`, `chart:narrative:${profile.id}`);
 
       console.log('[Fortune] DELETE /chart/regenerate - Cleared cache for profile:', profile.id);
 
@@ -732,25 +733,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       // This prevents duplicate requests from consuming rate limit tokens
       console.log('[Fortune] GET /chart - Cache miss, checking for in-flight generation');
 
-      // ---- Guard against concurrent LLM calls for same profile ----
-      const existingGeneration = inflightChartGenerations.get(profile.id);
-      if (existingGeneration) {
-        console.log('[Fortune] GET /chart - Reusing in-flight generation for profile:', profile.id);
-        // The promise resolves with an { error } sentinel on failure, and its
-        // closure only sets the ORIGINATING request's status — map the sentinel
-        // to THIS request's status or the reuser would return the error as 200.
-        const reusedResult = await existingGeneration;
-        if (reusedResult && typeof reusedResult === 'object' && 'error' in reusedResult) {
-          set.status = (reusedResult as { code?: string }).code === 'RATE_LIMIT_EXCEEDED' ? 429 : 500;
-        }
-        return reusedResult;
-      }
-
-      // Wrap EVERYTHING (rate limit + generation) in a tracked promise
-      // Set in map IMMEDIATELY (synchronously) to close race window
-      // The IIFE returns a Promise which is assigned synchronously,
-      // and the map.set() below runs before any internal await yields
-      const generationPromise = (async () => {
+      const profileVersion = profile.updatedAt.toISOString();
+      const flight = await generationSingleFlight.run({
+        operation: 'chart',
+        key: generationKey('chart', profile.id, profileVersion, getBangkokYearMonth()),
+        lockTtlMs: 300_000,
+        waitTimeoutMs: 250_000,
+        resultTtlSeconds: (value) => isGenerationError(value) ? 5 : 60,
+        isFailure: isGenerationError,
+        run: async () => {
         try {
           // Skip rate limit for system-initiated expiry (month boundary)
           if (monthBoundaryExpired) {
@@ -893,27 +884,33 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             readingPeriod,
           };
 
-          // ---- Cache in background (non-blocking) ----
+          // Persist before resolving the generation. A refresh can only observe
+          // either the shared in-flight result or this durable row—never the
+          // old gap where the promise finished before its background write.
           const profileIdForCache = profile.id;
-          (async () => {
-            try {
-              // Invalidate Redis cache BEFORE writing new DB row so any concurrent
-              // request that arrives between the two operations re-fetches from DB
-              // and gets a cache miss (triggering a fresh DB read) rather than
-              // serving the stale Redis entry.
-              await invalidateCache(chartCacheKey);
-              await db
-                .delete(chartNarratives)
-                .where(eq(chartNarratives.profileId, profileIdForCache));
-              await db.insert(chartNarratives).values({
+          const [currentProfile] = await db
+            .select({ updatedAt: birthProfiles.updatedAt })
+            .from(birthProfiles)
+            .where(eq(birthProfiles.id, profileIdForCache))
+            .limit(1);
+          if (!currentProfile || currentProfile.updatedAt.toISOString() !== profileVersion) {
+            throw new Error('Profile changed while chart generation was in progress');
+          }
+          await db
+            .insert(chartNarratives)
+            .values({
                 profileId: profileIdForCache,
                 structuredReading: JSON.stringify(response),
-              });
-              console.log('[Fortune] GET /chart - Structured reading cached for profile:', profileIdForCache);
-            } catch (err) {
-              console.error('[Fortune] GET /chart - Cache write failed:', err);
-            }
-          })();
+            })
+            .onConflictDoUpdate({
+              target: chartNarratives.profileId,
+              set: {
+                structuredReading: JSON.stringify(response),
+                updatedAt: new Date(),
+              },
+            });
+          await invalidateCache(chartCacheKey);
+          console.log('[Fortune] GET /chart - Structured reading cached for profile:', profileIdForCache);
 
           return response;
         } catch (err) {
@@ -921,15 +918,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           set.status = 500;
           return { error: 'Failed to generate chart reading' };
         }
-      })();
-
-      // Track IMMEDIATELY (synchronous — runs before the first await inside the IIFE yields)
-      inflightChartGenerations.set(profile.id, generationPromise);
-      generationPromise.finally(() => {
-        inflightChartGenerations.delete(profile.id);
+        },
       });
 
-      return generationPromise;
+      if (flight.source !== 'started') applySharedErrorStatus(set, flight.value);
+      return flight.value;
     } catch (error) {
       console.error('Chart reading error:', error);
       set.status = 500;

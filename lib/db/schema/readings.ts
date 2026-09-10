@@ -16,7 +16,7 @@ export const dailyReadings = pgTable('daily_readings', {
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
-  profileDateIdx: index('daily_readings_profile_date_idx').on(table.profileId, table.date),
+  profileDateIdx: uniqueIndex('daily_readings_profile_date_idx').on(table.profileId, table.date),
 }));
 
 export const chartNarratives = pgTable('chart_narratives', {

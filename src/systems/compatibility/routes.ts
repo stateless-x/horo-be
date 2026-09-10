@@ -11,6 +11,11 @@ import { cache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
+import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
+
+function isGenerationError(value: unknown): value is { error: string; code?: string } {
+  return typeof value === 'object' && value !== null && 'error' in value;
+}
 
 function getContentFields(analysis: string) {
   const structuredContent = parseCompatibilityContent(analysis);
@@ -97,6 +102,15 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           createdAt: existing.createdAt.toISOString(),
         };
       }
+
+      const flight = await generationSingleFlight.run({
+        operation: 'compatibility',
+        key: generationKey('compatibility', userProfile.id, partnerBirthDateStr, relationshipType),
+        lockTtlMs: 300_000,
+        waitTimeoutMs: 250_000,
+        resultTtlSeconds: (value) => isGenerationError(value) ? 5 : 60,
+        isFailure: isGenerationError,
+        run: async () => {
 
       // Check both hourly burst limit AND daily limit (both must pass).
       // The identifier is the bare user id: the bucket name in each config
@@ -240,6 +254,13 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         cached: false,
         createdAt: saved.createdAt.toISOString(),
       };
+        },
+      });
+
+      if (flight.source !== 'started' && isGenerationError(flight.value)) {
+        set.status = flight.value.code === 'RATE_LIMIT_EXCEEDED' ? 429 : 500;
+      }
+      return flight.value;
     } catch (error: any) {
       // Handle unique constraint violation (race condition on double-submit)
       if (error?.code === '23505') {

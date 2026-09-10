@@ -44,6 +44,7 @@ COPY --from=builder /app/node_modules ./node_modules
 # Copy schema files and drizzle config for drizzle-kit push at startup
 COPY --from=builder /app/lib/db/schema ./lib/db/schema
 COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
+COPY --from=builder /app/scripts/ensure-daily-reading-uniqueness.ts ./scripts/ensure-daily-reading-uniqueness.ts
 
 # Set environment to production
 ENV NODE_ENV=production
@@ -55,6 +56,6 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD bun run -e 'fetch(`http://localhost:${process.env.PORT || 3000}/health`).then(r => r.ok ? process.exit(0) : process.exit(1))'
 
-# Run drizzle-kit push in background (hangs after completion due to unclosed DB pool)
-# & lets server start immediately without waiting for push to exit
-CMD ["sh", "-c", "bunx drizzle-kit push & exec bun run start"]
+# Enforce the daily-reading invariant before accepting traffic. Drizzle push
+# remains in the background because its CLI keeps a DB pool open after applying.
+CMD ["sh", "-c", "bun run scripts/ensure-daily-reading-uniqueness.ts && (bunx drizzle-kit push &) && exec bun run start"]
