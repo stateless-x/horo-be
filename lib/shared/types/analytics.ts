@@ -67,6 +67,14 @@ export const TRACKED_CTAS = [
 
 export type TrackedCta = (typeof TRACKED_CTAS)[number];
 
+/** Where an outbound Shopee affiliate tab was triggered. */
+export const AFFILIATE_PLACEMENTS = [
+  'donation_modal_close',
+  'fortune_compatibility_cta',
+] as const;
+
+export type AffiliatePlacement = (typeof AFFILIATE_PLACEMENTS)[number];
+
 export const COMPATIBILITY_FAILURE_CLASSES = [
   'rate_limited',
   'timeout',
@@ -93,6 +101,7 @@ export const TRACKED_EVENT_NAMES = [
   'category_opened',
   'tab_opened',
   'cta_clicked',
+  'affiliate_link_opened',
   'relationship_selected',
   'calculation_started',
   'calculation_failed',
@@ -114,6 +123,12 @@ export type TrackedEvent =
   | { event: 'category_opened'; surface: 'today' | 'fortune'; category: FortuneCategoryKey }
   | { event: 'tab_opened'; surface: 'fortune'; tab: FortuneTabKey }
   | { event: 'cta_clicked'; surface: TrackedEventSurface; cta: TrackedCta }
+  | {
+      event: 'affiliate_link_opened';
+      surface: 'today' | 'fortune';
+      placement: AffiliatePlacement;
+      affiliateLinkId: string;
+    }
   | { event: 'relationship_selected'; relationshipType: RelationshipType }
   | { event: 'calculation_started'; relationshipType: RelationshipType }
   | {
@@ -168,9 +183,10 @@ export function dedupKeyFor(event: TrackedEvent): string | null {
       return event.relationshipType;
     case 'guidance_opened':
       return `next_steps:${event.relationshipType}`;
-    // Every check, every share and every CTA click is a distinct action worth
-    // counting, so these deliberately opt out of dedup.
+    // Every check, share, CTA click, and affiliate open is a distinct action
+    // worth counting, so these deliberately opt out of dedup.
     case 'cta_clicked':
+    case 'affiliate_link_opened':
     case 'calculation_started':
     case 'calculation_failed':
     case 'compatibility_checked':

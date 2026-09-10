@@ -65,6 +65,51 @@ describe('buildProductEventRow', () => {
     ).toThrow(/Invalid cta/);
   });
 
+  test('affiliate_link_opened stores placement and stable link id without deduping', () => {
+    expect(buildProductEventRow(
+      {
+        event: 'affiliate_link_opened',
+        surface: 'today',
+        placement: 'donation_modal_close',
+        affiliateLinkId: '3g3ZYzAx6v',
+      },
+      USER,
+      DATE,
+    )).toEqual({
+      userId: USER,
+      event: 'affiliate_link_opened',
+      surface: 'today',
+      category: 'donation_modal_close',
+      detail: '3g3ZYzAx6v',
+      viewDate: DATE,
+      dedupKey: null,
+    });
+  });
+
+  test('affiliate_link_opened rejects unbounded placement and link values', () => {
+    expect(() => buildProductEventRow(
+      {
+        event: 'affiliate_link_opened',
+        surface: 'today',
+        placement: 'modal' as 'donation_modal_close',
+        affiliateLinkId: '3g3ZYzAx6v',
+      },
+      USER,
+      DATE,
+    )).toThrow(/Invalid placement/);
+
+    expect(() => buildProductEventRow(
+      {
+        event: 'affiliate_link_opened',
+        surface: 'fortune',
+        placement: 'fortune_compatibility_cta',
+        affiliateLinkId: 'https:\/\/example.com',
+      },
+      USER,
+      DATE,
+    )).toThrow(/Invalid affiliateLinkId/);
+  });
+
   test('tab_opened dedups on the tab and pins the surface to fortune', () => {
     const row = buildProductEventRow({ event: 'tab_opened', surface: 'fortune', tab: 'readings' }, USER, DATE);
 

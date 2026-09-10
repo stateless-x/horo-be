@@ -85,7 +85,8 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
   /**
    * Generic product event. Supersedes /view: `surface_viewed` events land here
    * with the same one-per-day guarantee, plus category/tab/share/compatibility
-   * actions. /view is kept working for clients that have not reloaded yet.
+   * and affiliate actions. /view is kept working for clients that have not
+   * reloaded yet.
    */
   .post(
     '/event',
@@ -193,6 +194,15 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
             t.Literal('fortune_compatibility'),
             t.Literal('fortune_today'),
           ]),
+        }),
+        t.Object({
+          event: t.Literal('affiliate_link_opened'),
+          surface: t.Union([t.Literal('today'), t.Literal('fortune')]),
+          placement: t.Union([
+            t.Literal('donation_modal_close'),
+            t.Literal('fortune_compatibility_cta'),
+          ]),
+          affiliateLinkId: t.String({ minLength: 1, maxLength: 20, pattern: '^[A-Za-z0-9]+$' }),
         }),
         t.Object({
           event: t.Literal('relationship_selected'),

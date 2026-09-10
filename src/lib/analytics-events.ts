@@ -1,4 +1,5 @@
 import {
+  AFFILIATE_PLACEMENTS,
   dedupKeyFor,
   COMPATIBILITY_FAILURE_CLASSES,
   COMPATIBILITY_RESULT_ORIGINS,
@@ -62,6 +63,19 @@ export function buildProductEventRow(
       // where" — which can differ from the id's `<from>` if a CTA is ever
       // reused on a second surface.
       return { ...base, surface: input.surface, category: null, detail: input.cta };
+
+    case 'affiliate_link_opened':
+      assertMember(['today', 'fortune'] as const, input.surface, 'surface');
+      assertMember(AFFILIATE_PLACEMENTS, input.placement, 'placement');
+      if (!/^[A-Za-z0-9]{1,20}$/.test(input.affiliateLinkId)) {
+        throw new Error(`Invalid affiliateLinkId: ${input.affiliateLinkId}`);
+      }
+      return {
+        ...base,
+        surface: input.surface,
+        category: input.placement,
+        detail: input.affiliateLinkId,
+      };
 
     case 'relationship_selected':
     case 'calculation_started':
