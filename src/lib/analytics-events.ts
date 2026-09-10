@@ -111,8 +111,19 @@ export function buildProductEventRow(
       };
 
     case 'reading_shared':
-      assertMember(['today', 'fortune'] as const, input.surface, 'surface');
-      return { ...base, surface: input.surface, category: null, detail: null };
+      assertMember(['today', 'fortune', 'compatibility'] as const, input.surface, 'surface');
+      // platform is absent when the sheet was only opened; it lands in
+      // `category` so the admin can count shares per platform the same way it
+      // already counts compatibility_share_initiated.
+      if (input.platform !== undefined) {
+        assertMember(COMPATIBILITY_SHARE_PLATFORMS, input.platform, 'platform');
+      }
+      return {
+        ...base,
+        surface: input.surface,
+        category: input.platform ?? null,
+        detail: null,
+      };
 
     default: {
       // Unreachable while TrackedEvent is exhaustive; guards a future member

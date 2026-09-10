@@ -294,7 +294,19 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
         }),
         t.Object({
           event: t.Literal('reading_shared'),
-          surface: t.Union([t.Literal('today'), t.Literal('fortune')]),
+          surface: t.Union([
+            t.Literal('today'),
+            t.Literal('fortune'),
+            t.Literal('compatibility'),
+          ]),
+          platform: t.Optional(
+            t.Union([
+              t.Literal('line'),
+              t.Literal('facebook'),
+              t.Literal('twitter'),
+              t.Literal('copy'),
+            ])
+          ),
         }),
       ]),
     }

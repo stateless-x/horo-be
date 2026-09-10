@@ -133,7 +133,16 @@ export type TrackedEvent =
       relationshipType: RelationshipType;
       platform: CompatibilitySharePlatform;
     }
-  | { event: 'reading_shared'; surface: 'today' | 'fortune' };
+  | {
+      event: 'reading_shared';
+      surface: 'today' | 'fortune' | 'compatibility';
+      /**
+       * Which platform the user picked. Absent when the share sheet was merely
+       * opened — that intent is worth counting separately from a completed pick,
+       * so the funnel open -> pick stays visible.
+       */
+      platform?: CompatibilitySharePlatform;
+    };
 
 /**
  * The dedup identity of an event within one Bangkok day, or null when every
