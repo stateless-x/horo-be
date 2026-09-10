@@ -579,7 +579,15 @@ export async function generateEnhancedDailyReading(
         temperature: 0.75,
         // The v2 daily contract is deliberately compact, while retaining
         // enough headroom for Thai tokenization and valid closing JSON.
-        timeoutMs: 120_000,
+        //
+        // Bounded by the socket, not by generation speed: Bun caps idleTimeout
+        // at 255s (see http-server-options.ts), and this path runs up to three
+        // attempts with 1s/2s backoff between them. At the previous 120s an
+        // attempt-2 response landed at ~241s and attempt 3 could never be
+        // delivered at all — the socket closed while the model was still
+        // writing, so the retry was unservable rather than merely slow.
+        // 80s keeps the whole ladder (80+1+80+2+80 = 243s) inside the ceiling.
+        timeoutMs: 80_000,
         jsonMode: true,
       });
 
