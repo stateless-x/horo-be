@@ -3,6 +3,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { db } from './db';
 import { config } from '../config';
 import * as schema from '../../lib/db/schema';
+import { providerUserFields } from './provider-identity';
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -13,6 +14,8 @@ export const auth = betterAuth({
     additionalFields: {
       onboardingCompleted: { type: "boolean", defaultValue: false, input: false },
       displayName: { type: "string", required: false, input: false },
+      providerEmail: { type: "string", required: false, input: false },
+      authProvider: { type: "string", required: false, input: false },
     },
   },
   // Dev-only: lets /api/dev/login create and sign in a local dev user
@@ -25,11 +28,13 @@ export const auth = betterAuth({
       clientId: config.oauth.google.clientId,
       clientSecret: config.oauth.google.clientSecret,
       redirectURI: `${config.oauth.baseUrl}/api/auth/callback/google`,
+      mapProfileToUser: (profile) => providerUserFields('google', profile.sub, profile.email),
     },
     twitter: {
       clientId: config.oauth.twitter.clientId,
       clientSecret: config.oauth.twitter.clientSecret,
       redirectURI: `${config.oauth.baseUrl}/api/auth/callback/twitter`,
+      mapProfileToUser: (profile) => providerUserFields('twitter', profile.data.id, profile.data.email),
     },
   },
   baseURL: config.oauth.baseUrl,
@@ -54,6 +59,9 @@ export const auth = betterAuth({
     },
   },
   account: {
+    accountLinking: {
+      enabled: false,
+    },
     // Database strategy stores OAuth state in the 'verification' table
     // Cookie strategy was failing due to cross-domain cookie restrictions
     // (frontend on สายมู.com, API on api-horo.up.railway.app)

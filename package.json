@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "test": "bun test",
+    "test:migration:provider-identity": "sh scripts/test-provider-identity-migration.sh",
     "build": "bun test && bun build src/index.ts --outdir dist --target bun",
     "start": "bun dist/index.js",
     "type-check": "tsc --noEmit",

@@ -55,18 +55,34 @@ lib/shared/      types shared with the frontend
 
 ## The database
 
-Drizzle with schema push, and no migration files. Edit `lib/db/schema/`, and
-Railway applies it by running `drizzle-kit push` when the container starts.
-
-Additive changes land on their own. Destructive ones fail quietly: push runs
-without `--force`, so a dropped column waits for a confirmation that never
-arrives in a deploy, and the change simply never happens. Apply those by hand
-first, then ship a schema that already matches the database.
+Drizzle schemas live in `lib/db/schema/`; ordered SQL migrations and their
+journal live in `drizzle/`. Use migrations for production rollout, especially
+when a change includes data repair. `db:push` is for local schema exploration,
+not a replacement for running checked-in production migrations.
 
 ```bash
-bun run db:push      # apply schema
+bun run db:generate  # generate a migration after a schema change
+bun run db:migrate   # apply checked-in migrations
+bun run db:push      # synchronize a development database
 bun run db:studio    # inspect the database
 ```
+
+Migration `0013_provider_identity.sql` must run before the provider-aware auth
+configuration deploys. It keeps the earliest Google/X provider on the existing
+user and history, moves later providers to fresh users, and stops rather than
+guessing when the earliest provider timestamps are tied.
+
+## Authentication and profile invariants
+
+Google and X are independent identities even when they return the same real
+email. Better Auth receives a deterministic provider-scoped internal email;
+`providerEmail` stores the real address for reporting, and account linking is
+disabled.
+
+Creating a birth profile, Bazi chart, Thai astrology row, display name, signup
+source, and onboarding flag is one PostgreSQL transaction. A per-user advisory
+lock serializes concurrent onboarding tabs. Any failure rolls back the complete
+write, leaving the account in setup rather than partially completed.
 
 ## Shared types
 
@@ -78,7 +94,8 @@ both repositories.
 
 ```bash
 bun run dev          # hot reloading server
-bun test             # 121 tests
+bun test             # run the current suite
+bun run test:migration:provider-identity # verify provider split/abort on PostgreSQL 16
 bun run type-check   # tsc --noEmit
 bun run build        # tests, then build
 ```
@@ -86,4 +103,5 @@ bun run build        # tests, then build
 Type checking reports 16 pre existing errors, all of them Elysia header typing
 complaints. Treat that number as the baseline: anything above it is yours.
 
-Railway builds and deploys on push to `master`, running schema push at startup.
+Railway builds and deploys on push to `master`. Apply pending production
+migrations before code that reads their new columns.

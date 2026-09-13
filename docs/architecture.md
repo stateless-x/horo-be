@@ -56,6 +56,25 @@ left in place.
 See [`shared-types.md`](./shared-types.md) for how types are shared between
 `horo-be` and `horo-fe`.
 
+### Authentication and profile persistence
+
+Better Auth is mounted at `/api/auth` from `src/index.ts`. Google and X map to
+provider-scoped internal identity emails in `src/lib/auth.ts`; the real provider
+address is reporting data, and account linking stays disabled. This is why the
+same email through Google and X produces two users.
+
+`POST /api/fortune/profile` is the onboarding commit boundary. It validates the
+complete request, takes a per-user PostgreSQL advisory lock, rechecks that no
+profile exists, and writes the profile, derived Bazi/Thai data, display name,
+signup source, and completion flag in one transaction. Dashboard clients must
+use `GET /api/fortune/user-profile` as the source of truth rather than trusting
+the completion flag alone.
+
+Migration `0013_provider_identity.sql` upgrades linked historical providers.
+The earliest provider keeps the original user ID and reading history; each later
+provider becomes a fresh user. A tie at the earliest timestamp aborts the
+migration so history ownership is never guessed.
+
 ### Worked example: tarot skeleton
 
 `src/systems/tarot/routes.ts` and its `.use(tarotRoutes)` line in

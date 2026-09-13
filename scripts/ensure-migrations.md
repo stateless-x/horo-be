@@ -1,193 +1,45 @@
-# Migration Automation Guide
+# Production migration runbook
 
-## How Railway Auto-Migrations Work
+The checked-in deployment currently does **not** run ordered migrations.
+`Dockerfile:58-60` starts `drizzle-kit push` in the background and starts the API
+immediately. Push reconciles schema shape; it does not run data movement in
+custom SQL migrations.
 
-Railway runs migrations automatically via `railway.toml`:
-```toml
-[build]
-buildCommand = "bun run db:migrate && bun run build"
-```
+## Before every production schema release
 
-This executes `drizzle-kit migrate` which:
-1. Reads migration files from `drizzle/` directory
-2. Checks `drizzle.__drizzle_migrations` table for applied migrations
-3. Applies only NEW migrations (idempotent)
+1. Compare `drizzle/meta/_journal.json` with
+   `drizzle.__drizzle_migrations`. If the live tracker is incomplete while the
+   tables already exist, stop: `db:migrate` would try to replay old schema
+   creation. Run `bun scripts/check-migrations.js` for this comparison.
+2. Test the pending migration against a disposable PostgreSQL database.
+3. Run `bun run db:migrate` from this repository with the production
+   `DATABASE_URL`.
+4. Verify the new migration row and schema/data invariants.
+5. Deploy the API only after migration success.
 
-## Current Status
-
-✅ **Migration tracker is in sync!**
-- All 8 migrations (0000-0007) are tracked
-- Future migrations will work automatically
-
-## Why It Failed Previously
-
-The migration failed because:
-1. Migration tracker was out of sync with actual database state
-2. `drizzle-kit migrate` tried to replay ALL migrations from scratch
-3. Old migrations (0000-0005) tried to create existing tables → error
-4. New migrations (0006-0007) never ran → missing columns
-
-## How to Ensure Future Migrations Work
-
-### 1. Always Follow the Workflow
-
-```bash
-# LOCAL DEVELOPMENT
-cd horo-be
-
-# Step 1: Modify schema
-vim lib/db/schema/readings.ts
-
-# Step 2: Generate migration
-bun run db:generate
-# This creates: drizzle/0008_new_migration.sql
-
-# Step 3: Review the SQL
-cat drizzle/0008_new_migration.sql
-# ⚠️ Check for destructive operations (DROP COLUMN, DROP TABLE)
-
-# Step 4: Test locally
-bun run db:migrate
-
-# Step 5: Commit BOTH schema AND migration
-git add lib/db/schema/*.ts drizzle/*
-git commit -m "feat: add new feature with migration"
-
-# Step 6: Push to deploy
-git push origin master
-```
-
-### 2. Railway Deployment Flow
-
-```
-Push to GitHub
-    ↓
-Railway detects changes
-    ↓
-Runs: bun run db:migrate
-    ↓
-Drizzle checks tracker table
-    ↓
-Applies ONLY new migrations (idempotent)
-    ↓
-Runs: bun run build
-    ↓
-Deploys
-```
-
-### 3. Verification After Deploy
-
-Check Railway logs for:
-```
-✓ Migrations applied successfully
-✓ No migration errors
-```
-
-Or run this script:
-```bash
-bun scripts/check-migration-status.js
-```
-
-## Best Practices
-
-### ✅ DO
-
-1. **Always generate migrations**: `bun run db:generate`
-2. **Review SQL before committing**: Check for data loss
-3. **Test migrations locally first**: `bun run db:migrate`
-4. **Commit migration files**: They're the source of truth
-5. **Keep migrations small**: One feature = one migration
-6. **Never edit applied migrations**: Create new ones instead
-
-### ❌ DON'T
-
-1. **Don't use `db:push` in production**: It bypasses migration tracking
-2. **Don't manually edit database**: Always use migrations
-3. **Don't delete old migrations**: Breaks history
-4. **Don't edit migration SQL after committing**: Hash changes
-5. **Don't skip `db:generate`**: Direct schema edits won't deploy
-
-## Troubleshooting
-
-### If Migration Fails on Railway
-
-1. **Check Railway logs**:
-   ```
-   Railway Dashboard → horo-be → Deployments → Latest → Logs
-   ```
-
-2. **Identify the error**:
-   - "relation already exists" → Migration already applied manually
-   - "column does not exist" → Migration not applied
-   - "hash mismatch" → Migration file was edited
-
-3. **Fix options**:
-
-   **Option A: Manual sync (like we just did)**
-   ```bash
-   # Run SQL directly on Railway database
-   # Update both schema AND tracker
-   ```
-
-   **Option B: Reset migrations (destructive)**
-   ```sql
-   TRUNCATE drizzle.__drizzle_migrations CASCADE;
-   -- Then: bun run db:migrate (applies all)
-   ```
-
-   **Option C: Mark as applied**
-   ```sql
-   INSERT INTO drizzle.__drizzle_migrations (id, hash, created_at)
-   VALUES (8, 'hash-from-journal', NOW());
-   ```
-
-## Migration Tracker Table
+Useful read-only tracker query:
 
 ```sql
--- Structure
-CREATE TABLE drizzle.__drizzle_migrations (
-  id integer PRIMARY KEY,      -- Migration index (0, 1, 2, ...)
-  hash varchar(64),            -- SHA-256 of migration file
-  created_at bigint            -- Unix timestamp (ms)
-);
-
--- Check status
-SELECT id, LEFT(hash, 12), created_at
+SELECT id, LEFT(hash, 12) AS hash_prefix, created_at
 FROM drizzle.__drizzle_migrations
-ORDER BY id;
+ORDER BY created_at;
 ```
 
-## Emergency Commands
+Never truncate the production tracker or mark a migration applied without also
+proving its SQL effects exist. Never rely on `db:push` for a data repair.
 
-```bash
-# Check what migrations are pending
-cd horo-be
-bun run db:generate --custom  # See what would be generated
+## Provider identity release
 
-# Force re-sync (DANGEROUS - only for dev)
-# 1. Drop tracker table
-# 2. Re-run all migrations
+Migration `0013_provider_identity.sql` must precede the provider-aware backend.
+It adds `providerEmail`, `authProvider`, and the previously untracked
+`signupSource` column when needed; splits linked Google/X accounts by earliest
+provider creation time; preserves the first provider's profile/readings; and
+revokes affected sessions.
 
-# Safe re-sync (RECOMMENDED)
-# 1. Manually apply pending schema changes
-# 2. Update tracker to mark as applied
-```
+The migration aborts if the earliest Google and X timestamps tie. Resolve only
+those users from known signup evidence, update the timestamps, and rerun. This
+guard prevents assigning history to the wrong login provider.
 
-## Future-Proofing
-
-### Railway will automatically migrate IF:
-
-1. ✅ Migration files exist in `drizzle/` directory
-2. ✅ Migration tracker table exists and is synced
-3. ✅ `db:migrate` is in `railway.toml` buildCommand
-4. ✅ DATABASE_URL environment variable is set
-5. ✅ Migration SQL is valid and idempotent
-
-### Current Setup: ALL ✅
-
-- Migration tracker: **8/8 migrations synced**
-- railway.toml: **Configured correctly**
-- Migration files: **All present (0000-0007)**
-- Database: **Schema matches migrations**
-
-**You're all set! Future migrations will work automatically.**
+Before production rollout, run `bun run test:migration:provider-identity` from
+`horo-be`. Its PostgreSQL 16 fixtures verify both signup orders, history/session
+ownership, unaffected single-provider accounts, and the tied-timestamp abort.

@@ -5,7 +5,7 @@ import { normalizeSignupSource } from '../../lib/analytics-events';
 import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
-import { eq, and, desc, lt, isNull } from 'drizzle-orm';
+import { eq, and, desc, lt, isNull, sql } from 'drizzle-orm';
 import {
   buildTeaserPrompt,
   buildStructuredChartPrompt,
@@ -202,57 +202,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       console.log('[Fortune] POST /profile - Saving profile for user:', userId);
       console.log('[Fortune] Profile data:', { birthDate, birthHour, gender: profile.gender });
 
-      // Check existing profile + update displayName in parallel (independent)
-      const [existingProfileResult] = await Promise.all([
-        db.select()
-          .from(birthProfiles)
-          .where(eq(birthProfiles.userId, userId))
-          .limit(1),
-        profile.name
-          ? db.update(user)
-              .set({ displayName: profile.name, updatedAt: new Date() })
-              .where(eq(user.id, userId))
-          : Promise.resolve(),
-      ]);
-      const existingProfile = existingProfileResult[0];
-
-      let savedProfile;
-
-      if (existingProfile) {
-        console.log('[Fortune] Profile already exists, updating...');
-        [savedProfile] = await db
-          .update(birthProfiles)
-          .set({
-            birthDate,
-            birthHour,
-            birthTimePeriod: profile.birthTime?.period,
-            gender: profile.gender,
-            isTimeUnknown: profile.birthTime?.isUnknown || false,
-            mbtiType: profile.mbtiType || null,
-            updatedAt: new Date(),
-          })
-          .where(eq(birthProfiles.userId, userId))
-          .returning();
-      } else {
-        console.log('[Fortune] Creating new profile...');
-        [savedProfile] = await db.insert(birthProfiles).values({
-          userId,
-          birthDate,
-          birthHour,
-          birthTimePeriod: profile.birthTime?.period,
-          gender: profile.gender,
-          isTimeUnknown: profile.birthTime?.isUnknown || false,
-          mbtiType: profile.mbtiType || null,
-        }).returning();
-      }
-
       // Calculate Bazi + Thai astrology (sync, independent of each other)
       const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
       const thaiAstro = calculateThaiAstrology(birthDate);
 
-      // Save Bazi + Thai astrology in parallel using atomic upserts
-      // Each table has a UNIQUE constraint on profileId, so ON CONFLICT DO UPDATE is safe
-      // No SELECT needed — single atomic statement per table, parallel across tables
+      // Each derived table has a UNIQUE constraint on profileId, so its upsert
+      // remains idempotent when onboarding is retried.
       const baziData = {
         yearPillar: JSON.stringify(baziChart.yearPillar),
         monthPillar: JSON.stringify(baziChart.monthPillar),
@@ -273,20 +228,75 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
         luckyDirection: thaiAstro.luckyDirection,
       };
 
-      await Promise.all([
-        db.insert(baziCharts)
-          .values({ profileId: savedProfile.id, ...baziData })
+      const savedProfile = await db.transaction(async (tx) => {
+        // birth_profiles.user_id has a legacy non-unique index. Serialize the
+        // first-profile decision per user so simultaneous tabs cannot both
+        // observe "missing" and insert duplicate rows.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`);
+
+        const [existingProfile] = await tx
+          .select()
+          .from(birthProfiles)
+          .where(eq(birthProfiles.userId, userId))
+          .limit(1);
+
+        let persistedProfile;
+        if (existingProfile) {
+          console.log('[Fortune] Profile already exists, updating...');
+          [persistedProfile] = await tx
+            .update(birthProfiles)
+            .set({
+              birthDate,
+              birthHour,
+              birthTimePeriod: profile.birthTime?.period,
+              gender: profile.gender,
+              isTimeUnknown: profile.birthTime?.isUnknown || false,
+              mbtiType: profile.mbtiType || null,
+              updatedAt: new Date(),
+            })
+            .where(eq(birthProfiles.userId, userId))
+            .returning();
+        } else {
+          console.log('[Fortune] Creating new profile...');
+          [persistedProfile] = await tx
+            .insert(birthProfiles)
+            .values({
+              userId,
+              birthDate,
+              birthHour,
+              birthTimePeriod: profile.birthTime?.period,
+              gender: profile.gender,
+              isTimeUnknown: profile.birthTime?.isUnknown || false,
+              mbtiType: profile.mbtiType || null,
+            })
+            .returning();
+        }
+
+        await tx
+          .insert(baziCharts)
+          .values({ profileId: persistedProfile.id, ...baziData })
           .onConflictDoUpdate({
             target: baziCharts.profileId,
             set: baziData,
-          }),
-        db.insert(thaiAstrologyData)
-          .values({ profileId: savedProfile.id, ...thaiData })
+          });
+        await tx
+          .insert(thaiAstrologyData)
+          .values({ profileId: persistedProfile.id, ...thaiData })
           .onConflictDoUpdate({
             target: thaiAstrologyData.profileId,
             set: thaiData,
-          }),
-      ]);
+          });
+        await tx
+          .update(user)
+          .set({
+            displayName: profile.name,
+            onboardingCompleted: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(user.id, userId));
+
+        return persistedProfile;
+      });
 
       // First-touch signup attribution: only write when the column is still NULL,
       // so a returning user is never re-attributed. Best-effort — never blocks the save.

@@ -92,6 +92,13 @@
       "when": 1772611200000,
       "tag": "0012_add_mbti_type",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789317058380,
+      "tag": "0013_provider_identity",
+      "breakpoints": true
     }
   ]
 }

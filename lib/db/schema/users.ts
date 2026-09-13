@@ -14,6 +14,10 @@ export const user = pgTable('user', {
   name: text('name').notNull(),
   displayName: text('displayName'), // User's chosen display name from onboarding (overrides OAuth name)
   email: text('email').notNull().unique(),
+  // Better Auth identity email is provider-scoped. Keep the real address
+  // separately so reports never expose the synthetic identity value.
+  providerEmail: text('providerEmail'),
+  authProvider: text('authProvider'),
   emailVerified: boolean('emailVerified').notNull().default(false),
   image: text('image'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
