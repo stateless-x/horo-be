@@ -502,3 +502,29 @@ describe('campaign directory resolution', () => {
     expect(listCampaignIds()).toContain('2026-09-15-relaunch');
   });
 });
+
+/**
+ * Recipient eligibility.
+ *
+ * A real send hit this: 12 of the first 100 recipients were X usernames stored
+ * in the email column by OAuth sign-up, and every one hard-bounced with
+ * "Invalid `to` field". 153 such rows exist. Hard bounces at that rate are the
+ * fastest way to destroy a new sending domain's reputation, so they must never
+ * reach the provider at all.
+ */
+describe('recipient eligibility', () => {
+  const source = readFileSync(join(import.meta.dir, '../src/lib/campaign-sender.ts'), 'utf-8');
+
+  test('the candidate query filters non-email values', () => {
+    // A Postgres regex on user.email, applied in the WHERE clause so invalid
+    // rows never consume quota or a claim.
+    expect(source).toMatch(/user\.email\}\s*~\s*'\^\[\^@\[:space:\]\]/);
+  });
+
+  test('anyone already handled is excluded, failures included', () => {
+    // alreadyHandled selects every row for the campaign regardless of status,
+    // so a 'failed' address is never retried.
+    expect(source).toContain('notInArray(user.id, alreadyHandled)');
+    expect(source).toMatch(/alreadyHandled[\s\S]{0,200}where\(eq\(emailSends\.campaignId, campaignId\)\)/);
+  });
+});

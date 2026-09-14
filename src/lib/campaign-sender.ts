@@ -38,6 +38,10 @@ export type PlanResult =
  * Who would receive this campaign right now, bounded by the remaining
  * account-wide quota. Writes nothing.
  *
+ * Excludes users whose stored email is not a valid address, and anyone who
+ * already has a row for this campaign — including a 'failed' one, so a rejected
+ * address is never retried.
+ *
  * Refuses when the provider's usage cannot be read: the quota is shared with
  * other projects, so without that number there is no safe batch size.
  */
@@ -68,6 +72,11 @@ export async function planSend(campaignId: string, only?: string): Promise<PlanR
     .where(
       and(
         eq(user.emailOptOut, false),
+        // Skip rows whose "email" is not one. OAuth sign-ups can land a
+        // provider username here (153 of them at the time of writing), and
+        // mailing those produces hard bounces — the single fastest way to
+        // wreck a new sending domain's reputation.
+        sql`${user.email} ~ '^[^@[:space:]]+@[^@[:space:]]+\.[A-Za-z]{2,}$'`,
         notInArray(user.id, alreadyHandled),
         only ? eq(user.email, only) : undefined,
       ),
