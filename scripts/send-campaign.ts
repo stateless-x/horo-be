@@ -20,10 +20,19 @@
  *   --no-unsubscribe omit the opt-out link and List-Unsubscribe header
  *
  * SHARED QUOTA
- * The Resend quota is per ACCOUNT. Mail sent by another site on the same API
- * key consumes the same daily allowance and is invisible to this script, which
- * only counts email_sends rows. Set EMAIL_DAILY_RESERVE to roughly what those
- * other senders use per day so a campaign cannot starve them.
+ * The Resend quota is per ACCOUNT, so other sites on the same API key (Pawjai,
+ * etc.) spend it too. Rather than guess their volume, this script ASKS Resend
+ * how many messages the whole account sent today (GET /emails) and subtracts
+ * that from EMAIL_DAILY_CAP — no configuration needed, and it is correct even
+ * when the other sites' volume changes day to day.
+ *
+ * If that call fails, it falls back to counting our own email_sends rows and
+ * subtracting EMAIL_DAILY_RESERVE, printing a warning that says the number is
+ * a guess. It never assumes the other senders sent nothing.
+ *
+ * A 429 mid-batch (another site spending the quota while we run) stops the run
+ * cleanly: the in-flight claim is released and the untouched recipients simply
+ * go out next time.
  *
  * MANUAL APPROVAL
  * A live send never happens from --campaign alone. The script shows the batch
@@ -50,7 +59,7 @@ import { sql, and, eq, gte, notInArray } from 'drizzle-orm';
 import { db } from '../src/lib/db';
 import { user, emailSends } from '../lib/db/schema';
 import { config } from '../src/config';
-import { sendEmail, unsubscribeUrl } from '../src/lib/email';
+import { sendEmail, unsubscribeUrl, getAccountSentToday } from '../src/lib/email';
 import { loadCampaign, listCampaignIds, listCampaigns, renderBody, toHtml, toText } from '../src/lib/campaigns';
 
 /** Bangkok day boundary — the cap is "per calendar day" as the user sees it. */
@@ -87,17 +96,26 @@ async function printStatus() {
     .from(emailSends)
     .where(and(eq(emailSends.status, 'sent'), gte(emailSends.sentAt, startOfBangkokDay())));
 
-  const usable = Math.max(0, config.email.dailyCap - config.email.dailyReserve);
   console.log(`\nEligible users (not opted out): ${totalUsers[0]?.n ?? 0}`);
-  console.log(
-    `Sent today (Bangkok): ${sentToday[0]?.n ?? 0} / ${usable} usable` +
-      (config.email.dailyReserve > 0
-        ? `  (cap ${config.email.dailyCap}, ${config.email.dailyReserve} reserved)`
-        : ''),
-  );
-  // Counts only this script's sends — other sites sharing the Resend account
-  // consume the same quota invisibly.
-  console.log(`Other sites on the same Resend account share this quota.\n`);
+  console.log(`Campaign emails sent today (Bangkok): ${sentToday[0]?.n ?? 0}`);
+
+  // The account-wide number is the one that decides whether a send can proceed,
+  // so --status reports it rather than only our own rows.
+  const usage = await getAccountSentToday(startOfBangkokDay());
+  if (usage.known) {
+    const ours = sentToday[0]?.n ?? 0;
+    const others = Math.max(0, usage.sentToday - ours);
+    console.log(
+      `Whole Resend account today: ${usage.sentToday}/${config.email.dailyCap}` +
+        (others > 0 ? `  (${others} from other sites)` : ''),
+    );
+    console.log(`Remaining today: ${Math.max(0, config.email.dailyCap - usage.sentToday)}\n`);
+  } else {
+    console.log(
+      `Whole Resend account today: unknown (${usage.reason})\n` +
+        `Falling back to cap ${config.email.dailyCap} minus reserve ${config.email.dailyReserve}.\n`,
+    );
+  }
 
   const all = listCampaigns();
   if (all.length === 0) {
@@ -195,22 +213,47 @@ async function main() {
     );
   }
 
-  // Remaining daily budget, counting what already went out today across ALL
-  // campaigns — the provider quota is per account, not per campaign.
+  // Remaining daily budget.
   //
-  // IMPORTANT: this only counts rows in email_sends. If the same Resend account
-  // sends for another site or app, those messages consume the SAME daily quota
-  // and are invisible here — so the real remaining budget is lower than this
-  // number. EMAIL_DAILY_RESERVE holds back that much for other senders; set it
-  // to roughly what the other sites use per day. Without it, a campaign can eat
-  // the whole quota and the other site's mail starts failing.
-  const sentTodayRows = await db
+  // The quota is per ACCOUNT, so other sites on the same Resend key (Pawjai,
+  // etc.) spend it too. Rather than guess their volume with a fixed reserve, we
+  // ASK RESEND how many messages the whole account sent today and subtract
+  // that. `ourSentToday` stays as the fallback for when the API cannot answer.
+  const dayStart = startOfBangkokDay();
+
+  const ourSentRows = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(emailSends)
-    .where(and(eq(emailSends.status, 'sent'), gte(emailSends.sentAt, startOfBangkokDay())));
-  const sentToday = sentTodayRows[0]?.n ?? 0;
+    .where(and(eq(emailSends.status, 'sent'), gte(emailSends.sentAt, dayStart)));
+  const ourSentToday = ourSentRows[0]?.n ?? 0;
 
-  const effectiveCap = Math.max(0, config.email.dailyCap - config.email.dailyReserve);
+  const usage = await getAccountSentToday(dayStart);
+
+  // Authoritative path: the provider's own count covers every sender.
+  // Fallback: our rows plus the configured reserve, which is a guess and says
+  // so. Never assume "0 from other senders" — that is exactly the assumption
+  // that would spend Pawjai's quota.
+  const sentToday = usage.known ? usage.sentToday : ourSentToday;
+  const effectiveCap = usage.known
+    ? config.email.dailyCap
+    : Math.max(0, config.email.dailyCap - config.email.dailyReserve);
+
+  if (usage.known) {
+    const others = Math.max(0, usage.sentToday - ourSentToday);
+    console.log(
+      `Quota:      ${usage.sentToday}/${config.email.dailyCap} used today across the whole Resend account` +
+        (others > 0 ? `  (${others} from other senders)` : ''),
+    );
+  } else {
+    console.warn(
+      `WARNING: could not read the account's usage from Resend (${usage.reason}).\n` +
+        `         Falling back to our own count (${ourSentToday}) minus EMAIL_DAILY_RESERVE ` +
+        `(${config.email.dailyReserve}).\n` +
+        `         Mail sent by other sites today is NOT counted, so the real remaining\n` +
+        `         quota may be lower. Raise EMAIL_DAILY_RESERVE if their mail starts failing.`,
+    );
+  }
+
   let budget = Math.max(0, effectiveCap - sentToday);
   const limitFlag = arg('limit');
   if (limitFlag) budget = Math.min(budget, parseInt(limitFlag));
@@ -304,6 +347,8 @@ async function main() {
   let failed = 0;
   let requeued = 0;
   let errored = 0;
+  /** Set when the provider reports the account is out of quota mid-batch. */
+  let quotaHit = false;
 
   for (const c of candidates) {
     // One recipient must never abort the batch. sendEmail already swallows its
@@ -339,6 +384,19 @@ async function main() {
           .where(eq(emailSends.id, claimed[0].id));
         sent++;
         console.log(`  ✓ ${c.email}`);
+      } else if (/rate|quota|limit|429|too many/i.test(result.error) && result.retryable) {
+        // Quota exhausted mid-batch — typically another site on the account
+        // spending it while we ran. Release this claim and STOP: continuing
+        // would fail every remaining send and pile up retryable rows.
+        await db.delete(emailSends).where(eq(emailSends.id, claimed[0].id));
+        requeued++;
+        console.log(`  ↻ ${c.email} — ${result.error}`);
+        console.warn(
+          `\nStopped early: the Resend account hit its rate or quota limit.\n` +
+            `Sent ${sent} this run. The rest are untouched and will go out on the next run.`,
+        );
+        quotaHit = true;
+        break;
       } else if (result.retryable) {
         // Transient (network, 5xx, 429): Resend never accepted the message, so
         // releasing the claim cannot double-send. Deleting the row puts this
@@ -370,7 +428,9 @@ async function main() {
     await new Promise((r) => setTimeout(r, 550));
   }
 
-  console.log(`\nDone. sent=${sent} failed=${failed} requeued=${requeued} errored=${errored}`);
+  console.log(
+    `\n${quotaHit ? 'Stopped at quota.' : 'Done.'} sent=${sent} failed=${failed} requeued=${requeued} errored=${errored}`,
+  );
   if (errored > 0) {
     console.log(`${errored} recipient(s) hit a DB error and may be stranded 'pending' — run --status, then --requeue to release them.`);
   }

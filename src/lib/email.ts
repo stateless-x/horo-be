@@ -133,3 +133,82 @@ export function verifyUnsubscribeToken(token: string): string | null {
 export function unsubscribeUrl(userId: string): string {
   return `${config.oauth.baseUrl}/email/unsubscribe/${signUnsubscribeToken(userId)}`;
 }
+
+export type AccountUsage =
+  | { known: true; sentToday: number }
+  | { known: false; reason: string };
+
+/**
+ * How many emails the WHOLE Resend account sent today (Bangkok), counted from
+ * the provider rather than from our own email_sends table.
+ *
+ * This exists because the daily quota is per ACCOUNT: other sites on the same
+ * API key (e.g. Pawjai) consume it, and our table cannot see them. Guessing
+ * that volume with a fixed reserve is either wasteful (reserve too high) or
+ * breaks their mail (too low), so we ask.
+ *
+ * Returns `known: false` rather than throwing or guessing a number. The caller
+ * decides what to do with an unknown, and must never silently treat it as zero
+ * — that would spend the other sites' quota precisely when we cannot see it.
+ *
+ * Pagination walks newest-first and stops at the first message older than the
+ * Bangkok day start, so a busy account costs a couple of pages, not a full
+ * history scan.
+ */
+export async function getAccountSentToday(dayStartUtc: Date): Promise<AccountUsage> {
+  if (!config.email.resendApiKey) return { known: false, reason: 'RESEND_API_KEY not set' };
+
+  const PAGE = 100;       // Resend's documented maximum
+  const MAX_PAGES = 20;   // 2,000 messages: far beyond any free/pro daily cap
+  let counted = 0;
+  let after: string | undefined;
+
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const url = new URL(RESEND_API);
+      url.searchParams.set('limit', String(PAGE));
+      if (after) url.searchParams.set('after', after);
+
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${config.email.resendApiKey}` },
+      });
+
+      if (!res.ok) {
+        return { known: false, reason: `Resend list returned HTTP ${res.status}` };
+      }
+
+      const payload = (await res.json().catch(() => null)) as {
+        data?: { id: string; created_at: string }[];
+      } | null;
+
+      // A body we cannot parse is NOT an empty account. Reporting 0 here would
+      // claim the other senders sent nothing and hand this campaign the whole
+      // cap — the precise mistake this function exists to prevent.
+      if (!payload || !Array.isArray(payload.data)) {
+        return { known: false, reason: 'Resend list returned an unreadable body' };
+      }
+
+      const rows = payload.data;
+      // A genuinely empty array IS an empty account (or the end of the list).
+      if (rows.length === 0) return { known: true, sentToday: counted };
+
+      for (const row of rows) {
+        const created = new Date(row.created_at);
+        // Rows arrive newest-first, so the first one older than the day start
+        // means every remaining row is older too.
+        if (Number.isNaN(created.getTime())) continue;
+        if (created < dayStartUtc) return { known: true, sentToday: counted };
+        counted++;
+      }
+
+      if (rows.length < PAGE) return { known: true, sentToday: counted };
+      after = rows[rows.length - 1].id;
+    }
+
+    // Hit the page ceiling without reaching the day boundary. The count is a
+    // floor, not a total — reporting it as known would understate usage.
+    return { known: false, reason: `more than ${PAGE * MAX_PAGES} messages in history` };
+  } catch (err) {
+    return { known: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}

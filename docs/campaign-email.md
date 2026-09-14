@@ -170,11 +170,34 @@ campaign. The cap counts sends across *all* campaigns, since the provider quota
 is per account — so a second run the same day tops up to the cap rather than
 doubling it.
 
-**The quota is shared with every other site on the same Resend account**, and
-this script only counts its own sends — other senders are invisible to it. Set
-`EMAIL_DAILY_RESERVE` to roughly what those other sites use per day, or a
-campaign can consume the whole allowance and their mail starts failing. With
-`EMAIL_DAILY_CAP=100` and `EMAIL_DAILY_RESERVE=20`, campaigns use at most 80/day.
+### Quota shared with other sites
+
+The Resend quota is **per account**, so other sites on the same API key (Pawjai,
+etc.) spend it too. You don't have to estimate their volume: before each run the
+script calls Resend's `GET /emails` and counts every message the account sent
+today, whoever sent it, then subtracts that from `EMAIL_DAILY_CAP`.
+
+```
+Quota:      64/100 used today across the whole Resend account  (22 from other senders)
+```
+
+`EMAIL_DAILY_RESERVE` is only the **fallback** for when that call fails (network
+error, API change). Then the script counts its own rows, subtracts the reserve,
+and warns that the number is a guess:
+
+```
+WARNING: could not read the account's usage from Resend (HTTP 500).
+         Falling back to our own count (40) minus EMAIL_DAILY_RESERVE (20).
+         Mail sent by other sites today is NOT counted, so the real remaining
+         quota may be lower.
+```
+
+It never assumes the other senders sent nothing — an unreadable answer is
+treated as unknown, not as zero.
+
+If another site exhausts the quota **while a batch is running**, the 429 stops
+the run cleanly: the in-flight claim is released, the untouched recipients are
+left alone, and they go out on the next run.
 
 If you start a second campaign before the first drains, they compete for the
 same 100/day. Drain one before starting the next; `--status` shows where each

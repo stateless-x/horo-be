@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { listCampaignIds, listCampaigns, loadCampaign, renderBody, toHtml, toText } from '../src/lib/campaigns';
-import { isRetryableStatus, signUnsubscribeToken, verifyUnsubscribeToken } from '../src/lib/email';
+import { config } from '../src/config';
+import { getAccountSentToday, isRetryableStatus, signUnsubscribeToken, verifyUnsubscribeToken } from '../src/lib/email';
 import { emailSends } from '../lib/db/schema';
 
 /**
@@ -182,5 +183,119 @@ describe('campaign front-matter', () => {
     const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
     expect(hrefs.length).toBeGreaterThan(0);
     for (const href of hrefs) expect(href).toMatch(/^https:\/\/[\x00-\x7F]+$/);
+  });
+});
+
+/**
+ * Account-wide quota accounting.
+ *
+ * The Resend quota is per ACCOUNT, so other sites on the same key spend it and
+ * our own email_sends rows cannot see them. getAccountSentToday asks the
+ * provider instead. The rule that matters: an unreadable answer must return
+ * `known: false`, never 0 — reporting "nobody sent anything" when we simply
+ * could not look is what would spend the other sites' quota.
+ */
+describe('account-wide quota', () => {
+  const dayStart = new Date('2026-09-14T17:00:00Z'); // 2026-09-15 00:00 Bangkok
+
+  // getAccountSentToday short-circuits to `known: false` without an API key, so
+  // the key is set here rather than inherited from the shell — otherwise these
+  // pass locally and fail in CI, where no email env is configured.
+  const withFetch = async (
+    stub: (url: string) => Response | Promise<Response>,
+    run: () => Promise<void>,
+  ) => {
+    const real = globalThis.fetch;
+    const realKey = config.email.resendApiKey;
+    config.email.resendApiKey = 'test-key';
+    globalThis.fetch = ((input: any) =>
+      Promise.resolve(stub(typeof input === 'string' ? input : input.toString()))) as any;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = real;
+      config.email.resendApiKey = realKey;
+    }
+  };
+
+  const page = (rows: { id: string; created_at: string }[]) =>
+    new Response(JSON.stringify({ data: rows }), { status: 200 });
+
+  test('counts only messages sent since the Bangkok day start', async () => {
+    await withFetch(
+      () =>
+        page([
+          { id: 'e3', created_at: '2026-09-15T03:00:00Z' }, // today
+          { id: 'e2', created_at: '2026-09-14T18:00:00Z' }, // today
+          { id: 'e1', created_at: '2026-09-14T10:00:00Z' }, // yesterday — stops here
+        ]),
+      async () => {
+        const usage = await getAccountSentToday(dayStart);
+        expect(usage.known).toBe(true);
+        expect(usage.known && usage.sentToday).toBe(2);
+      },
+    );
+  });
+
+  test('counts other sites mail, not just ours', async () => {
+    // Every row counts regardless of which site sent it — that is the point.
+    await withFetch(
+      () =>
+        page(
+          Array.from({ length: 12 }, (_, i) => ({
+            id: `e${i}`,
+            created_at: '2026-09-15T02:00:00Z',
+          })),
+        ),
+      async () => {
+        const usage = await getAccountSentToday(dayStart);
+        expect(usage.known && usage.sentToday).toBe(12);
+      },
+    );
+  });
+
+  test('an empty account reads as zero, not unknown', async () => {
+    await withFetch(
+      () => page([]),
+      async () => {
+        const usage = await getAccountSentToday(dayStart);
+        expect(usage.known).toBe(true);
+        expect(usage.known && usage.sentToday).toBe(0);
+      },
+    );
+  });
+
+  test('an API error is unknown, never zero', async () => {
+    // The critical case: treating a failed lookup as 0 would hand the whole
+    // cap to this campaign and break the other sites' mail.
+    await withFetch(
+      () => new Response('nope', { status: 500 }),
+      async () => {
+        const usage = await getAccountSentToday(dayStart);
+        expect(usage.known).toBe(false);
+      },
+    );
+  });
+
+  test('a network throw is unknown, never zero', async () => {
+    await withFetch(
+      () => {
+        throw new Error('ECONNRESET');
+      },
+      async () => {
+        const usage = await getAccountSentToday(dayStart);
+        expect(usage.known).toBe(false);
+      },
+    );
+  });
+
+  test('malformed json is unknown, never zero', async () => {
+    await withFetch(
+      () => new Response('<html>', { status: 200 }),
+      async () => {
+        const usage = await getAccountSentToday(dayStart);
+        expect(usage.known).toBe(false);
+      },
+    );
   });
 });
