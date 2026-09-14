@@ -475,3 +475,30 @@ describe('docker image includes campaign files', () => {
     expect(lines).not.toContain('content/');
   });
 });
+
+/**
+ * Campaign directory resolution.
+ *
+ * The real production failure this guards: CAMPAIGN_DIR was computed from
+ * import.meta.dir with a fixed '../../' hop. That is correct from src/lib in
+ * development, but the build bundles everything into dist/index.js — so in
+ * production the same expression resolved to /content/campaigns (filesystem
+ * root) instead of /app/content/campaigns. listCampaigns() returned [], the
+ * admin UI had nothing to send, and no log said why.
+ *
+ * Anchoring on cwd makes dev and bundled builds agree, since both run from the
+ * package root.
+ */
+describe('campaign directory resolution', () => {
+  test('resolves from cwd, not from the module location', () => {
+    const source = readFileSync(join(import.meta.dir, '../src/lib/campaigns.ts'), 'utf-8');
+    expect(source).toContain('process.cwd()');
+    // A '../..' hop from import.meta.dir breaks once bundled into dist/.
+    expect(source).not.toMatch(/CAMPAIGN_DIR\s*=\s*join\(import\.meta\.dir/);
+  });
+
+  test('finds the shipped campaign from the package root', () => {
+    // Tests run from the package root, the same cwd as `bun dist/index.js`.
+    expect(listCampaignIds()).toContain('2026-09-15-relaunch');
+  });
+});

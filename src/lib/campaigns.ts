@@ -32,7 +32,20 @@ export interface Campaign {
   body: string;
 }
 
-const CAMPAIGN_DIR = join(import.meta.dir, '../../content/campaigns');
+/**
+ * Resolved from the process working directory, NOT from import.meta.dir.
+ *
+ * The build bundles src/ into dist/index.js, so import.meta.dir is `<root>/src/lib`
+ * in development but `<root>/dist` in production — and a fixed '../../' hop
+ * lands on `/content/campaigns` (filesystem root) once bundled, instead of
+ * `/app/content/campaigns`. That silently returned an empty campaign list in
+ * production while working perfectly on a dev machine.
+ *
+ * Both `bun run dev` and `bun dist/index.js` run from the package root, so
+ * cwd is the stable anchor. CAMPAIGN_DIR overrides it when a caller needs to
+ * run from elsewhere.
+ */
+const CAMPAIGN_DIR = process.env.CAMPAIGN_DIR || join(process.cwd(), 'content/campaigns');
 
 /** Minimal `key: value` front-matter; the body is everything after the fence. */
 function parse(id: string, raw: string): Campaign {
