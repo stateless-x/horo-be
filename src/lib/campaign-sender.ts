@@ -30,8 +30,19 @@ export type Candidate = {
   fallbackName: string;
 };
 
+/**
+ * Why a send cannot proceed. The machine-readable `code` exists so the admin UI
+ * can tell an ORDINARY state from a FAULT: hitting the daily cap is the normal
+ * condition on ~17 of the 18 days a campaign takes to drain, and painting it in
+ * the same red alert box as a broken provider trains the operator to ignore
+ * both.
+ */
+export type PlanRefusal =
+  | { code: 'quota_exhausted'; reason: string; quotaUsed: number; quotaCap: number }
+  | { code: 'usage_unreadable'; reason: string };
+
 export type PlanResult =
-  | { ok: false; reason: string }
+  | ({ ok: false } & PlanRefusal)
   | { ok: true; candidates: Candidate[]; quotaUsed: number; quotaCap: number };
 
 /**
@@ -52,13 +63,20 @@ export async function planSend(campaignId: string, only?: string): Promise<PlanR
   if (!usage.known) {
     return {
       ok: false,
+      code: 'usage_unreadable',
       reason: `Cannot read today's Resend usage (${usage.reason}). The quota is shared with your other projects, so there is no safe amount to send.`,
     };
   }
 
   const budget = Math.max(0, config.email.dailyCap - usage.sentToday);
   if (budget <= 0) {
-    return { ok: false, reason: `Daily cap reached (${usage.sentToday}/${config.email.dailyCap}).` };
+    return {
+      ok: false,
+      code: 'quota_exhausted',
+      reason: `Daily cap reached (${usage.sentToday}/${config.email.dailyCap}).`,
+      quotaUsed: usage.sentToday,
+      quotaCap: config.email.dailyCap,
+    };
   }
 
   const alreadyHandled = db

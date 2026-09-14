@@ -9,8 +9,8 @@ import { loadCampaign, listCampaigns } from '../lib/campaigns';
  *
  * NOT a public API and not session-authenticated: horo-admin proves itself with
  * a shared secret (ADMIN_API_SECRET) that only the two services know. horo-admin
- * does its own role check (super_admin) before calling — this endpoint's job is
- * to refuse anyone who is not horo-admin at all.
+ * does its own access check before calling — this endpoint's job is to refuse
+ * anyone who is not horo-admin at all.
  *
  * The whole route is absent unless ADMIN_API_SECRET is set, so a misconfigured
  * deploy cannot expose an unauthenticated send. Mounting is gated in index.ts
@@ -55,7 +55,13 @@ export const internalCampaignRoutes = new Elysia({ prefix: '/internal/campaigns'
     const plan = await planSend(params.campaignId);
     if (!plan.ok) {
       set.status = 409; // readable state, just not a sendable one
-      return { error: plan.reason };
+      return {
+        error: plan.reason,
+        code: plan.code,
+        ...(plan.code === 'quota_exhausted'
+          ? { quotaUsed: plan.quotaUsed, quotaCap: plan.quotaCap }
+          : {}),
+      };
     }
 
     return {
@@ -101,7 +107,7 @@ export const internalCampaignRoutes = new Elysia({ prefix: '/internal/campaigns'
       const plan = await planSend(body.campaignId);
       if (!plan.ok) {
         set.status = 409;
-        return { error: plan.reason };
+        return { error: plan.reason, code: plan.code };
       }
 
       if (plan.candidates.length !== body.expectedCount) {
