@@ -52,12 +52,10 @@ export const config = {
     resendApiKey: process.env.RESEND_API_KEY || '',
     from: process.env.EMAIL_FROM || '',
     replyTo: process.env.EMAIL_REPLY_TO || '',
+    // Your Resend plan's per-day quota (free tier: 100). Shared with every
+    // other project on the same API key — the sender reads actual usage from
+    // Resend rather than assuming this is all ours.
     dailyCap: parseInt(process.env.EMAIL_DAILY_CAP || '100'),
-    // Held back from dailyCap for senders this script cannot see. The Resend
-    // quota is per ACCOUNT, so mail sent by another site on the same key eats
-    // the same 100/day and never appears in email_sends. Set this to roughly
-    // what those other senders use daily, or campaigns will starve them.
-    dailyReserve: parseInt(process.env.EMAIL_DAILY_RESERVE || '0'),
     // Signs unsubscribe links. Falls back to the auth secret so the feature
     // works without a second secret to manage.
     unsubscribeSecret: process.env.EMAIL_UNSUBSCRIBE_SECRET || process.env.BETTER_AUTH_SECRET || '',

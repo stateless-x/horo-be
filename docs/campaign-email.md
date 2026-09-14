@@ -170,30 +170,26 @@ campaign. The cap counts sends across *all* campaigns, since the provider quota
 is per account — so a second run the same day tops up to the cap rather than
 doubling it.
 
-### Quota shared with other sites
+### Quota shared with your other projects
 
-The Resend quota is **per account**, so other sites on the same API key (Pawjai,
-etc.) spend it too. You don't have to estimate their volume: before each run the
-script calls Resend's `GET /emails` and counts every message the account sent
-today, whoever sent it, then subtracts that from `EMAIL_DAILY_CAP`.
-
-```
-Quota:      64/100 used today across the whole Resend account  (22 from other senders)
-```
-
-`EMAIL_DAILY_RESERVE` is only the **fallback** for when that call fails (network
-error, API change). Then the script counts its own rows, subtracts the reserve,
-and warns that the number is a guess:
+The Resend quota is **per account**, so your other projects spend it too. You
+don't estimate their usage: before each run the script asks Resend how many
+emails the account has actually sent today and sends only what is left.
 
 ```
-WARNING: could not read the account's usage from Resend (HTTP 500).
-         Falling back to our own count (40) minus EMAIL_DAILY_RESERVE (20).
-         Mail sent by other sites today is NOT counted, so the real remaining
-         quota may be lower.
+Quota:      64/100 used today (all projects) · ส่งได้อีก 36
 ```
 
-It never assumes the other senders sent nothing — an unreadable answer is
-treated as unknown, not as zero.
+If that number can't be read, the run **refuses**:
+
+```
+Cannot read today's usage from Resend (HTTP 500).
+Not sending — the quota is shared with your other projects, so without
+that number there is no safe amount to send. Try again in a moment.
+```
+
+Refusing is deliberate. Any guess would either waste the allowance or eat
+another project's.
 
 If another site exhausts the quota **while a batch is running**, the 429 stops
 the run cleanly: the in-flight claim is released, the untouched recipients are

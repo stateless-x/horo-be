@@ -20,19 +20,17 @@
  *   --no-unsubscribe omit the opt-out link and List-Unsubscribe header
  *
  * SHARED QUOTA
- * The Resend quota is per ACCOUNT, so other sites on the same API key (Pawjai,
- * etc.) spend it too. Rather than guess their volume, this script ASKS Resend
- * how many messages the whole account sent today (GET /emails) and subtracts
- * that from EMAIL_DAILY_CAP — no configuration needed, and it is correct even
- * when the other sites' volume changes day to day.
+ * The Resend quota is per ACCOUNT, so your other projects spend it too. Before
+ * each run this script asks Resend how many emails the account has actually
+ * sent today (GET /emails) and sends only what is left. Nothing to configure
+ * and nothing to estimate.
  *
- * If that call fails, it falls back to counting our own email_sends rows and
- * subtracting EMAIL_DAILY_RESERVE, printing a warning that says the number is
- * a guess. It never assumes the other senders sent nothing.
+ * If that number cannot be read, the run REFUSES rather than guessing — a guess
+ * either wastes the allowance or eats another project's.
  *
- * A 429 mid-batch (another site spending the quota while we run) stops the run
- * cleanly: the in-flight claim is released and the untouched recipients simply
- * go out next time.
+ * A 429 mid-batch (another project spending the quota while we run) stops the
+ * run cleanly: the in-flight claim is released and untouched recipients go out
+ * next time.
  *
  * MANUAL APPROVAL
  * A live send never happens from --campaign alone. The script shows the batch
@@ -103,18 +101,12 @@ async function printStatus() {
   // so --status reports it rather than only our own rows.
   const usage = await getAccountSentToday(startOfBangkokDay());
   if (usage.known) {
-    const ours = sentToday[0]?.n ?? 0;
-    const others = Math.max(0, usage.sentToday - ours);
     console.log(
-      `Whole Resend account today: ${usage.sentToday}/${config.email.dailyCap}` +
-        (others > 0 ? `  (${others} from other sites)` : ''),
+      `All projects today: ${usage.sentToday}/${config.email.dailyCap} · ` +
+        `ส่งได้อีก ${Math.max(0, config.email.dailyCap - usage.sentToday)}\n`,
     );
-    console.log(`Remaining today: ${Math.max(0, config.email.dailyCap - usage.sentToday)}\n`);
   } else {
-    console.log(
-      `Whole Resend account today: unknown (${usage.reason})\n` +
-        `Falling back to cap ${config.email.dailyCap} minus reserve ${config.email.dailyReserve}.\n`,
-    );
+    console.log(`All projects today: unavailable (${usage.reason}) — sending is blocked\n`);
   }
 
   const all = listCampaigns();
@@ -221,45 +213,30 @@ async function main() {
   // that. `ourSentToday` stays as the fallback for when the API cannot answer.
   const dayStart = startOfBangkokDay();
 
-  const ourSentRows = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(emailSends)
-    .where(and(eq(emailSends.status, 'sent'), gte(emailSends.sentAt, dayStart)));
-  const ourSentToday = ourSentRows[0]?.n ?? 0;
-
+  // Ask Resend how many emails the whole account sent today — every site on the
+  // key, not just ours. If that cannot be read we do NOT send: a guess here
+  // either wastes the allowance or eats another project's.
   const usage = await getAccountSentToday(dayStart);
 
-  // Authoritative path: the provider's own count covers every sender.
-  // Fallback: our rows plus the configured reserve, which is a guess and says
-  // so. Never assume "0 from other senders" — that is exactly the assumption
-  // that would spend Pawjai's quota.
-  const sentToday = usage.known ? usage.sentToday : ourSentToday;
-  const effectiveCap = usage.known
-    ? config.email.dailyCap
-    : Math.max(0, config.email.dailyCap - config.email.dailyReserve);
-
-  if (usage.known) {
-    const others = Math.max(0, usage.sentToday - ourSentToday);
-    console.log(
-      `Quota:      ${usage.sentToday}/${config.email.dailyCap} used today across the whole Resend account` +
-        (others > 0 ? `  (${others} from other senders)` : ''),
+  if (!usage.known) {
+    console.error(
+      `Cannot read today's usage from Resend (${usage.reason}).\n` +
+        `Not sending — the quota is shared with your other projects, so without\n` +
+        `that number there is no safe amount to send. Try again in a moment.`,
     );
-  } else {
-    console.warn(
-      `WARNING: could not read the account's usage from Resend (${usage.reason}).\n` +
-        `         Falling back to our own count (${ourSentToday}) minus EMAIL_DAILY_RESERVE ` +
-        `(${config.email.dailyReserve}).\n` +
-        `         Mail sent by other sites today is NOT counted, so the real remaining\n` +
-        `         quota may be lower. Raise EMAIL_DAILY_RESERVE if their mail starts failing.`,
-    );
+    process.exit(1);
   }
 
-  let budget = Math.max(0, effectiveCap - sentToday);
+  const sentToday = usage.sentToday;
+  let budget = Math.max(0, config.email.dailyCap - sentToday);
+
+  console.log(`Quota:      ${sentToday}/${config.email.dailyCap} used today (all projects) · ส่งได้อีก ${budget}`);
+
   const limitFlag = arg('limit');
   if (limitFlag) budget = Math.min(budget, parseInt(limitFlag));
 
   if (budget <= 0) {
-    console.log(`Daily cap reached (${sentToday}/${effectiveCap} usable). Nothing to do.`);
+    console.log(`Daily cap reached. Nothing to do.`);
     return;
   }
 
@@ -293,13 +270,6 @@ async function main() {
   console.log(`Subject:    ${campaign.subject}`);
   console.log(`From:       ${config.email.from || '(EMAIL_FROM not set)'}`);
   console.log(`Reply-To:   ${config.email.replyTo || '(none)'}`);
-  console.log(
-    `Sent today: ${sentToday}/${effectiveCap} usable` +
-      (config.email.dailyReserve > 0
-        ? `  (cap ${config.email.dailyCap}, ${config.email.dailyReserve} reserved for other senders)`
-        : ''),
-  );
-  console.log(`Note:       other sites on this Resend account share the same daily quota.`);
   console.log(`Recipients: ${candidates.length}${dryRun ? '  [DRY RUN]' : ''}\n`);
 
   if (dryRun) {
