@@ -388,3 +388,59 @@ describe('recipient privacy', () => {
     expect(new Set(recipientsOnly)).toEqual(new Set(['one@example.com']));
   });
 });
+
+/**
+ * Email HTML structure.
+ *
+ * Mail clients are not browsers: Outlook renders through Word and drops
+ * <style> blocks, flex, and grid. These assert the portable shape — tables,
+ * inline styles, and a button that is a padded table cell rather than a styled
+ * <a> that would collapse.
+ */
+describe('email html structure', () => {
+  const campaign = () => loadCampaign('2026-09-15-relaunch');
+
+  test('renders the call to action as a real button, not a bare link', () => {
+    const html = toHtml(campaign().body);
+    // bgcolor on a <td> is what survives Outlook; a background-only <a> does not.
+    expect(html).toContain('bgcolor="#6B21A8"');
+    expect(html).toContain('เข้าไปดูดวงเลย');
+  });
+
+  test('the button keeps the punycode href', () => {
+    const html = toHtml(campaign().body);
+    expect(html).toMatch(/href="https:\/\/xn--y3cbx6azb\.com\/login"[^>]*>\s*เข้าไปดูดวงเลย/);
+  });
+
+  test('uses table layout with no <style> block or flex', () => {
+    const html = toHtml(campaign().body);
+    expect(html).toContain('<table');
+    expect(html).not.toContain('<style');
+    expect(html).not.toContain('display:flex');
+    expect(html).not.toContain('display:grid');
+  });
+
+  test('feature bullets become panels rather than plain paragraphs', () => {
+    const html = toHtml(campaign().body);
+    expect(html).toContain('border-left:3px solid #6B21A8');
+    expect(html).toContain('ดูดวงคู่ที่ละเอียดขึ้น');
+    // The raw bullet character must not survive into the rendered output.
+    expect(html).not.toContain('<p style="margin:0 0 18px;font-size:15px;line-height:1.75;color:#1C1226">•');
+  });
+
+  test('every link carries an explicit colour', () => {
+    // An unstyled <a> is left to the client's default and can render as plain
+    // body text, so a reader never sees it as clickable.
+    const html = toHtml(campaign().body, 'https://example.com/u/1');
+    const anchors = html.match(/<a\b[^>]*>/g) ?? [];
+    expect(anchors.length).toBeGreaterThan(0);
+    for (const a of anchors) expect(a).toContain('color:');
+  });
+
+  test('plain text shows the url, never the button brackets', () => {
+    const text = toText(campaign().body);
+    expect(text).not.toContain('[[');
+    expect(text).not.toContain(']]');
+    expect(text).toContain('https://xn--y3cbx6azb.com/login');
+  });
+});
