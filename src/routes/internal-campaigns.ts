@@ -71,7 +71,12 @@ export const internalCampaignRoutes = new Elysia({ prefix: '/internal/campaigns'
       from: config.email.from,
       replyTo: config.email.replyTo,
       recipientCount: plan.candidates.length,
-      // A sample of who, for the preview — never the whole list.
+      // The whole batch, not a sample. It is bounded by the daily cap (100 on
+      // the free tier), so this is a short list — and "who exactly am I about
+      // to mail?" is the question the preview exists to answer. A five-address
+      // teaser left the operator approving 100 sends on trust.
+      recipients: plan.candidates.map((c) => c.email),
+      // Kept for older callers; the first few of the same list.
       sampleRecipients: plan.candidates.slice(0, 5).map((c) => c.email),
       quotaUsed: plan.quotaUsed,
       quotaCap: plan.quotaCap,
