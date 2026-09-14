@@ -23,6 +23,7 @@ let auth: any;
 let systemsRoutes: any;
 let onboardingRoutes: any;
 let analyticsRoutes: any;
+let unsubscribeRoutes: any;
 
 let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
   .use(cors({
@@ -81,6 +82,9 @@ if (configErrors.length === 0) {
 
     const analyticsModule = await import('./routes/analytics');
     analyticsRoutes = analyticsModule.analyticsRoutes;
+
+    const unsubscribeModule = await import('./routes/unsubscribe');
+    unsubscribeRoutes = unsubscribeModule.unsubscribeRoutes;
 
     // IMPORTANT: Reassign app to capture the chained routes
     // Mount Better Auth handler using .mount() instead of .all()
@@ -158,7 +162,8 @@ if (configErrors.length === 0) {
       })
       .use(systemsRoutes)
       .use(onboardingRoutes)
-      .use(analyticsRoutes);
+      .use(analyticsRoutes)
+      .use(unsubscribeRoutes);
 
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');

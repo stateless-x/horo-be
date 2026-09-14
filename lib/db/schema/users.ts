@@ -24,6 +24,11 @@ export const user = pgTable('user', {
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
   onboardingCompleted: boolean('onboardingCompleted').notNull().default(false),
   signupSource: text('signupSource'), // where the signup came from (e.g. 'x', 'facebook', 'direct'), written once
+  // Set by the unsubscribe route (src/routes/unsubscribe.ts). Campaign
+  // recipient selection excludes these users; transactional mail ignores it.
+  // Additive boolean with a default, so `drizzle-kit push` applies it without
+  // prompting — see CLAUDE.md on destructive changes.
+  emailOptOut: boolean('emailOptOut').notNull().default(false),
 });
 
 export const session = pgTable('session', {

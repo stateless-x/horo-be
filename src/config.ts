@@ -35,6 +35,34 @@ export const config = {
     url: process.env.FRONTEND_URL || 'http://localhost:3000',
   },
 
+  /**
+   * Outbound campaign email (scripts/send-campaign.ts).
+   *
+   * `from` must be an address on a domain verified in Resend — Resend will
+   * not send for a domain it cannot prove you control via DNS, so a personal
+   * mailbox (e.g. a @pm.me address) can never be the From address. Put that
+   * address in `replyTo` instead: replies then land there normally.
+   *
+   * `dailyCap` mirrors the Resend plan's per-day quota (free tier: 100). It is
+   * a floor, not a ceiling — the script counts what it already sent today and
+   * never exceeds this, so a second run in the same day tops up rather than
+   * doubling.
+   */
+  email: {
+    resendApiKey: process.env.RESEND_API_KEY || '',
+    from: process.env.EMAIL_FROM || '',
+    replyTo: process.env.EMAIL_REPLY_TO || '',
+    dailyCap: parseInt(process.env.EMAIL_DAILY_CAP || '100'),
+    // Held back from dailyCap for senders this script cannot see. The Resend
+    // quota is per ACCOUNT, so mail sent by another site on the same key eats
+    // the same 100/day and never appears in email_sends. Set this to roughly
+    // what those other senders use daily, or campaigns will starve them.
+    dailyReserve: parseInt(process.env.EMAIL_DAILY_RESERVE || '0'),
+    // Signs unsubscribe links. Falls back to the auth secret so the feature
+    // works without a second secret to manage.
+    unsubscribeSecret: process.env.EMAIL_UNSUBSCRIBE_SECRET || process.env.BETTER_AUTH_SECRET || '',
+  },
+
   cors: {
     allowedOrigins: (() => {
       const origins = process.env.CORS_ALLOWED_ORIGINS
