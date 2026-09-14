@@ -451,3 +451,27 @@ describe('email html structure', () => {
     expect(text).toContain('https://xn--y3cbx6azb.com/login');
   });
 });
+
+/**
+ * Deployment packaging.
+ *
+ * Campaign markdown is read from disk at runtime, not bundled into dist/. That
+ * keeps "add a campaign" to a file drop — but it also means the runtime image
+ * must actually contain content/. It did not, so production served an empty
+ * campaign list while the file sat committed in git: the send UI had nothing
+ * to offer and looked broken for reasons no log explained.
+ */
+describe('docker image includes campaign files', () => {
+  const dockerfile = readFileSync(join(import.meta.dir, '../Dockerfile'), 'utf-8');
+
+  test('the runtime stage copies content/', () => {
+    expect(dockerfile).toMatch(/COPY --from=builder \/app\/content \.\/content/);
+  });
+
+  test('.dockerignore does not exclude content/', () => {
+    const ignore = readFileSync(join(import.meta.dir, '../.dockerignore'), 'utf-8');
+    const lines = ignore.split('\n').map((l) => l.trim());
+    expect(lines).not.toContain('content');
+    expect(lines).not.toContain('content/');
+  });
+});

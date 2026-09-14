@@ -46,6 +46,11 @@ COPY --from=builder /app/lib/db/schema ./lib/db/schema
 COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=builder /app/scripts/ensure-daily-reading-uniqueness.ts ./scripts/ensure-daily-reading-uniqueness.ts
 
+# Campaign markdown, read from disk at runtime (src/lib/campaigns.ts) rather
+# than bundled, so a new campaign is a file drop instead of a rebuild. Without
+# this the image has no campaigns at all and /internal/campaigns returns [].
+COPY --from=builder /app/content ./content
+
 # Set environment to production
 ENV NODE_ENV=production
 # Do NOT set PORT here - Railway injects it at runtime
