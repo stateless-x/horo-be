@@ -104,13 +104,11 @@ export function renderBody(body: string, vars: { name: string }): string {
  * table-based layout with inline styles only — the boring, portable approach
  * every mail client has agreed on for twenty years.
  *
- * Three markup affordances beyond plain paragraphs, because the body is a
- * marketing email rather than a memo:
+ * Deliberately plain: paragraphs, bold, and links. No banner, no buttons, no
+ * panels — the copy is a personal note and reads as one.
  *
  *   **bold**            -> <strong>
- *   [label](url)        -> a styled link
- *   [[label](url)]      -> a real button (the campaign's call to action)
- *   • item              -> a feature block, set apart from body copy
+ *   [label](url)        -> an underlined link in the brand colour
  *
  * The brand purple (#6B21A8) is taken from horo-fe/DESIGN.md so the mail looks
  * like the product it is advertising.
@@ -142,60 +140,10 @@ function inline(text: string): string {
     );
 }
 
-/**
- * A bulletproof-ish button: a table with a padded, coloured cell. A styled <a>
- * alone collapses in Outlook, and the whole point of this element is that the
- * one action the email asks for is impossible to miss.
- */
-function button(label: string, url: string): string {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 24px">
-  <tr>
-    <td align="center" bgcolor="${BRAND}" style="border-radius:8px">
-      <a href="${url}" style="display:inline-block;padding:14px 32px;font-family:${FONT};font-size:16px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:8px">${escapeHtml(label)}</a>
-    </td>
-  </tr>
-</table>`;
-}
-
-/**
- * A "• **title**\nbody" block, rendered as a bordered panel rather than another
- * paragraph. In the flat version these features read as more body copy and the
- * reader skims past the two things the email exists to announce.
- */
-function featureBlock(lines: string[]): string {
-  const items = lines
-    .map((line) => {
-      const [first, ...rest] = line.replace(/^•\s*/, '').split('\n');
-      const body = rest.join(' ').trim();
-      return `<tr>
-    <td style="padding:14px 18px;border-left:3px solid ${BRAND};background:${SURFACE_SOFT}">
-      <div style="font-size:15px;font-weight:600;color:${INK};line-height:1.5">${inline(first)}</div>
-      ${body ? `<div style="margin-top:4px;font-size:14px;color:${INK_MUTED};line-height:1.65">${inline(body)}</div>` : ''}
-    </td>
-  </tr>
-  <tr><td style="height:10px;line-height:10px;font-size:0">&nbsp;</td></tr>`;
-    })
-    .join('\n  ');
-
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:4px 0 12px">
-  ${items}
-</table>`;
-}
-
 export function toHtml(body: string, unsubscribeLink?: string): string {
   const blocks = body.split(/\n\s*\n/).map((raw) => {
     const block = raw.trim();
     if (!block) return '';
-
-    // [[label](url)] on its own line -> button
-    const btn = block.match(/^\[\[(.+?)\]\((https?:\/\/[^\s)]+)\)\]$/);
-    if (btn) return button(btn[1], btn[2]);
-
-    // A run of "• ..." lines -> feature panels
-    if (block.startsWith('•')) {
-      const items = block.split(/\n(?=•)/).map((i) => i.trim()).filter(Boolean);
-      return featureBlock(items);
-    }
 
     return `<p style="margin:0 0 18px;font-size:15px;line-height:1.75;color:${INK}">${inline(block).replace(/\n/g, '<br>')}</p>`;
   });
@@ -218,12 +166,7 @@ export function toHtml(body: string, unsubscribeLink?: string): string {
     <td align="center" style="padding:24px 12px">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:100%;background:#FFFFFF;border:1px solid ${EDGE};border-radius:16px">
         <tr>
-          <td style="padding:28px 32px 4px">
-            <div style="font-family:${FONT};font-size:18px;font-weight:700;color:${BRAND};letter-spacing:-0.01em">สายมู<span style="color:${INK_MUTED};font-weight:400">.com</span></div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:16px 32px 8px;font-family:${FONT}">
+          <td style="padding:32px 32px 8px;font-family:${FONT}">
 ${blocks.filter(Boolean).join('\n')}
           </td>
         </tr>
@@ -246,9 +189,8 @@ ${blocks.filter(Boolean).join('\n')}
  */
 export function toText(body: string, unsubscribeLink?: string): string {
   const plain = body
-    // A button is [[label](url)] in the source. Text clients get the bare URL
-    // on its own line — the brackets are HTML-layout syntax, not something a
-    // reader should ever see.
+    // Legacy [[label](url)] button syntax, kept only so an older campaign file
+    // never shows raw brackets to a reader. New copy uses a plain link.
     .replace(/^\[\[(.+?)\]\((https?:\/\/[^\s)]+)\)\]$/gm, '$2')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label: string, url: string) => {

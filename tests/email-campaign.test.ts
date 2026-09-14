@@ -400,16 +400,16 @@ describe('recipient privacy', () => {
 describe('email html structure', () => {
   const campaign = () => loadCampaign('2026-09-15-relaunch');
 
-  test('renders the call to action as a real button, not a bare link', () => {
+  test('the call to action is an underlined text link, not a button', () => {
     const html = toHtml(campaign().body);
-    // bgcolor on a <td> is what survives Outlook; a background-only <a> does not.
-    expect(html).toContain('bgcolor="#6B21A8"');
-    expect(html).toContain('เข้าไปดูดวงเลย');
+    expect(html).toContain('text-decoration:underline');
+    // No button chrome: a coloured cell would make it a button again.
+    expect(html).not.toContain('bgcolor=');
   });
 
-  test('the button keeps the punycode href', () => {
+  test('the call to action keeps the punycode href with a Thai label', () => {
     const html = toHtml(campaign().body);
-    expect(html).toMatch(/href="https:\/\/xn--y3cbx6azb\.com\/login"[^>]*>\s*เข้าไปดูดวงเลย/);
+    expect(html).toMatch(/href="https:\/\/xn--y3cbx6azb\.com\/login"[^>]*>สายมู\.com</);
   });
 
   test('uses table layout with no <style> block or flex', () => {
@@ -420,12 +420,19 @@ describe('email html structure', () => {
     expect(html).not.toContain('display:grid');
   });
 
-  test('feature bullets become panels rather than plain paragraphs', () => {
+  test('stays plain: no panels, banners, or button chrome', () => {
+    // The copy is a personal note. Decoration would make it read as a
+    // marketing blast, which is not what the words are doing.
     const html = toHtml(campaign().body);
-    expect(html).toContain('border-left:3px solid #6B21A8');
+    expect(html).not.toContain('border-left:3px solid');
+    expect(html).not.toContain('bgcolor=');
     expect(html).toContain('ดูดวงคู่ที่ละเอียดขึ้น');
-    // The raw bullet character must not survive into the rendered output.
-    expect(html).not.toContain('<p style="margin:0 0 18px;font-size:15px;line-height:1.75;color:#1C1226">•');
+  });
+
+  test('links the X handle', () => {
+    const html = toHtml(campaign().body);
+    expect(html).toContain('href="https://x.com/saintcattivo"');
+    expect(html).toContain('@saintcattivo');
   });
 
   test('every link carries an explicit colour', () => {
@@ -437,10 +444,10 @@ describe('email html structure', () => {
     for (const a of anchors) expect(a).toContain('color:');
   });
 
-  test('plain text shows the url, never the button brackets', () => {
+  test('plain text shows the url and no markup syntax', () => {
     const text = toText(campaign().body);
     expect(text).not.toContain('[[');
-    expect(text).not.toContain(']]');
+    expect(text).not.toContain('](');
     expect(text).toContain('https://xn--y3cbx6azb.com/login');
   });
 });
