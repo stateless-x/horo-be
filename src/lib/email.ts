@@ -108,6 +108,15 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
  * readable — the signature is what authorises the write.
  */
 export function signUnsubscribeToken(userId: string): string {
+  // An empty secret signs tokens that verify() will always reject, so every
+  // unsubscribe link would be dead on arrival — a silent, one-way break that
+  // only surfaces when an annoyed recipient clicks and gets an error. Fail here
+  // instead; the sender's preflight turns this into a clear startup message.
+  if (!config.email.unsubscribeSecret) {
+    throw new Error(
+      'Cannot sign an unsubscribe link: set EMAIL_UNSUBSCRIBE_SECRET or BETTER_AUTH_SECRET.',
+    );
+  }
   const mac = createHmac('sha256', config.email.unsubscribeSecret).update(userId).digest('hex');
   return `${userId}.${mac}`;
 }

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { listCampaignIds, listCampaigns, loadCampaign, renderBody, toHtml, toText } from '../src/lib/campaigns';
@@ -43,6 +43,25 @@ describe('email_sends dedup index', () => {
 });
 
 describe('unsubscribe tokens', () => {
+  // `bun test` does not load .env.local, so the secret is empty here unless the
+  // test sets it. Signing with an empty secret is now an error (it would
+  // produce links that verify always rejects), so these set a known value
+  // rather than inheriting whatever the shell happens to have.
+  const REAL_SECRET = config.email.unsubscribeSecret;
+  beforeEach(() => {
+    config.email.unsubscribeSecret = 'test-unsubscribe-secret';
+  });
+  afterEach(() => {
+    config.email.unsubscribeSecret = REAL_SECRET;
+  });
+
+  test('signing without a secret throws rather than making a dead link', () => {
+    // The bug this guards: sign() used to happily sign with an empty secret
+    // while verify() rejected it, so every unsubscribe link was born invalid.
+    config.email.unsubscribeSecret = '';
+    expect(() => signUnsubscribeToken('user-abc')).toThrow(/EMAIL_UNSUBSCRIBE_SECRET/);
+  });
+
   test('round-trips a valid token', () => {
     const token = signUnsubscribeToken('user-abc');
     expect(verifyUnsubscribeToken(token)).toBe('user-abc');
