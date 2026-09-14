@@ -196,12 +196,12 @@ async function main() {
   // sign links with). Off means no footer and no List-Unsubscribe header, so
   // an unhappy recipient's only route is "Report spam" — which is what damages
   // the sending domain. Kept as an explicit flag rather than a silent default.
-  const withUnsubscribe = !has('no-unsubscribe') && Boolean(config.email.unsubscribeSecret);
+  const withUnsubscribe = !has('no-unsubscribe') && Boolean(process.env.BETTER_AUTH_SECRET);
   if (!withUnsubscribe && !dryRun) {
     console.warn(
       has('no-unsubscribe')
         ? 'WARNING: --no-unsubscribe — no opt-out link or header. Recipients who want out can only report spam.'
-        : 'WARNING: no EMAIL_UNSUBSCRIBE_SECRET/BETTER_AUTH_SECRET — sending without an opt-out link.',
+        : 'WARNING: BETTER_AUTH_SECRET is not set — sending without an opt-out link.',
     );
   }
 

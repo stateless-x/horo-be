@@ -107,30 +107,38 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
  * recipient cannot opt out somebody else by editing the URL. The id stays
  * readable — the signature is what authorises the write.
  */
+/**
+ * BETTER_AUTH_SECRET signs these links. It is read at call time rather than
+ * captured at import, so a test (or anything else) can set it and have both
+ * sign and verify agree.
+ */
+function unsubscribeSecret(): string {
+  return process.env.BETTER_AUTH_SECRET || '';
+}
+
 export function signUnsubscribeToken(userId: string): string {
   // An empty secret signs tokens that verify() will always reject, so every
   // unsubscribe link would be dead on arrival — a silent, one-way break that
-  // only surfaces when an annoyed recipient clicks and gets an error. Fail here
-  // instead; the sender's preflight turns this into a clear startup message.
-  if (!config.email.unsubscribeSecret) {
-    throw new Error(
-      'Cannot sign an unsubscribe link: set EMAIL_UNSUBSCRIBE_SECRET or BETTER_AUTH_SECRET.',
-    );
+  // only surfaces when an annoyed recipient clicks and gets an error.
+  const secret = unsubscribeSecret();
+  if (!secret) {
+    throw new Error('Cannot sign an unsubscribe link: BETTER_AUTH_SECRET is not set.');
   }
-  const mac = createHmac('sha256', config.email.unsubscribeSecret).update(userId).digest('hex');
+  const mac = createHmac('sha256', secret).update(userId).digest('hex');
   return `${userId}.${mac}`;
 }
 
 /** Returns the userId when the signature matches, else null. */
 export function verifyUnsubscribeToken(token: string): string | null {
-  if (!config.email.unsubscribeSecret) return null;
+  const secret = unsubscribeSecret();
+  if (!secret) return null;
 
   const sep = token.lastIndexOf('.');
   if (sep <= 0) return null;
 
   const userId = token.slice(0, sep);
   const provided = token.slice(sep + 1);
-  const expected = createHmac('sha256', config.email.unsubscribeSecret).update(userId).digest('hex');
+  const expected = createHmac('sha256', secret).update(userId).digest('hex');
 
   // Equal-length check first: timingSafeEqual throws on a length mismatch.
   if (provided.length !== expected.length) return null;

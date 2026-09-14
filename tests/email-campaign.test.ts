@@ -43,23 +43,24 @@ describe('email_sends dedup index', () => {
 });
 
 describe('unsubscribe tokens', () => {
-  // `bun test` does not load .env.local, so the secret is empty here unless the
-  // test sets it. Signing with an empty secret is now an error (it would
-  // produce links that verify always rejects), so these set a known value
-  // rather than inheriting whatever the shell happens to have.
-  const REAL_SECRET = config.email.unsubscribeSecret;
+  // `bun test` does not load .env.local, so BETTER_AUTH_SECRET is absent here
+  // unless the test sets it. Signing without one is an error (it would produce
+  // links that verify always rejects), so these set a known value rather than
+  // inheriting whatever the shell happens to have.
+  const REAL_SECRET = process.env.BETTER_AUTH_SECRET;
   beforeEach(() => {
-    config.email.unsubscribeSecret = 'test-unsubscribe-secret';
+    process.env.BETTER_AUTH_SECRET = 'test-unsubscribe-secret';
   });
   afterEach(() => {
-    config.email.unsubscribeSecret = REAL_SECRET;
+    if (REAL_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
+    else process.env.BETTER_AUTH_SECRET = REAL_SECRET;
   });
 
   test('signing without a secret throws rather than making a dead link', () => {
     // The bug this guards: sign() used to happily sign with an empty secret
     // while verify() rejected it, so every unsubscribe link was born invalid.
-    config.email.unsubscribeSecret = '';
-    expect(() => signUnsubscribeToken('user-abc')).toThrow(/EMAIL_UNSUBSCRIBE_SECRET/);
+    delete process.env.BETTER_AUTH_SECRET;
+    expect(() => signUnsubscribeToken('user-abc')).toThrow(/BETTER_AUTH_SECRET/);
   });
 
   test('round-trips a valid token', () => {

@@ -56,9 +56,6 @@ export const config = {
     // other project on the same API key — the sender reads actual usage from
     // Resend rather than assuming this is all ours.
     dailyCap: parseInt(process.env.EMAIL_DAILY_CAP || '100'),
-    // Signs unsubscribe links. Falls back to the auth secret so the feature
-    // works without a second secret to manage.
-    unsubscribeSecret: process.env.EMAIL_UNSUBSCRIBE_SECRET || process.env.BETTER_AUTH_SECRET || '',
   },
 
   cors: {
