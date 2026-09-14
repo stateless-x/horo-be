@@ -24,6 +24,7 @@ let systemsRoutes: any;
 let onboardingRoutes: any;
 let analyticsRoutes: any;
 let unsubscribeRoutes: any;
+let internalCampaignRoutes: any;
 
 let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
   .use(cors({
@@ -85,6 +86,15 @@ if (configErrors.length === 0) {
 
     const unsubscribeModule = await import('./routes/unsubscribe');
     unsubscribeRoutes = unsubscribeModule.unsubscribeRoutes;
+
+    // Only mounted when the shared secret exists, so a deploy that forgets it
+    // has no send endpoint at all rather than an unauthenticated one.
+    if (config.adminApi.secret) {
+      const internalModule = await import('./routes/internal-campaigns');
+      internalCampaignRoutes = internalModule.internalCampaignRoutes;
+    } else {
+      console.log('[STARTUP] ADMIN_API_SECRET not set — internal campaign routes not mounted');
+    }
 
     // IMPORTANT: Reassign app to capture the chained routes
     // Mount Better Auth handler using .mount() instead of .all()
@@ -164,6 +174,11 @@ if (configErrors.length === 0) {
       .use(onboardingRoutes)
       .use(analyticsRoutes)
       .use(unsubscribeRoutes);
+
+    if (internalCampaignRoutes) {
+      app = app.use(internalCampaignRoutes);
+      console.log('[STARTUP] Internal campaign routes mounted at /internal/campaigns');
+    }
 
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');

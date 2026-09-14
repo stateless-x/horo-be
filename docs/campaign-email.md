@@ -79,6 +79,33 @@ the run aborts rather than mailing a set you didn't review.
 This is also why an unattended cron cannot send: it has no way to supply a
 number a human never saw. Scheduling is deliberately manual.
 
+## Sending from the admin dashboard
+
+horo-admin's `/email` page can trigger a send, for `super_admin` accounts only.
+It holds no Resend key — it calls horo-be's `POST /internal/campaigns/send`,
+authenticated with a shared secret:
+
+| Service | Variable |
+|---|---|
+| horo-be | `ADMIN_API_SECRET` |
+| horo-admin | `ADMIN_API_SECRET` (same value) + `HORO_API_URL` |
+
+Generate with `openssl rand -base64 32`. Leave them unset and the page stays
+read-only, showing the CLI command instead — a valid state, not an error. The
+route is not mounted at all without the secret, so a partial deploy cannot
+expose an unauthenticated send endpoint.
+
+Three checks stand between a click and a send, each enforced server-side:
+
+1. The account's role must be `super_admin` (re-checked in the server action,
+   not just hidden in the UI — a server action is a public endpoint).
+2. The campaign id must be typed exactly, which arms the button.
+3. The recipient count from the preview must still match, or horo-be refuses —
+   the same guarantee as the CLI's `--confirm`.
+
+Both paths run the identical send loop (`src/lib/campaign-sender.ts`), so the
+claim-before-send dedupe and the account-wide quota check apply either way.
+
 ## How "never twice" works
 
 `email_sends` has `UNIQUE(user_id, campaign_id)`. Each recipient is **claimed by

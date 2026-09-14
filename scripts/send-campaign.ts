@@ -53,20 +53,18 @@
  * it found so a systematic failure is visible rather than silently retried.
  */
 
-import { sql, and, eq, gte, notInArray } from 'drizzle-orm';
+import { sql, and, eq, gte } from 'drizzle-orm';
 import { db } from '../src/lib/db';
 import { user, emailSends } from '../lib/db/schema';
 import { config } from '../src/config';
-import { sendEmail, unsubscribeUrl, getAccountSentToday } from '../src/lib/email';
-import { loadCampaign, listCampaignIds, listCampaigns, renderBody, toHtml, toText } from '../src/lib/campaigns';
-
-/** Bangkok day boundary — the cap is "per calendar day" as the user sees it. */
-function startOfBangkokDay(): Date {
-  const now = new Date();
-  const bangkokMs = now.getTime() + 7 * 60 * 60 * 1000;
-  const dayStart = new Date(Math.floor(bangkokMs / 86400000) * 86400000);
-  return new Date(dayStart.getTime() - 7 * 60 * 60 * 1000);
-}
+import { unsubscribeUrl, getAccountSentToday } from '../src/lib/email';
+import {
+  planSend,
+  executeSend,
+  missingSendConfig,
+  startOfBangkokDay,
+} from '../src/lib/campaign-sender';
+import { loadCampaign, listCampaigns, renderBody, toText } from '../src/lib/campaigns';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -178,14 +176,7 @@ async function main() {
 
   // Preflight: fail before claiming anything, so config problems never strand rows.
   if (!dryRun) {
-    const missing = [
-      !config.email.resendApiKey && 'RESEND_API_KEY',
-      !config.email.from && 'EMAIL_FROM',
-      // The campaign copy says "ตอบกลับอีเมลนี้ได้โดยตรง". Without this the
-      // reply_to is silently omitted and replies go to the From mailbox, which
-      // may not exist — a broken promise that is invisible until someone replies.
-      !config.email.replyTo && 'EMAIL_REPLY_TO',
-    ].filter(Boolean);
+    const missing = missingSendConfig();
     if (missing.length > 0) {
       console.error(`Cannot send — missing: ${missing.join(', ')}`);
       process.exit(1);
@@ -205,61 +196,24 @@ async function main() {
     );
   }
 
-  // Remaining daily budget.
-  //
-  // The quota is per ACCOUNT, so other sites on the same Resend key (Pawjai,
-  // etc.) spend it too. Rather than guess their volume with a fixed reserve, we
-  // ASK RESEND how many messages the whole account sent today and subtract
-  // that. `ourSentToday` stays as the fallback for when the API cannot answer.
-  const dayStart = startOfBangkokDay();
-
-  // Ask Resend how many emails the whole account sent today — every site on the
-  // key, not just ours. If that cannot be read we do NOT send: a guess here
-  // either wastes the allowance or eats another project's.
-  const usage = await getAccountSentToday(dayStart);
-
-  if (!usage.known) {
-    console.error(
-      `Cannot read today's usage from Resend (${usage.reason}).\n` +
-        `Not sending — the quota is shared with your other projects, so without\n` +
-        `that number there is no safe amount to send. Try again in a moment.`,
-    );
+  // Who would receive this, bounded by the account-wide remaining quota. Shared
+  // with the admin endpoint so both paths compute the batch identically.
+  const plan = await planSend(campaignId, only);
+  if (!plan.ok) {
+    console.error(plan.reason);
     process.exit(1);
   }
 
-  const sentToday = usage.sentToday;
-  let budget = Math.max(0, config.email.dailyCap - sentToday);
+  console.log(
+    `Quota:      ${plan.quotaUsed}/${plan.quotaCap} used today (all projects) · ` +
+      `ส่งได้อีก ${Math.max(0, plan.quotaCap - plan.quotaUsed)}`,
+  );
 
-  console.log(`Quota:      ${sentToday}/${config.email.dailyCap} used today (all projects) · ส่งได้อีก ${budget}`);
-
+  // --limit trims the reviewed batch further; the quota bound is already applied.
   const limitFlag = arg('limit');
-  if (limitFlag) budget = Math.min(budget, parseInt(limitFlag));
-
-  if (budget <= 0) {
-    console.log(`Daily cap reached. Nothing to do.`);
-    return;
-  }
-
-  // Candidates: eligible users with no email_sends row for this campaign.
-  // The NOT IN subquery is the readable form of the anti-join; the real
-  // guarantee is the unique index below, so a race here is harmless.
-  const alreadyHandled = db
-    .select({ userId: emailSends.userId })
-    .from(emailSends)
-    .where(eq(emailSends.campaignId, campaignId));
-
-  const candidates = await db
-    .select({ id: user.id, email: user.email, name: user.displayName, fallbackName: user.name })
-    .from(user)
-    .where(
-      and(
-        eq(user.emailOptOut, false),
-        notInArray(user.id, alreadyHandled),
-        only ? eq(user.email, only) : undefined,
-      ),
-    )
-    .orderBy(user.createdAt) // oldest signups first — stable across runs
-    .limit(budget);
+  const candidates = limitFlag
+    ? plan.candidates.slice(0, parseInt(limitFlag))
+    : plan.candidates;
 
   if (candidates.length === 0) {
     console.log(`Nothing to send: every eligible user already has "${campaignId}".`);
@@ -313,89 +267,17 @@ async function main() {
     process.exit(1);
   }
 
-  let sent = 0;
-  let failed = 0;
-  let requeued = 0;
-  let errored = 0;
-  /** Set when the provider reports the account is out of quota mid-batch. */
-  let quotaHit = false;
+  const { sent, failed, requeued, errored, quotaHit } = await executeSend(
+    campaignId,
+    candidates,
+    { withUnsubscribe, onProgress: (line) => console.log(line) },
+  );
 
-  for (const c of candidates) {
-    // One recipient must never abort the batch. sendEmail already swallows its
-    // own errors, but the db calls around it can throw (connection blip, pool
-    // timeout) — without this, a hiccup at recipient 12 would leave the other
-    // 88 unsent. Errors are counted and reported, never silently dropped.
-    try {
-      // THE CLAIM. Losing this conflict means another run already has this user.
-      const claimed = await db
-        .insert(emailSends)
-        .values({ userId: c.id, campaignId, email: c.email, status: 'pending' })
-        .onConflictDoNothing()
-        .returning({ id: emailSends.id });
-
-      if (claimed.length === 0) continue; // someone else owns this recipient
-
-      const name = c.name || c.fallbackName || 'คุณ';
-      const link = withUnsubscribe ? unsubscribeUrl(c.id) : undefined;
-      const body = renderBody(campaign.body, { name });
-
-      const result = await sendEmail({
-        to: c.email,
-        subject: campaign.subject,
-        html: toHtml(body, link),
-        text: toText(body, link),
-        unsubscribeUrl: link,
-      });
-
-      if (result.ok) {
-        await db
-          .update(emailSends)
-          .set({ status: 'sent', providerId: result.providerId, sentAt: new Date() })
-          .where(eq(emailSends.id, claimed[0].id));
-        sent++;
-        console.log(`  ✓ ${c.email}`);
-      } else if (/rate|quota|limit|429|too many/i.test(result.error) && result.retryable) {
-        // Quota exhausted mid-batch — typically another site on the account
-        // spending it while we ran. Release this claim and STOP: continuing
-        // would fail every remaining send and pile up retryable rows.
-        await db.delete(emailSends).where(eq(emailSends.id, claimed[0].id));
-        requeued++;
-        console.log(`  ↻ ${c.email} — ${result.error}`);
-        console.warn(
-          `\nStopped early: the Resend account hit its rate or quota limit.\n` +
-            `Sent ${sent} this run. The rest are untouched and will go out on the next run.`,
-        );
-        quotaHit = true;
-        break;
-      } else if (result.retryable) {
-        // Transient (network, 5xx, 429): Resend never accepted the message, so
-        // releasing the claim cannot double-send. Deleting the row puts this
-        // user back in the candidate pool for the next run automatically — one
-        // bad address or a blip never blocks the rest of the batch.
-        await db.delete(emailSends).where(eq(emailSends.id, claimed[0].id));
-        requeued++;
-        console.log(`  ↻ ${c.email} — ${result.error} (will retry next run)`);
-      } else {
-        // Terminal (bad address, unverified domain): keep the row so this
-        // address is never mailed again for this campaign. Repeatedly retrying
-        // hard bounces is what damages sending reputation.
-        await db
-          .update(emailSends)
-          .set({ status: 'failed', error: result.error })
-          .where(eq(emailSends.id, claimed[0].id));
-        failed++;
-        console.log(`  ✗ ${c.email} — ${result.error} (permanent, will not retry)`);
-      }
-    } catch (err) {
-      // A throw here is the DB, not the send — the row may be stranded
-      // 'pending'. Report it and keep going so the rest of the batch still
-      // goes out; --status then --requeue surfaces and releases the stragglers.
-      errored++;
-      console.log(`  ! ${c.email} — ${err instanceof Error ? err.message : String(err)} (db error, batch continues)`);
-    }
-
-    // ~2/sec: Resend's default rate limit is 2 requests/second.
-    await new Promise((r) => setTimeout(r, 550));
+  if (quotaHit) {
+    console.warn(
+      `\nStopped early: the Resend account hit its rate or quota limit.\n` +
+        `Sent ${sent} this run. The rest are untouched and will go out on the next run.`,
+    );
   }
 
   console.log(

@@ -58,6 +58,16 @@ export const config = {
     dailyCap: parseInt(process.env.EMAIL_DAILY_CAP || '100'),
   },
 
+  /**
+   * Shared secret proving a request came from horo-admin, for the
+   * service-to-service campaign routes. Feature-scoped like the Resend key:
+   * when unset those routes simply do not mount, and nothing else is affected.
+   * It must NEVER join `authRequired` — see the scar comment below.
+   */
+  adminApi: {
+    secret: process.env.ADMIN_API_SECRET || '',
+  },
+
   cors: {
     allowedOrigins: (() => {
       const origins = process.env.CORS_ALLOWED_ORIGINS
