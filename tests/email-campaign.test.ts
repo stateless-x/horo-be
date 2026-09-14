@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { listCampaignIds, listCampaigns, loadCampaign, renderBody, toHtml, toText } from '../src/lib/campaigns';
 import { config } from '../src/config';
-import { getAccountSentToday, isRetryableStatus, signUnsubscribeToken, verifyUnsubscribeToken } from '../src/lib/email';
+import { getAccountSentToday, isRetryableStatus, sendEmail, signUnsubscribeToken, verifyUnsubscribeToken } from '../src/lib/email';
 import { emailSends } from '../lib/db/schema';
 
 /**
@@ -317,5 +317,74 @@ describe('account-wide quota', () => {
         expect(usage.known).toBe(false);
       },
     );
+  });
+});
+
+/**
+ * Recipient privacy: one email, one addressee.
+ *
+ * A campaign goes to real people who did not consent to having their address
+ * shown to anyone else. Leaking the list would be a privacy breach (and a PDPA
+ * problem), and the kind of mistake that is invisible in code review — a `to`
+ * that quietly accepts an array, or a cc/bcc added "for convenience", would do
+ * it. These assert the shape of what actually reaches Resend.
+ */
+describe('recipient privacy', () => {
+  const withCapturedBody = async (run: () => Promise<void>): Promise<any> => {
+    const real = globalThis.fetch;
+    const realKey = config.email.resendApiKey;
+    const realFrom = config.email.from;
+    let captured: any = null;
+    config.email.resendApiKey = 'test-key';
+    config.email.from = 'Test <horo@mail.pooh.fyi>';
+    globalThis.fetch = (async (_input: any, init: any) => {
+      captured = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: 'msg_1' }), { status: 200 });
+    }) as any;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = real;
+      config.email.resendApiKey = realKey;
+      config.email.from = realFrom;
+    }
+    return captured;
+  };
+
+  test('sends to exactly one address, never a list', async () => {
+    const body = await withCapturedBody(async () => {
+      await sendEmail({ to: 'one@example.com', subject: 's', html: '<p>h</p>', text: 't' });
+    });
+    expect(body.to).toEqual(['one@example.com']);
+    expect(body.to.length).toBe(1);
+  });
+
+  test('never sets cc or bcc', async () => {
+    // bcc would hide addresses from recipients but still hand the whole list
+    // to the provider on one message; cc would expose it outright.
+    const body = await withCapturedBody(async () => {
+      await sendEmail({ to: 'one@example.com', subject: 's', html: '<p>h</p>', text: 't' });
+    });
+    expect(body.cc).toBeUndefined();
+    expect(body.bcc).toBeUndefined();
+  });
+
+  test('no other recipient address appears anywhere in the payload', async () => {
+    // The rendered body is personalised, so a templating mistake could paste
+    // another user's address into the message itself.
+    const body = await withCapturedBody(async () => {
+      await sendEmail({
+        to: 'one@example.com',
+        subject: 's',
+        html: toHtml(renderBody('สวัสดี {{name}}', { name: 'ภู' })),
+        text: toText(renderBody('สวัสดี {{name}}', { name: 'ภู' })),
+      });
+    });
+    const serialised = JSON.stringify(body);
+    expect(serialised).toContain('one@example.com');
+    // Any second address would have to come from somewhere it should not.
+    const addresses = serialised.match(/[\w.+-]+@[\w.-]+\.\w+/g) ?? [];
+    const recipientsOnly = addresses.filter((a) => a !== 'horo@mail.pooh.fyi');
+    expect(new Set(recipientsOnly)).toEqual(new Set(['one@example.com']));
   });
 });

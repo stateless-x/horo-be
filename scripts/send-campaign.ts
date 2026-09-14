@@ -228,7 +228,7 @@ async function main() {
 
   if (dryRun) {
     for (const c of candidates.slice(0, 10)) {
-      console.log(`  ${c.email}  (${c.name || c.fallbackName || 'no name'})`);
+      console.log(`  ${c.email}`);
     }
     if (candidates.length > 10) console.log(`  ... and ${candidates.length - 10} more`);
 
@@ -249,7 +249,7 @@ async function main() {
   const confirmFlag = arg('confirm');
   if (!confirmFlag) {
     for (const c of candidates.slice(0, 10)) {
-      console.log(`  ${c.email}  (${c.name || c.fallbackName || 'no name'})`);
+      console.log(`  ${c.email}`);
     }
     if (candidates.length > 10) console.log(`  ... and ${candidates.length - 10} more`);
     console.log('\nNot sent — approval required.');
