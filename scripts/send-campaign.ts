@@ -64,7 +64,7 @@ import {
   missingSendConfig,
   startOfBangkokDay,
 } from '../src/lib/campaign-sender';
-import { loadCampaign, listCampaigns, renderBody, toText } from '../src/lib/campaigns';
+import { loadCampaignAsync, listCampaignsAsync, renderBody, toText } from '../src/lib/campaigns';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -107,9 +107,9 @@ async function printStatus() {
     console.log(`All projects today: unavailable (${usage.reason}) — sending is blocked\n`);
   }
 
-  const all = listCampaigns();
+  const all = await listCampaignsAsync();
   if (all.length === 0) {
-    console.log('No campaign files in content/campaigns/');
+    console.log('No campaigns in the database or content/campaigns/');
     return;
   }
 
@@ -158,7 +158,7 @@ async function main() {
   const campaignId = arg('campaign');
   if (!campaignId) {
     console.error('Missing --campaign <id>. Available:');
-    for (const c of listCampaigns()) {
+    for (const c of await listCampaignsAsync()) {
       console.error(`  ${c.id}${c.name ? `  — ${c.name}` : ''}`);
     }
     console.error('\nOr run with --status to see progress.');
@@ -171,7 +171,9 @@ async function main() {
   }
 
   const dryRun = has('dry-run');
-  const campaign = loadCampaign(campaignId); // throws on malformed front-matter
+  // DB-first, disk fallback — see campaigns.ts. Throws on a genuinely missing
+  // or malformed campaign (no DB row AND no disk file, or bad front-matter).
+  const campaign = await loadCampaignAsync(campaignId);
   const only = arg('only');
 
   // Preflight: fail before claiming anything, so config problems never strand rows.

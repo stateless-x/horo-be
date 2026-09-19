@@ -1,5 +1,5 @@
 import { Elysia } from 'elysia';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../lib/db';
 import { user } from '../../lib/db/schema';
 import { verifyUnsubscribeToken } from '../lib/email';
@@ -19,8 +19,9 @@ import { verifyUnsubscribeToken } from '../lib/email';
  *          more people reach for "Report spam" instead, which is what
  *          actually damages sending reputation.
  *
- * Sets user.emailOptOut, which scripts/send-campaign.ts excludes. It does not
- * affect transactional mail (login, password reset).
+ * Sets user.emailOptOut, which scripts/send-campaign.ts excludes, and
+ * user.emailOptOutAt (first time only) so the opt-out is attributable to a
+ * date. It does not affect transactional mail (login, password reset).
  */
 
 const page = (title: string, message: string) => `<!doctype html>
@@ -47,6 +48,16 @@ async function optOut(token: string, set: { status?: number | string; headers: R
   }
 
   await db.update(user).set({ emailOptOut: true }).where(eq(user.id, userId));
+
+  // Separate update, guarded by `IS NULL`, so re-clicking a link (the token
+  // never expires) can never overwrite the original opt-out date with a
+  // later one. Two statements rather than one COALESCE-style set() because
+  // Drizzle's `.set()` values are plain columns, not SQL expressions
+  // referencing the row's own current value.
+  await db
+    .update(user)
+    .set({ emailOptOutAt: new Date() })
+    .where(and(eq(user.id, userId), isNull(user.emailOptOutAt)));
 
   return page(
     'ยกเลิกการรับอีเมลแล้ว',

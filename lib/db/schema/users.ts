@@ -29,6 +29,12 @@ export const user = pgTable('user', {
   // Additive boolean with a default, so `drizzle-kit push` applies it without
   // prompting — see CLAUDE.md on destructive changes.
   emailOptOut: boolean('emailOptOut').notNull().default(false),
+  // When emailOptOut first became true. Nullable (no default) so it stays
+  // additive — see CLAUDE.md on destructive changes. The route sets this only
+  // the FIRST time a user opts out (guarded by `IS NULL` in the update), so a
+  // re-click of an already-dead unsubscribe link can never overwrite the
+  // original date. Null for every user who has never opted out.
+  emailOptOutAt: timestamp('emailOptOutAt'),
 });
 
 export const session = pgTable('session', {

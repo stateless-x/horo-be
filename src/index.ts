@@ -25,6 +25,7 @@ let onboardingRoutes: any;
 let analyticsRoutes: any;
 let unsubscribeRoutes: any;
 let internalCampaignRoutes: any;
+let resendWebhookRoutes: any;
 
 let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
   .use(cors({
@@ -94,6 +95,16 @@ if (configErrors.length === 0) {
       internalCampaignRoutes = internalModule.internalCampaignRoutes;
     } else {
       console.log('[STARTUP] ADMIN_API_SECRET not set — internal campaign routes not mounted');
+    }
+
+    // Only mounted when the signing secret exists, so a deploy that forgets
+    // it has no webhook endpoint at all rather than one that accepts
+    // unsigned requests (see src/lib/resend-webhook.ts).
+    if (config.email.webhookSecret) {
+      const resendWebhookModule = await import('./routes/resend-webhook');
+      resendWebhookRoutes = resendWebhookModule.resendWebhookRoutes;
+    } else {
+      console.log('[STARTUP] RESEND_WEBHOOK_SECRET not set — Resend webhook route not mounted');
     }
 
     // IMPORTANT: Reassign app to capture the chained routes
@@ -178,6 +189,11 @@ if (configErrors.length === 0) {
     if (internalCampaignRoutes) {
       app = app.use(internalCampaignRoutes);
       console.log('[STARTUP] Internal campaign routes mounted at /internal/campaigns');
+    }
+
+    if (resendWebhookRoutes) {
+      app = app.use(resendWebhookRoutes);
+      console.log('[STARTUP] Resend webhook route mounted at /webhooks/resend');
     }
 
     if (config.env !== 'production') {

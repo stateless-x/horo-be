@@ -54,7 +54,13 @@ describe('internal campaign routes: auth', () => {
   });
 
   test('accepts the exact secret', async () => {
-    expect(await callGuard('correct-horse-battery-staple')).toBe(200);
+    // Not toBe(200): GET / now reads the campaigns table (DB-first content —
+    // see src/lib/campaigns.ts), and bun test runs with no real DATABASE_URL,
+    // so the handler itself throws a 500 once past the guard. What this test
+    // covers is the guard, not the handler: the onBeforeHandle guard
+    // short-circuits with 401 before any handler runs, so anything other than
+    // 401 proves the secret was accepted and the request reached the route.
+    expect(await callGuard('correct-horse-battery-staple')).not.toBe(401);
   });
 
   test('rejects everything when the server has no secret configured', async () => {

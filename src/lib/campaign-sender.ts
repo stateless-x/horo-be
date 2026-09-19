@@ -3,7 +3,7 @@ import { db } from './db';
 import { user, emailSends } from '../../lib/db/schema';
 import { config } from '../config';
 import { sendEmail, unsubscribeUrl, getAccountSentToday } from './email';
-import { loadCampaign, renderBody, toHtml, toText } from './campaigns';
+import { loadCampaignAsync, renderBody, toHtml, toText } from './campaigns';
 
 /**
  * The campaign send loop, shared by scripts/send-campaign.ts and the
@@ -133,7 +133,10 @@ export async function executeSend(
   candidates: Candidate[],
   opts: { withUnsubscribe: boolean; onProgress?: (line: string) => void },
 ): Promise<SendOutcome> {
-  const campaign = loadCampaign(campaignId);
+  // DB-first: this is the render that actually ships, so it must see an
+  // operator's admin-UI edit, not a stale disk copy. See campaigns.ts for why
+  // a DB read failure propagates instead of quietly falling back to disk.
+  const campaign = await loadCampaignAsync(campaignId);
   const log = opts.onProgress ?? (() => {});
 
   let sent = 0;

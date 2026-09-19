@@ -56,6 +56,11 @@ export const config = {
     // other project on the same API key — the sender reads actual usage from
     // Resend rather than assuming this is all ours.
     dailyCap: parseInt(process.env.EMAIL_DAILY_CAP || '100'),
+    // Signs Resend's delivery-event webhooks (svix, "whsec_..."). Feature-scoped
+    // like resendApiKey: when unset, src/routes/resend-webhook.ts simply does
+    // not mount (see index.ts) rather than accepting unsigned requests. Must
+    // NEVER join `authRequired` below — see the scar comment on that list.
+    webhookSecret: process.env.RESEND_WEBHOOK_SECRET || '',
   },
 
   /**

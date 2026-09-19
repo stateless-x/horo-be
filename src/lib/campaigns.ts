@@ -1,8 +1,12 @@
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { eq } from 'drizzle-orm';
+import { db } from './db';
+import { campaigns as campaignsTable } from '../../lib/db/schema';
 
 /**
- * Campaigns are markdown files in content/campaigns/, one per message:
+ * Campaigns resolve DATABASE-FIRST, falling back to markdown files in
+ * content/campaigns/ when a given id has no row yet:
  *
  *   content/campaigns/2026-09-15-welcome.md
  *   ---
@@ -11,12 +15,31 @@ import { join } from 'path';
  *   ---
  *   สวัสดี {{name}}
  *
- * The filename (minus .md) is the campaignId and the unique key in
- * email_sends. Renaming a file after a send starts orphans its progress and
- * the new name re-sends to everyone — treat filenames as immutable once used.
+ * The database is the real source once a campaign is editable from the admin
+ * UI (see src/routes/internal-campaigns.ts) — horo-be runs on Railway with no
+ * persistent volume, so a file written at runtime is erased on the next
+ * deploy and can never be where an operator's edit lives. Disk files remain
+ * the SEED (scripts/seed-campaigns.ts copies them into the campaigns table
+ * once) and the fallback: an id with no DB row yet still loads from disk, so
+ * nothing breaks before the seed has run and an un-migrated deploy still
+ * sends. Once a row exists for an id, the disk file for that id is dead copy
+ * — the DB row is authoritative and disk is never consulted again for it.
  *
- * Read from disk at runtime rather than imported, so adding tomorrow's message
- * is dropping in a file — no rebuild, no redeploy.
+ * The id (filename minus .md, or the DB primary key) is the unique key in
+ * email_sends. Reusing an id after a send starts orphans its progress and the
+ * reused id re-sends to everyone — treat ids as immutable once used. That is
+ * exactly what the LOCK rule in internal-campaigns.ts enforces.
+ *
+ * TWO API SHAPES, DELIBERATELY:
+ *   loadCampaign / listCampaigns / listCampaignIds   — sync, disk-only.
+ *   loadCampaignAsync / listCampaignsAsync           — async, DB-first.
+ * The sync versions exist only because they were already public API consumed
+ * by tests that assert disk-loading behaviour directly (front-matter parsing,
+ * id resolution, docker packaging) — they are NOT used anywhere a real send
+ * or the admin UI reads content, and must never become an accidental second
+ * source of truth. Every caller that decides what to actually mail or show an
+ * operator (campaign-sender.ts, internal-campaigns.ts, send-campaign.ts) uses
+ * the *Async functions.
  */
 
 export interface Campaign {
@@ -99,6 +122,40 @@ export function listCampaignIds(): string[] {
     .filter((f) => f.endsWith('.md'))
     .map((f) => f.replace(/\.md$/, ''))
     .sort();
+}
+
+/**
+ * DB-first load. A missing row (zero rows — a genuinely un-migrated id) falls
+ * back to disk, matching the seed-first-deploy story above. A query that
+ * THROWS (DB unreachable, bad connection string) propagates instead of
+ * falling back — silently serving stale disk content when the database is
+ * down is worse than failing loudly, because the whole point of moving
+ * content off disk was that disk can be stale. A fallback that hides that
+ * distinction would ship the old text to thousands of people without anyone
+ * knowing the edit never took effect.
+ */
+export async function loadCampaignAsync(id: string): Promise<Campaign> {
+  const rows = await db.select().from(campaignsTable).where(eq(campaignsTable.id, id)).limit(1);
+  const row = rows[0];
+  if (row) return { id: row.id, name: row.name ?? undefined, subject: row.subject, body: row.body };
+  return loadCampaign(id); // no DB row yet — fall back to the disk seed
+}
+
+/**
+ * Every campaign id, DB rows first, unioned with disk-only ids that have no
+ * row yet. A campaign created via POST /internal/campaigns/:id/duplicate
+ * exists ONLY in the DB — it has no disk file — so this must include DB-only
+ * ids, not just decorate disk ids with DB overrides.
+ */
+export async function listCampaignsAsync(): Promise<Array<{ id: string; name?: string }>> {
+  const dbRows = await db.select({ id: campaignsTable.id, name: campaignsTable.name }).from(campaignsTable);
+  const dbIds = new Set(dbRows.map((r) => r.id));
+
+  const diskOnly = listCampaigns().filter((c) => !dbIds.has(c.id));
+
+  return [...dbRows.map((r) => ({ id: r.id, name: r.name ?? undefined })), ...diskOnly].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
 }
 
 /**
