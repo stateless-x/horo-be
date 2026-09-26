@@ -5,3 +5,4 @@ export * from './constants';
 export * from './daily';
 export * from './daily-scores';
 export * from './chart-scores';
+export * from './trait-chips';

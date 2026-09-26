@@ -10,12 +10,13 @@
  * (see ./prompts/render.ts for the {{var}} / {{#block}} syntax).
  */
 
-import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType } from "../../lib/shared";
+import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType } from "../../lib/shared";
 import type { FortuneCategoryKey } from "../../lib/shared/types/astrology";
 import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance } from "../../lib/shared";
 import { getReadingPeriod, toBuddhistYear } from "../../lib/shared/utils/date";
 import { THAI_MONTHS_FULL } from "../../lib/shared/constants/thai-time";
 import { renderPrompt } from "./prompts/render";
+import { buildTraitChips, type DailyCategory, type TraitChip } from "../../lib/astrology";
 
 import systemMd from "./prompts/md/system.md" with { type: "text" };
 import systemStructuredMd from "./prompts/md/system-structured.md" with { type: "text" };
@@ -74,16 +75,43 @@ export function buildMbtiContext(mbtiType: string | null | undefined): string {
   }).trimEnd();
 }
 
+/** Thai display label for each daily category, teaser-prompt only — the other
+ * prompts (today.md, chart.md) each spell their own labels inline the same way. */
+const FOCUS_AREA_LABELS_TH: Record<DailyCategory, string> = {
+  love: 'ความรัก',
+  career: 'การงาน',
+  finance: 'การเงิน',
+  health: 'สุขภาพ',
+};
+
+/**
+ * Thai description of a deterministic score band, for the LLM to write to
+ * without inventing its own severity. Bands mirror the neutral midpoint (60)
+ * that selectFocusArea measures distance from — see daily-scores.ts.
+ */
+function focusBandTh(score: number): string {
+  if (score >= 75) return 'ดีมาก';
+  if (score >= 60) return 'ดี';
+  if (score >= 45) return 'ปกติ ต้องระวังเล็กน้อย';
+  return 'ต้องใส่ใจเป็นพิเศษ';
+}
+
 /**
  * Generate teaser reading (Step 6 in onboarding - BEFORE auth)
  * Enticing short preview designed to hook the user into signing up.
- * Keep it SHORT to minimize LLM cost — no DB save, just a throwaway hook.
+ * Teaser v2: MBTI-aware (when given), grounded in the same deterministic trait
+ * chips and focus area shown on screen, so the LLM's threeWay/reading narrate
+ * what the user already sees rather than inventing a fourth, disconnected claim.
  */
 export function buildTeaserPrompt(
   name: string,
   birthDate: Date,
   baziChart: BaziChart,
   thaiAstrology: ThaiAstrology,
+  mbtiType: MbtiType | null,
+  focusArea: DailyCategory,
+  focusScore: number,
+  traitChips: TraitChip[],
 ): string {
   const dateStr = birthDate.toLocaleDateString("th-TH", {
     year: "numeric",
@@ -95,6 +123,11 @@ export function buildTeaserPrompt(
     year: "numeric",
     month: "long",
   });
+
+  const thaiChip = traitChips.find((c) => c.system === 'thai');
+  const baziChip = traitChips.find((c) => c.system === 'bazi');
+  const mbtiChip = traitChips.find((c) => c.system === 'mbti');
+  const mbtiInfo = mbtiType ? getMbtiInfo(mbtiType) : undefined;
 
   return renderPrompt(teaserMd, {
     name,
@@ -108,6 +141,14 @@ export function buildTeaserPrompt(
     personality: thaiAstrology.personality,
     color: thaiAstrology.color,
     luckyNumber: thaiAstrology.luckyNumber,
+    thaiTrait: thaiChip ? `${thaiChip.label}: ${thaiChip.trait}` : '',
+    baziTrait: baziChip ? `${baziChip.label}: ${baziChip.trait}` : '',
+    mbti: Boolean(mbtiType && mbtiInfo && mbtiChip),
+    mbtiTrait: mbtiChip ? `${mbtiChip.label}: ${mbtiChip.trait}` : '',
+    mbtiType: mbtiType ?? '',
+    mbtiNameTh: mbtiInfo?.nameTh ?? '',
+    focusAreaTh: FOCUS_AREA_LABELS_TH[focusArea],
+    focusBand: focusBandTh(focusScore),
   });
 }
 

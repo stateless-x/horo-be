@@ -1,4 +1,5 @@
-import type { ElementRelationship, ElementHarmony, BranchClash } from './daily';
+import type { BaziChart } from '../shared';
+import { getDailyFortuneContext, type ElementRelationship, type ElementHarmony, type BranchClash, type DailyPillar, type DailyTheme } from './daily';
 
 export type DailyCategory = 'career' | 'love' | 'finance' | 'health';
 
@@ -163,4 +164,51 @@ export function calculateOverallScore(
  */
 export function normalizeLegacyDailyScore(score: number): number {
   return score <= 5 ? Math.round((score / 5) * 100) : score;
+}
+
+/**
+ * Single entry point for "today's deterministic scores for this chart" — the
+ * one calculation both /daily and the teaser must call, so identical inputs
+ * (same birth chart, same Bangkok day) can never drift into two different
+ * numbers between the two routes.
+ */
+export function getDailyScoresForChart(
+  chart: BaziChart,
+  todayBangkok: Date,
+): {
+  todayPillar: DailyPillar;
+  elementHarmony: ElementHarmony;
+  dailyTheme: DailyTheme;
+  branchClash: BranchClash;
+  scores: Record<DailyCategory, number>;
+} {
+  const context = getDailyFortuneContext(todayBangkok, chart);
+  const scores = calculateDailyCategoryScores(context.elementHarmony, context.branchClash);
+  return { ...context, scores };
+}
+
+/**
+ * Order categories are checked in when picking the day's focus area — first
+ * entry wins a tie. love > career > finance > health, per product spec.
+ */
+const FOCUS_AREA_ORDER: DailyCategory[] = ['love', 'career', 'finance', 'health'];
+
+/**
+ * Pick the single category "most notable today": furthest from the neutral
+ * midpoint (60, the neutral-favorability base score). Ties broken by
+ * FOCUS_AREA_ORDER so the choice is reproducible, not just "a" furthest score.
+ */
+export function selectFocusArea(scores: Record<DailyCategory, number>): DailyCategory {
+  let winner: DailyCategory = FOCUS_AREA_ORDER[0];
+  let winnerDistance = -1;
+
+  for (const category of FOCUS_AREA_ORDER) {
+    const distance = Math.abs(scores[category] - 60);
+    if (distance > winnerDistance) {
+      winner = category;
+      winnerDistance = distance;
+    }
+  }
+
+  return winner;
 }

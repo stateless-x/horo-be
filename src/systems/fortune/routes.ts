@@ -1,8 +1,8 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
-import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateFortuneReading } from '../../lib/llm';
+import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateTeaserReading } from '../../lib/llm';
 import { normalizeSignupSource } from '../../lib/analytics-events';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyFortuneContext, calculateDailyCategoryScores, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, type DailyCategory } from '../../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyScoresForChart, selectFocusArea, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, buildTraitChips, normalizeMbtiType, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
 import { eq, and, desc, lt, isNull, sql } from 'drizzle-orm';
@@ -56,9 +56,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
   .post('/teaser', async ({ body, set, request }) => {
     const clientIP = getClientIP(request);
     const profile = BirthProfileSchema.parse(body);
+    // Bangkok day in the flight key so a result cached late at night is never
+    // replayed after midnight with yesterday's deterministic scores.
     const flight = await generationSingleFlight.run({
       operation: 'teaser',
-      key: generationKey('teaser', clientIP, profile),
+      key: generationKey('teaser', clientIP, profile, getTodayBangkokString()),
       lockTtlMs: 60_000,
       waitTimeoutMs: 55_000,
       resultTtlSeconds: (value) => isGenerationError(value) ? 5 : 15 * 60,
@@ -93,29 +95,57 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       };
 
       try {
+        const name = profile.name || 'ผู้มาเยือน';
         const birthDate = new Date(profile.birthDate);
         const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
+        const mbtiType = normalizeMbtiType(profile.mbtiType);
 
         // Calculate astrology
         const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
         const thaiAstrology = calculateThaiAstrology(birthDate);
 
+        // Same shared helper /daily calls — identical birth data + Bangkok day
+        // always yields identical scores on both endpoints.
+        const todayBangkok = getBangkokDate();
+        const { scores } = getDailyScoresForChart(baziChart, todayBangkok);
+        const focusArea = selectFocusArea(scores);
+
+        // Deterministic trait chips, no LLM — thai + bazi always, mbti only
+        // when a valid type was given.
+        const traitChips = buildTraitChips(thaiAstrology.day, baziChart.element, mbtiType);
+
         // Generate AI reading using comprehensive prompt
         const prompt = buildTeaserPrompt(
-          profile.name || 'ผู้มาเยือน',
+          name,
           birthDate,
           baziChart,
-          thaiAstrology
+          thaiAstrology,
+          mbtiType,
+          focusArea,
+          scores[focusArea],
+          traitChips,
         );
 
-        const reading = await generateFortuneReading(prompt, 140);
+        const { threeWay, reading } = await generateTeaserReading(prompt, name);
 
         return {
+          contentVersion: 2,
           elementType: baziChart.element,
-          personality: thaiAstrology.personality,
-          todaySnippet: reading,
           luckyColor: thaiAstrology.color,
           luckyNumber: thaiAstrology.luckyNumber,
+          personality: thaiAstrology.personality,
+          todaySnippet: reading,
+          threeWay,
+          reading,
+          focusArea,
+          traitChips,
+          scores: {
+            date: getTodayBangkokString(),
+            love: scores.love,
+            career: scores.career,
+            finance: scores.finance,
+            health: scores.health,
+          },
         };
       } catch (error) {
         console.error('Teaser generation error:', error);
@@ -415,15 +445,14 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           const todayBangkok = getBangkokDate();
           const todayThaiAstrology = calculateTodayThaiAstrology(todayBangkok);
 
-          // Calculate today's Bazi pillar and element harmony (60-day cycle variation)
-          const dailyContext = getDailyFortuneContext(todayBangkok, baziChart);
-          // Deterministic category scores, computed once here and used both to tell
-          // the model what to narrate (buildTodayPrompt) and, below, to overwrite
-          // whatever the model returns — the prompt is guidance, this is the guarantee.
-          const dailyCategoryScores = calculateDailyCategoryScores(
-            dailyContext.elementHarmony,
-            dailyContext.branchClash,
-          );
+          // Calculate today's Bazi pillar, element harmony (60-day cycle variation),
+          // and the deterministic category scores from one shared helper — the same
+          // one the teaser route calls, so identical birth data + Bangkok day always
+          // yields identical numbers on both endpoints.
+          // Computed once here and used both to tell the model what to narrate
+          // (buildTodayPrompt) and, below, to overwrite whatever the model returns —
+          // the prompt is guidance, this is the guarantee.
+          const { scores: dailyCategoryScores, ...dailyContext } = getDailyScoresForChart(baziChart, todayBangkok);
 
           const recentRows = await db
             .select({ date: dailyReadings.date, content: dailyReadings.content })

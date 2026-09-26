@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
 import {
@@ -230,6 +231,100 @@ export async function generateStructuredCompatibilityReading(
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       validationRetryUsed = true;
       effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
+    } catch (error) {
+      if (validationRetryUsed) throw error;
+      validationRetryUsed = true;
+      effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
+    }
+  }
+}
+
+const TEASER_SHAPE = `
+Return valid JSON matching exactly this shape (all fields required):
+{
+  "threeWay": string,
+  "reading": string
+}
+threeWay: ประโยคสั้นหนึ่งประโยค ไม่เกินประมาณ 15 คำ อ่านจบในหนึ่งลมหายใจ. reading: ประมาณ 2 ประโยค ไม่ยาวเกินไป.
+Do not include markdown or any text outside this JSON object.`;
+
+/**
+ * Bounds are deliberately wide relative to the prompt's "one short sentence" /
+ * "about 2 sentences" targets: the model cannot measure JS string length, and
+ * Thai vowel/tone marks each count as their own UTF-16 code unit, so a request
+ * for "~90 characters" in the prompt can measure well over 200 in .length.
+ * These bounds are calibrated to what real DeepSeek output measures.
+ *
+ * threeWay's max was tightened from 160 to 120: threeWay renders as a mobile
+ * hero line, and observed outputs before the ~15-word prompt guidance ran
+ * 52-132 characters — several 100+ wrapped to ~5 lines at heading size. The
+ * prompt now asks for one short, single-breath sentence (~15 words); 120
+ * keeps headroom above the accepted ~54-62 range without allowing a reply
+ * long enough to wrap that badly.
+ */
+const TeaserContentSchema = z.object({
+  threeWay: z.string().min(10).max(120),
+  reading: z.string().min(60).max(320),
+});
+
+export type TeaserContent = z.infer<typeof TeaserContentSchema>;
+
+/**
+ * Generate the teaser v2 narrative (threeWay + reading) using DeepSeek's JSON
+ * mode. Same pattern as generateStructuredCompatibilityReading: JSON mode,
+ * zod validation, one validation retry, a few transport retries — but the
+ * teaser sits before auth on a shared-IP rate limit, so attempts stay short
+ * enough that the whole call fits inside the route's single-flight lock.
+ *
+ * `userName` guards a single, cheap-to-check copy rule: threeWay must not
+ * open with the user's own name (the reading already does that).
+ */
+export async function generateTeaserReading(
+  prompt: string,
+  userName: string,
+): Promise<TeaserContent> {
+  let effectivePrompt = `${prompt}\n${TEASER_SHAPE}`;
+  let validationRetryUsed = false;
+  let transportFailures = 0;
+
+  while (true) {
+    let text: string;
+    try {
+      text = await callDeepSeek(
+        [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: effectivePrompt },
+        ],
+        {
+          maxTokens: 600,
+          temperature: 0.8,
+          timeoutMs: 15_000,
+          jsonMode: true,
+        },
+      );
+    } catch (error) {
+      if (!isRetryableError(error) || transportFailures >= 1) throw error;
+      transportFailures += 1;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const result = TeaserContentSchema.safeParse(parsed);
+      if (result.success && !result.data.threeWay.trimStart().startsWith(userName)) {
+        return result.data;
+      }
+
+      if (validationRetryUsed) {
+        throw new Error(
+          result.success
+            ? "threeWay started with the user's name"
+            : `Invalid teaser JSON: ${result.error.message}`,
+        );
+      }
+      validationRetryUsed = true;
+      effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields, length limits, or started threeWay with the user's name ("${userName}"). Return valid JSON with both fields, following every rule.`;
     } catch (error) {
       if (validationRetryUsed) throw error;
       validationRetryUsed = true;

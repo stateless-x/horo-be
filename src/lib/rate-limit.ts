@@ -49,12 +49,15 @@ const rateLimitStore = new Map<string, RateLimitEntry>();
  * Rate limit configurations for different endpoint types
  */
 export const RATE_LIMITS = {
-  // Public teaser endpoint — generous enough for shared IPs (corporate NAT, mobile carrier)
+  // Public teaser endpoint — generous enough for shared IPs (corporate NAT, mobile carrier).
+  // Raised from 5 to 20: Thai mobile carriers share IPs across many subscribers
+  // behind carrier-grade NAT, so 5/IP/day meant the 6th person on that IP hit a
+  // dead end during onboarding, before they ever created an account.
   // Failed LLM calls are refunded via decrementRateLimit(), so only successes count
   teaser: {
     name: 'teaser',
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    maxRequests: 5, // 5 teasers per day per IP
+    maxRequests: 20, // 20 teasers per day per IP
   },
   // Daily reading (once per day, but allow retries)
   daily: {
@@ -121,12 +124,23 @@ export const RATE_LIMITS = {
     windowMs: 60 * 60 * 1000, // 1 hour
     maxRequests: 10, // 10 invites per hour per user
   },
+  // Anonymous onboarding funnel step counter (no auth, IP-based). One real
+  // onboarding pass fires well under 20 steps; this is a ceiling on a
+  // misbehaving or abusive client, not a limit real use reaches.
+  onboardingStep: {
+    name: 'onboardingStep',
+    windowMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxRequests: 300, // 300 step pings per day per IP
+  },
 } as const;
 
 /**
- * Extract client IP from request headers
+ * Extract client IP from request headers.
+ * Exported so routes outside this module (e.g. the anonymous onboarding-step
+ * endpoint) can key IP-based rate limiting the same way this module does,
+ * rather than growing a third copy of this header-parsing logic.
  */
-function getClientIP(request: Request): string {
+export function getClientIP(request: Request): string {
   // Try various headers that might contain the real IP
   const forwardedFor = request.headers.get('x-forwarded-for');
   if (forwardedFor) {
