@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, date, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, date, integer, uniqueIndex, index, primaryKey } from 'drizzle-orm/pg-core';
 import { user } from './users';
 
 /**
@@ -68,4 +68,25 @@ export const productEvents = pgTable('product_events', {
   // which surface" are the two shapes fetch-stats.ts groups by.
   eventDateIdx: index('product_events_event_date_idx').on(table.event, table.viewDate),
   surfaceCategoryIdx: index('product_events_surface_category_idx').on(table.surface, table.category),
+}));
+
+/**
+ * Anonymous (pre-auth) onboarding funnel counters: one row per (Bangkok day,
+ * step), incremented on every POST /api/analytics/onboarding-step call.
+ *
+ * No userId here — the onboarding funnel runs before an account exists, so
+ * there is nothing to key events to but the day and the step. Stores nothing
+ * else: no IP, no user agent, no birth data. `step` is validated against
+ * ONBOARDING_FUNNEL_STEPS (lib/shared/types/analytics.ts) before the write,
+ * so this column only ever holds a known member of that list.
+ *
+ * The composite primary key IS the upsert target: a step's row for a given
+ * day either doesn't exist yet (insert count = 1) or does (increment count).
+ */
+export const onboardingFunnelDaily = pgTable('onboarding_funnel_daily', {
+  viewDate: date('view_date').notNull(),
+  step: varchar('step', { length: 32 }).notNull(), // OnboardingFunnelStep
+  count: integer('count').notNull().default(0),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.viewDate, table.step] }),
 }));

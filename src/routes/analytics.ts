@@ -1,10 +1,12 @@
 import { Elysia, t } from 'elysia';
+import { sql } from 'drizzle-orm';
 import { db } from '../lib/db';
-import { surfaceViews, productEvents } from '../../lib/db/schema';
+import { surfaceViews, productEvents, onboardingFunnelDaily } from '../../lib/db/schema';
 import { validateSessionFromRequest } from '../lib/session';
-import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
+import { checkRateLimit, RATE_LIMITS, getClientIP } from '../lib/rate-limit';
 import { getTodayBangkokString } from '../../lib/shared/utils/date';
 import type { TrackedSurface, TrackedEvent } from '../../lib/shared/types/analytics';
+import { isOnboardingFunnelStep } from '../../lib/shared/types/analytics';
 import { buildProductEventRow } from '../lib/analytics-events';
 
 /**
@@ -319,5 +321,62 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
           ),
         }),
       ]),
+    }
+  )
+  /**
+   * Anonymous onboarding funnel counter. No auth — the funnel runs before an
+   * account exists, so it is rate limited by IP instead, and stores only a
+   * (Bangkok day, step) count. See onboardingFunnelDaily in
+   * lib/db/schema/analytics.ts and ONBOARDING_FUNNEL_STEPS in
+   * lib/shared/types/analytics.ts for the step allowlist both sides share.
+   */
+  .post(
+    '/onboarding-step',
+    async ({ request, set, body }) => {
+      if (!isOnboardingFunnelStep(body.step)) {
+        set.status = 400;
+        return { error: 'Invalid step', code: 'INVALID_STEP' };
+      }
+
+      const clientIP = getClientIP(request);
+      const rateLimitResult = await checkRateLimit(clientIP, RATE_LIMITS.onboardingStep);
+
+      if (rateLimitResult.limited) {
+        set.status = 429;
+        return {
+          error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000),
+          resetAt: new Date(rateLimitResult.resetAt).toISOString(),
+        };
+      }
+
+      try {
+        const viewDate = getTodayBangkokString();
+
+        await db
+          .insert(onboardingFunnelDaily)
+          .values({ viewDate, step: body.step, count: 1 })
+          .onConflictDoUpdate({
+            target: [onboardingFunnelDaily.viewDate, onboardingFunnelDaily.step],
+            set: { count: sql`${onboardingFunnelDaily.count} + 1` },
+          });
+
+        set.status = 204;
+        return null;
+      } catch (error) {
+        console.error('[Analytics] Error recording onboarding step:', error);
+        set.status = 500;
+        return { error: 'Failed to record onboarding step', code: 'INTERNAL_ERROR' };
+      }
+    },
+    {
+      // Accept any bounded string here — isOnboardingFunnelStep is the real
+      // allowlist check above, and doing it in code (not a t.Union literal)
+      // guarantees the 400 path this route's test asserts, not whatever
+      // status Elysia's own schema validation happens to return.
+      body: t.Object({
+        step: t.String({ maxLength: 32 }),
+      }),
     }
   );
