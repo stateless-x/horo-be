@@ -87,10 +87,12 @@ There is no fifth "อนาคต" bar. Nothing the engine computes speaks to a
 
 ### Archetype
 
-`lib/astrology/compatibility-archetypes.ts` has 18 names (3 element classes × 6 day-branch relations), each with a one-line tagline. It is a draft for owner review. The rules for the names:
-- no element words;
+`lib/astrology/compatibility-archetypes.ts` has 15 names, one per unordered pair of day-master elements, each a poetic element image with a one-line tagline (e.g. fire and metal is คู่ไฟหลอมทอง). It is a draft for owner review. The rules for the names:
+- only the pair's own elements, since an image must be true for the pair;
 - no doom names;
-- none that only fits a couple.
+- nothing that friend-zones a love pair or only fits a couple.
+
+The first draft keyed on element class × spouse palace (18 names). Element imagery can't be keyed that way: "generating" covers five different element pairs, so an element word in its name would be wrong for four of them. The spouse palace still sets the chemistry score and leads the verdict when it isn't neutral.
 
 ### Calendar
 

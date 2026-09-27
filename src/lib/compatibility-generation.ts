@@ -369,7 +369,7 @@ export async function generateCompatibilityV4(
     score: charts.score.score,
     inputs,
     dimensions: calculateDimensions(inputs),
-    archetype: selectArchetype(inputs),
+    archetype: selectArchetype(charts.readerBazi.element, charts.partnerBazi.element),
     calendar,
     bestMonth: bestMonth(calendar),
   };

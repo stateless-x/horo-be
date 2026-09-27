@@ -9,7 +9,7 @@ import {
   selectArchetype,
   type PairInputs,
 } from '../lib/astrology';
-import { chartSilence, foreignElementWords } from '../src/lib/compatibility-text';
+import { chartSilence, elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 
 const MBTI = ['INTJ', 'INTP', 'ENTJ', 'ENTP', 'INFJ', 'INFP', 'ENFJ', 'ENFP', 'ISTJ', 'ISFJ', 'ESTJ', 'ESFJ', 'ISTP', 'ISFP', 'ESTP', 'ESFP'];
 
@@ -83,26 +83,33 @@ describe('dimension scores', () => {
 });
 
 describe('pair archetype', () => {
-  test('every element class and day-branch relation has a named entry, 18 in all', () => {
-    const entries = Object.values(PAIR_ARCHETYPES).flatMap((byRelation) => Object.values(byRelation));
-    expect(entries).toHaveLength(18);
-    expect(new Set(entries.map((e) => e.name)).size).toBe(18);
-    for (const entry of entries) {
-      expect(entry.name.length).toBeGreaterThan(2);
-      expect(entry.tagline.length).toBeGreaterThan(10);
-      // Element words are data in the prose checks; names must not carry them. No doom names.
-      expect(foreignElementWords(`${entry.name} ${entry.tagline}`, [])).toEqual([]);
-      expect(entry.name).not.toContain('กรรม');
-      // The tagline sits on the cover: it must not say the chart is silent.
-      expect(chartSilence(`${entry.name} ${entry.tagline}`)).toBeNull();
+  const ELEMENTS = ['wood', 'fire', 'earth', 'metal', 'water'] as const;
+
+  test('every pair of elements has a named entry, 15 in all, naming only its own elements', () => {
+    expect(Object.keys(PAIR_ARCHETYPES)).toHaveLength(15);
+    for (const a of ELEMENTS) {
+      for (const b of ELEMENTS) {
+        const entry = selectArchetype(a, b);
+        const text = `${entry.name} ${entry.tagline}`;
+        expect(entry.name.length).toBeGreaterThan(4);
+        expect(entry.tagline.length).toBeGreaterThan(10);
+        // An element image must be true for this pair: no element of another pair.
+        expect(foreignElementWords(text, [a, b])).toEqual([]);
+        expect(elementsNamed(entry.name).every((element) => element === a || element === b)).toBe(true);
+        // No doom names, no friend-zoning a love pair, nothing that says the chart is silent.
+        expect(entry.name).not.toMatch(/กรรม|เพื่อน/);
+        expect(entry.tagline).not.toContain('เพื่อน');
+        expect(chartSilence(text)).toBeNull();
+      }
     }
+    expect(new Set(Object.values(PAIR_ARCHETYPES).map((e) => e.name)).size).toBe(15);
   });
 
   test('is deterministic and the same whichever person is the reader', () => {
     for (const { reader, partner } of randomPairs(500, false)) {
-      const once = selectArchetype(pairInputs(reader, partner, null, null));
-      expect(selectArchetype(pairInputs(reader, partner, null, null))).toEqual(once);
-      expect(selectArchetype(pairInputs(partner, reader, null, null))).toEqual(once);
+      const once = selectArchetype(reader.element, partner.element);
+      expect(selectArchetype(reader.element, partner.element)).toEqual(once);
+      expect(selectArchetype(partner.element, reader.element)).toEqual(once);
     }
   });
 });

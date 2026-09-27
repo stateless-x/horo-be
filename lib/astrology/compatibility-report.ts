@@ -2,7 +2,9 @@ import type { BaziChart, Element, HeavenlyStem } from '../shared';
 import { calculateBazi } from './bazi';
 import { getBranchRelation, getElementInteraction, type BranchRelation } from './compatibility';
 import { ELEMENT_CONTROLLING, ELEMENT_PRODUCING, HEAVENLY_STEMS } from './constants';
-import { PAIR_ARCHETYPES, type ElementClass, type PairArchetype } from './compatibility-archetypes';
+import { archetypeKey, PAIR_ARCHETYPES, type PairArchetype } from './compatibility-archetypes';
+
+export type ElementClass = 'same' | 'generating' | 'controlling';
 
 /**
  * Deterministic parts of the compatibility report (content v4): dimension
@@ -148,9 +150,10 @@ export function calculateDimensions(inputs: PairInputs): Dimension[] {
 
 // ---------------------------------------------------------------- archetype
 
-export function selectArchetype(inputs: PairInputs): PairArchetype {
-  const entry = PAIR_ARCHETYPES[inputs.elementClass][inputs.dayRelation];
-  return { key: `${inputs.elementClass}-${inputs.dayRelation}`, ...entry };
+/** The pair archetype for two day-master elements; the same whichever person is the reader. */
+export function selectArchetype(a: Element, b: Element): PairArchetype {
+  const key = archetypeKey(a, b);
+  return { key, ...PAIR_ARCHETYPES[key] };
 }
 
 // ---------------------------------------------------------------- calendar

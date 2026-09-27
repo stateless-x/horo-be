@@ -1,53 +1,50 @@
-import type { BranchRelation } from './compatibility';
+import type { Element } from '../shared';
 
 /**
- * DRAFT, FOR OWNER REVIEW (2026-09-27). Names and taglines are placeholders
- * until the owner signs them off; the keying is final.
+ * DRAFT, FOR OWNER REVIEW (2026-09-27). The owner asked for poetic Thai
+ * images in the spirit of "คู่ไฟหลอมทอง"; names and taglines await sign-off.
  *
- * One pair archetype per (element class × day-branch relation): 3 × 6 = 18.
- * Both keys are symmetric, so swapping the two people never changes the name.
- * - Element class compares the two day-master elements: 'same', 'generating'
- *   (either one produces the other) or 'controlling' (either one controls the
- *   other). With five elements every pair is exactly one of these.
- * - Day-branch relation is the spouse palace (นักษัตรวันเกิด).
+ * One pair archetype per unordered pair of day-master elements: 5 same-element
+ * pairs + 10 mixed = 15. The earlier draft keyed on element class × spouse
+ * palace (18 names), but an element image is only true for the pair's own two
+ * elements: "generating" covers five different element pairs, so any element
+ * word in a class-keyed name would contradict four of them. The spouse palace
+ * still drives the chemistry score and leads the verdict when it isn't neutral.
  *
- * Writing rules: everyday contemporary Thai, flattering but honest even for a
- * clash, no doom names (no คู่กรรม), no element words (ไม้ ไฟ ดิน ทอง น้ำ)
- * because the prose checks treat those as data, and nothing that only fits a
- * couple: family, friends and bosses get these names too.
+ * Writing rules: contemporary readable Thai, nature and element imagery, only
+ * the pair's own elements, gift and tension both honest, no doom names (no
+ * คู่กรรม), and nothing that friend-zones a love pair or only fits a couple:
+ * family, friends and bosses get these names too.
  */
 
-export type ElementClass = 'same' | 'generating' | 'controlling';
-
 export interface PairArchetype {
-  key: `${ElementClass}-${BranchRelation}`;
+  /** The two elements in ELEMENT_ORDER, e.g. 'fire-metal'. */
+  key: string;
   name: string;
   tagline: string;
 }
 
-export const PAIR_ARCHETYPES: Record<ElementClass, Record<BranchRelation, Omit<PairArchetype, 'key'>>> = {
-  same: {
-    combine: { name: 'คู่รู้ใจ', tagline: 'คิดคล้ายกันและเข้าจังหวะกันได้เองโดยไม่ต้องอธิบายเยอะ' },
-    trine: { name: 'คู่ทีมเดียวกัน', tagline: 'มองไปทางเดียวกัน ยิ่งมีเป้าหมายร่วมยิ่งไปได้ไว' },
-    same: { name: 'คู่กระจกเงา', tagline: 'เหมือนกันจนเห็นตัวเองในอีกคน ทั้งข้อดีและเรื่องที่ต้องระวัง' },
-    neutral: { name: 'คู่เพื่อนร่วมทาง', tagline: 'เดินข้างกันได้สบาย แต่ต้องมีเรื่องใหม่มาเติมให้ไม่นิ่ง' },
-    harm: { name: 'คู่ดื้อพอกัน', tagline: 'เข้าใจกันเร็ว แต่ถ้าไม่พูดตรง ๆ ความน้อยใจจะสะสมเงียบ ๆ' },
-    clash: { name: 'คู่หัวแข็งเจอกัน', tagline: 'แรงพอกันทั้งคู่ ถ้ายอมกันเป็นจะกลายเป็นทีมที่แกร่งมาก' },
-  },
-  generating: {
-    combine: { name: 'คู่เติมเต็ม', tagline: 'คนหนึ่งหนุน อีกคนเติบโต และต่างคนต่างอยากอยู่ใกล้กัน' },
-    trine: { name: 'คู่ส่งแรงกัน', tagline: 'ต่างคนต่างดันกันไปข้างหน้า เป้าหมายยิ่งชัดยิ่งไปไกล' },
-    same: { name: 'คู่ประคองกัน', tagline: 'มีคนคอยประคองและคนที่รับแล้วส่งต่อ มุมมองคล้ายกันจนสบายใจ' },
-    neutral: { name: 'คู่อบอุ่นแบบค่อยเป็นค่อยไป', tagline: 'ความใส่ใจค่อย ๆ ก่อตัว ยิ่งอยู่ด้วยกันนานยิ่งเห็นค่า' },
-    harm: { name: 'คู่ห่วงแต่ไม่พูด', tagline: 'ใส่ใจกันจริง แต่ความห่วงอาจออกมาในแบบที่อีกคนอ่านไม่ออก' },
-    clash: { name: 'คู่ต่างขั้วที่ดึงดูดกัน', tagline: 'อยากดูแลกัน แต่จังหวะชีวิตสวนทาง ต้องหาจุดนัดพบให้เจอ' },
-  },
-  controlling: {
-    combine: { name: 'คู่ท้าทายที่ลงตัว', tagline: 'ต่างกันจนท้าทาย แต่ลึก ๆ แล้วเข้ากันได้ดีกว่าที่เห็น' },
-    trine: { name: 'คู่ขัดเกลากัน', tagline: 'ต่างคนต่างดึงศักยภาพของอีกคนออกมาด้วยความต่าง' },
-    same: { name: 'คู่ผลัดกันนำ', tagline: 'มองโลกคล้ายกัน แต่ต้องตกลงให้ชัดว่าใครนำเรื่องไหน' },
-    neutral: { name: 'คู่เรียนรู้กันและกัน', tagline: 'ความต่างชัดเจน ถ้าเปิดใจจะได้บทเรียนที่ดีที่สุดจากกัน' },
-    harm: { name: 'คู่ที่ต้องพูดให้ชัด', tagline: 'มีแรงกดดันเงียบ ๆ ระหว่างกัน ความชัดเจนคือทางออกของคู่นี้' },
-    clash: { name: 'คู่พายุกับเข็มทิศ', tagline: 'แรงปะทะชัด แต่ถ้าวางกติกาได้ จะพากันผ่านเรื่องยากได้' },
-  },
+const ELEMENT_ORDER: readonly Element[] = ['wood', 'fire', 'earth', 'metal', 'water'];
+
+/** Keyed by the two elements in ELEMENT_ORDER, so both people get the same entry. */
+export const PAIR_ARCHETYPES: Record<string, Omit<PairArchetype, 'key'>> = {
+  'wood-wood': { name: 'คู่ไม้ร่วมป่า', tagline: 'โตเคียงกันจนเป็นร่มเงาให้กัน ขอแค่อย่าแย่งแสงกันเอง' },
+  'fire-fire': { name: 'คู่ไฟต่อไฟ', tagline: 'จุดประกายให้กันได้ในพริบตา ขอแค่มีช่วงที่ลดไฟลงบ้าง' },
+  'earth-earth': { name: 'คู่ดินผืนเดียว', tagline: 'มั่นคงเหมือนแผ่นดินเดียวกัน ขอแค่มีใครเริ่มพรวนให้เรื่องใหม่ได้งอก' },
+  'metal-metal': { name: 'คู่ทองสองประกาย', tagline: 'แกร่งและเงางามพอกัน ยืนเคียงกันได้มั่น แต่กระทบกันทีไรก็ดังทั้งคู่' },
+  'water-water': { name: 'คู่สายน้ำบรรจบ', tagline: 'เข้าใจกันลึกโดยไม่ต้องพูด ขอแค่ให้น้ำได้ไหลต่อ ไม่นิ่งจนขุ่น' },
+  'wood-fire': { name: 'คู่ไม้ต่อไฟ', tagline: 'คนหนึ่งเป็นเชื้อ อีกคนเป็นแสง ส่องทางกันได้ไกลถ้าไม่เผาจนหมดแรง' },
+  'fire-earth': { name: 'คู่ไฟปั้นดิน', tagline: 'ความอุ่นของคนหนึ่งทำให้อีกคนแกร่งขึ้น จนเป็นที่พักใจของกันและกัน' },
+  'earth-metal': { name: 'คู่ดินบ่มทอง', tagline: 'คนหนึ่งให้ที่ยืน อีกคนได้เปล่งประกาย ยิ่งนานยิ่งเห็นค่า' },
+  'metal-water': { name: 'คู่น้ำค้างบนทอง', tagline: 'คนหนึ่งนิ่งและมั่นคง อีกคนอ่อนโยนและลื่นไหล เติมกันจนเต็ม' },
+  'wood-water': { name: 'คู่น้ำเลี้ยงไม้', tagline: 'คนหนึ่งหล่อเลี้ยงเงียบ ๆ อีกคนเติบโตให้เห็น งอกงามไปด้วยกัน' },
+  'wood-earth': { name: 'คู่รากไม้ยึดดิน', tagline: 'ยึดกันไว้แน่นจนมั่นคง ขอแค่เว้นที่ให้อีกคนได้หายใจ' },
+  'earth-water': { name: 'คู่ดินโอบน้ำ', tagline: 'คนหนึ่งวางขอบ อีกคนไหลไปได้ไกล ขอบที่พอดีพาทั้งคู่ไปถึงทะเล' },
+  'fire-water': { name: 'คู่น้ำกล่อมไฟ', tagline: 'คนหนึ่งร้อนแรง อีกคนเยือกเย็น พบกันตรงกลางเมื่อไรก็อบอุ่นพอดี' },
+  'fire-metal': { name: 'คู่ไฟหลอมทอง', tagline: 'ความร้อนที่ขัดเกลาให้คมขึ้น ขอแค่อย่าร้อนเกินจนเสียรูป' },
+  'wood-metal': { name: 'คู่ทองสลักไม้', tagline: 'คมของคนหนึ่งขัดเกลาอีกคนให้เป็นรูปทรง ขอแค่อย่าตัดลึกเกินไป' },
 };
+
+export function archetypeKey(a: Element, b: Element): string {
+  return [a, b].sort((x, y) => ELEMENT_ORDER.indexOf(x) - ELEMENT_ORDER.indexOf(y)).join('-');
+}
