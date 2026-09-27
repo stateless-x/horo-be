@@ -183,6 +183,8 @@ describe('generateCompatibilityV3', () => {
 
     expect(calls).toBe(2);
     expect(result.content.teaser.hook).toBe(generated.teaser.hook);
-    expect(bodies[1]).toContain('did not match the required fields');
+    // The repair names the failed field and the offending token.
+    expect(bodies[1]).toContain('teaser.hook');
+    expect(bodies[1]).toContain('enquanto');
   });
 });

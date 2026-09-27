@@ -45,12 +45,15 @@ export type CompatibilityV3TimingBasis = (typeof COMPATIBILITY_V3_TIMING_BASIS)[
  * ("boulevard", "enquanto", "补齐"); the raw day-master code "ding" leaked the
  * same way. A match fails validation, which buys one repair call.
  */
-const ALLOWED_LATIN = /(?<![A-Za-z])(?:[IE][NS][TF][JP]|MBTI)(?![A-Za-z])/g;
-const FOREIGN_SCRIPT = /[^฀-๿0-9\s.,:;!?()"'%/]/;
+// No lookbehind: this module also ships to browsers, and older Safari cannot
+// parse a lookbehind regex literal at all.
+const LATIN_RUN = /[A-Za-z]+/g;
+const ALLOWED_LATIN_WORD = /^(?:[IE][NS][TF][JP]|MBTI)$/;
+const FOREIGN_RUN = /[^\u0E00-\u0E7F0-9\s.,:;!?()"'%/]+/;
 
 export function foreignTokenIn(text: string): string | null {
-  const stripped = text.replace(ALLOWED_LATIN, '');
-  const match = stripped.match(new RegExp(`${FOREIGN_SCRIPT.source}+`));
+  const stripped = text.replace(LATIN_RUN, (word) => (ALLOWED_LATIN_WORD.test(word) ? '' : word));
+  const match = stripped.match(FOREIGN_RUN);
   return match ? match[0] : null;
 }
 

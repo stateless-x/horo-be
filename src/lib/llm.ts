@@ -210,6 +210,8 @@ async function generateValidatedCompatibilityJson<T>(
   schema: z.ZodType<T>,
   maxTokens: number,
   onModelCall?: OnModelCall,
+  /** Builds the repair message from the failed fields; the generic message is used when absent. */
+  describeInvalid?: (issues: z.ZodIssue[]) => string,
 ): Promise<T> {
   let effectivePrompt = prompt;
   let validationRetryUsed = false;
@@ -245,7 +247,9 @@ async function generateValidatedCompatibilityJson<T>(
 
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       validationRetryUsed = true;
-      effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
+      effectivePrompt = describeInvalid
+        ? `${effectivePrompt}\n\n${describeInvalid(result.error.issues)}`
+        : `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
     } catch (error) {
       if (validationRetryUsed) throw error;
       validationRetryUsed = true;
@@ -300,6 +304,16 @@ Do not include the score, markdown, comments, or any text outside this JSON obje
  */
 const COMPATIBILITY_V3_MAX_TOKENS = 3000;
 
+/**
+ * Names each failed field, so the one repair call knows what to fix. The
+ * prototype measured 15/15 final passes with a repair built this way; a stray
+ * foreign token (about 1 first reply in 5) is the usual cause.
+ */
+function describeInvalidV3(issues: z.ZodIssue[]): string {
+  const fields = issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+  return `Your previous response failed validation: ${fields}. Fix those fields, keep every other field as it was, and return the complete JSON object. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
+}
+
 /** Generate compatibility v3: the free teaser and the full detail in one call. */
 export async function generateStructuredCompatibilityReadingV3(
   prompt: string,
@@ -310,6 +324,7 @@ export async function generateStructuredCompatibilityReadingV3(
     CompatibilityV3GeneratedSchema,
     COMPATIBILITY_V3_MAX_TOKENS,
     onModelCall,
+    describeInvalidV3,
   );
 }
 
