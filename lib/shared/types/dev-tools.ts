@@ -1,4 +1,7 @@
-import type { RelationshipType } from './compatibility';
+import { z } from 'zod';
+import { RelationshipTypeSchema, type RelationshipType } from './compatibility';
+import { COMPATIBILITY_VIEWS, type CompatibilityV3Shaped } from './compatibility-v3';
+import type { CompatibilityStructuredContent } from './reading';
 
 /**
  * Contracts for the dev-only generator tools (horo-be `/api/dev/generate/*`,
@@ -25,25 +28,39 @@ export interface DevGenerateError {
   detail?: string;
 }
 
-export interface DevCompatibilityPerson {
-  birthDate: string; // YYYY-MM-DD
-  birthHour?: number; // 0-23, omitted when unknown
-  gender: 'male' | 'female';
-  mbti?: string;
-}
+const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const MbtiCodeSchema = z.string().regex(/^[IE][NS][TF][JP]$/, 'Use a 4-letter MBTI code');
 
-export interface DevCompatibilityPartner {
-  name: string;
-  birthDate: string; // YYYY-MM-DD
-  mbti?: string;
-}
+export const DevCompatibilityPersonSchema = z.object({
+  birthDate: IsoDateSchema,
+  /** 0-23, omitted when unknown. */
+  birthHour: z.number().int().min(0).max(23).optional(),
+  gender: z.enum(['male', 'female']),
+  mbti: MbtiCodeSchema.optional(),
+});
+export type DevCompatibilityPerson = z.infer<typeof DevCompatibilityPersonSchema>;
 
-export interface DevCompatibilityRequest {
-  reader: DevCompatibilityPerson;
-  partner: DevCompatibilityPartner;
+export const DevCompatibilityPartnerSchema = z.object({
+  name: z.string().trim().min(1).max(40),
+  birthDate: IsoDateSchema,
+  mbti: MbtiCodeSchema.optional(),
+});
+export type DevCompatibilityPartner = z.infer<typeof DevCompatibilityPartnerSchema>;
+
+export const DevCompatibilityRequestSchema = z.object({
+  reader: DevCompatibilityPersonSchema,
+  partner: DevCompatibilityPartnerSchema,
+  relationshipType: RelationshipTypeSchema,
+  version: z.enum(['v2', 'v3']),
+  view: z.enum(COMPATIBILITY_VIEWS),
+});
+export type DevCompatibilityRequest = z.infer<typeof DevCompatibilityRequestSchema>;
+
+/** What the compatibility result surface needs to render a reading. */
+export interface DevCompatibilityOutput {
+  score: number;
   relationshipType: RelationshipType;
-  version: 'v2' | 'v3';
-  view: 'teaser' | 'full';
+  structuredContent: CompatibilityStructuredContent | CompatibilityV3Shaped;
 }
 
 /**

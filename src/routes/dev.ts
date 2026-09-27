@@ -1,6 +1,22 @@
 import { Elysia } from 'elysia';
+import type { z } from 'zod';
 import { auth } from '../lib/auth';
 import { config } from '../config';
+import { normalizeMbtiType } from '../../lib/astrology';
+import {
+  BirthProfileSchema,
+  DevCompatibilityRequestSchema,
+  shapeCompatibilityView,
+  type CompatibilityStructuredContent,
+  type CompatibilityV3Content,
+  type DevCompatibilityOutput,
+  type DevCompatibilityRequest,
+  type DevGenerateError,
+  type DevGenerateResponse,
+} from '../../lib/shared';
+import { generateCompatibilityV2, generateCompatibilityV3 } from '../lib/compatibility-generation';
+import type { OnModelCall } from '../lib/llm';
+import { generateTeaser } from '../systems/fortune/teaser';
 
 // Dev-only login bypass. Mounted from index.ts only when NODE_ENV !== 'production'
 // (and double-guarded here). Visit http://localhost:3001/api/dev/login in the
@@ -11,30 +27,136 @@ const DEV_EMAIL = 'dev@saimu.local';
 const DEV_PASSWORD = 'saimu-dev-only-4242';
 const DEV_NAME = 'Dev หมอดู';
 
-export const devRoutes = new Elysia({ prefix: '/api/dev' }).get('/login', async () => {
-  if (config.env === 'production') {
-    return new Response('Not found', { status: 404 });
-  }
+const notFound = () => new Response('Not found', { status: 404 });
 
-  const frontend = config.cors.allowedOrigins[0] ?? 'http://localhost:3000';
+interface DevGeneration<TOutput, TContent> {
+  output: TOutput;
+  content: TContent;
+  prompt: string;
+  timings: { calcMs: number; llmMs: number };
+}
 
-  const signIn = () =>
-    auth.api.signInEmail({
-      body: { email: DEV_EMAIL, password: DEV_PASSWORD },
-      returnHeaders: true,
-    });
+/**
+ * One dev generate endpoint: production 404 before anything else (the body is
+ * validated here with zod, not by Elysia, so no validation step can answer
+ * first), then parse, run, time, and return one envelope.
+ *
+ * Stateless by construction: `run` gets birth data and a call counter only.
+ * No session, database, cache or rate limit, because the local .env points at
+ * the production database.
+ */
+function devGenerator<TInput, TOutput, TContent>(
+  schema: z.ZodType<TInput, z.ZodTypeDef, unknown>,
+  run: (input: TInput, onModelCall: OnModelCall) => Promise<DevGeneration<TOutput, TContent>>,
+) {
+  return async ({ body, set }: { body: unknown; set: { status?: number | string } }) => {
+    if (config.env === 'production') return notFound();
 
-  let result;
-  try {
-    result = await signIn();
-  } catch {
-    await auth.api.signUpEmail({
-      body: { email: DEV_EMAIL, password: DEV_PASSWORD, name: DEV_NAME },
-    });
-    result = await signIn();
-  }
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) {
+      set.status = 400;
+      return { error: 'Invalid request', detail: parsed.error.message } satisfies DevGenerateError;
+    }
 
-  const headers = new Headers(result.headers);
-  headers.set('Location', `${frontend}/dashboard`);
-  return new Response(null, { status: 302, headers });
-});
+    let modelCalls = 0;
+    const started = performance.now();
+    try {
+      const result = await run(parsed.data, () => {
+        modelCalls += 1;
+      });
+      return {
+        output: result.output,
+        content: result.content,
+        prompt: result.prompt,
+        promptChars: result.prompt.length,
+        outputChars: JSON.stringify(result.content).length,
+        modelCalls,
+        timings: { ...result.timings, totalMs: Math.round(performance.now() - started) },
+      } satisfies DevGenerateResponse<TOutput, TContent>;
+    } catch (error) {
+      console.error('[Dev] Generation failed:', error);
+      set.status = 502;
+      return {
+        error: 'Generation failed',
+        detail: error instanceof Error ? error.message : String(error),
+      } satisfies DevGenerateError;
+    }
+  };
+}
+
+export const devRoutes = new Elysia({ prefix: '/api/dev' })
+  .get('/login', async () => {
+    if (config.env === 'production') return notFound();
+
+    const frontend = config.cors.allowedOrigins[0] ?? 'http://localhost:3000';
+
+    const signIn = () =>
+      auth.api.signInEmail({
+        body: { email: DEV_EMAIL, password: DEV_PASSWORD },
+        returnHeaders: true,
+      });
+
+    let result;
+    try {
+      result = await signIn();
+    } catch {
+      await auth.api.signUpEmail({
+        body: { email: DEV_EMAIL, password: DEV_PASSWORD, name: DEV_NAME },
+      });
+      result = await signIn();
+    }
+
+    const headers = new Headers(result.headers);
+    headers.set('Location', `${frontend}/dashboard`);
+    return new Response(null, { status: 302, headers });
+  })
+
+  .post(
+    '/generate/compatibility',
+    devGenerator<DevCompatibilityRequest, DevCompatibilityOutput, CompatibilityStructuredContent | CompatibilityV3Content>(
+      DevCompatibilityRequestSchema,
+      async (request, onModelCall) => {
+        const input = {
+          reader: {
+            birthDate: new Date(request.reader.birthDate),
+            birthHour: request.reader.birthHour,
+            gender: request.reader.gender,
+            mbtiType: normalizeMbtiType(request.reader.mbti),
+          },
+          partner: {
+            name: request.partner.name,
+            birthDate: new Date(request.partner.birthDate),
+            mbtiType: normalizeMbtiType(request.partner.mbti),
+          },
+          relationshipType: request.relationshipType,
+          onModelCall,
+        };
+
+        if (request.version === 'v2') {
+          const { content, charts, prompt, timings } = await generateCompatibilityV2(input);
+          const output: DevCompatibilityOutput = {
+            score: charts.score.score,
+            relationshipType: request.relationshipType,
+            structuredContent: content,
+          };
+          return { output, content, prompt, timings };
+        }
+
+        const { content, charts, prompt, timings } = await generateCompatibilityV3(input);
+        const output: DevCompatibilityOutput = {
+          score: charts.score.score,
+          relationshipType: request.relationshipType,
+          structuredContent: shapeCompatibilityView(content, request.view),
+        };
+        return { output, content, prompt, timings };
+      },
+    ),
+  )
+
+  .post(
+    '/generate/teaser',
+    devGenerator(BirthProfileSchema, async (profile, onModelCall) => {
+      const { result, prompt, timings } = await generateTeaser(profile, onModelCall);
+      return { output: result, content: result, prompt, timings };
+    }),
+  );
