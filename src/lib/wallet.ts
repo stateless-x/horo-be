@@ -146,6 +146,25 @@ export function createWallet(db: DbClient) {
     return { charged: true as const, balance: current - price };
   }
 
+  /**
+   * Read-only, no lock: is this thing already paid for (a spend, not refunded)?
+   * A later spendWithin for it charges nothing.
+   */
+  async function hasPaid(userId: string, productId: SpendableProductId, refId: string): Promise<boolean> {
+    const rows = await db
+      .select({ kind: walletLedger.kind })
+      .from(walletLedger)
+      .where(
+        and(
+          eq(walletLedger.userId, userId),
+          eq(walletLedger.productId, productId),
+          eq(walletLedger.refId, refId),
+          sql`${walletLedger.kind} in ('spend', 'refund')`,
+        ),
+      );
+    return rows.some((row) => row.kind === 'spend') && !rows.some((row) => row.kind === 'refund');
+  }
+
   /** spendWithin in a transaction of its own. */
   async function spend(userId: string, productId: SpendableProductId, refId: string) {
     return db.transaction((tx) => spendWithin(tx, userId, productId, refId));
@@ -268,7 +287,7 @@ export function createWallet(db: DbClient) {
     return rows.map(toEntry);
   }
 
-  return { balance, ensureWelcome, canAfford, spendWithin, spend, refundSpend, createOrder, getOrder, creditOrder, adjust, ledger };
+  return { balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder, creditOrder, adjust, ledger };
 }
 
 export type Wallet = ReturnType<typeof createWallet>;

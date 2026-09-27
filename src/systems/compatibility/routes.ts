@@ -405,10 +405,15 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
             const [row] = await db.select().from(compatibility).where(eq(compatibility.id, id)).limit(1);
             return row ?? null;
           },
-          saveAnalysis: async (id, analysis) => {
-            const [row] = await db.update(compatibility).set({ analysis }).where(eq(compatibility.id, id)).returning();
-            await invalidateCache(compatCacheKey(session.userId, id));
-            return row;
+          saveDetailPaid: async (id, analysis, charge) => {
+            const outcome = await db.transaction(async (tx) => {
+              const decision = await charge(tx);
+              if (!decision.ok) return decision;
+              const [row] = await tx.update(compatibility).set({ analysis }).where(eq(compatibility.id, id)).returning();
+              return { ok: true as const, row };
+            });
+            if (outcome.ok) await invalidateCache(compatCacheKey(session.userId, id));
+            return outcome;
           },
         },
       });

@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { inArray, sql } from 'drizzle-orm';
 import { config } from '../src/config';
-import { assertCanUnlock, chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
+import { chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
 import { isLocalDatabaseUrl } from '../src/lib/dev-regenerate';
 import { BALANCE_CAP, PACKS, PRODUCT_PRICES, WELCOME_GIFT, packAmountSatang } from '../src/lib/pricing';
 import {
@@ -53,62 +53,57 @@ describe('unlock seam (entitlements)', () => {
 
   const walletThat = (spend: Wallet['spend']) => ({
     ensureWelcome: async () => {},
-    spend,
     spendWithin: ((_tx: unknown, ...args: Parameters<Wallet['spend']>) => spend(...args)) as Wallet['spendWithin'],
     canAfford: async () => {
       throw new Error('canAfford not expected');
     },
+    hasPaid: async () => {
+      throw new Error('hasPaid not expected');
+    },
   });
   const tx = {} as Parameters<Wallet['spendWithin']>[0];
-
-  test('insufficient balance becomes the 402 shape with balance and price', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
-    const decision = await assertCanUnlock(
-      'u1',
-      'row1',
-      walletThat(async () => {
-        throw new InsufficientBalance(12, 49);
-      }),
-    );
-    expect(decision).toEqual({ ok: false, body: { error: 'insufficient_balance', balance: 12, price: 49 } });
-  });
-
-  test('any other wallet failure is thrown, not turned into a refusal', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
-    const broken = walletThat(async () => {
-      throw new Error('connection reset');
-    });
-    await expect(assertCanUnlock('u1', 'row1', broken)).rejects.toThrow('connection reset');
-  });
 
   test('lock off or COMPAT_UNLOCK_FREE never touches the wallet', async () => {
     const untouchable = walletThat(async () => {
       throw new Error('wallet touched');
     });
     config.compat = { lockEnabled: false, unlockFree: false };
-    expect(await assertCanUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
+    expect(await checkUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
+    expect(await chargeUnlockWithin(tx, 'u1', 'row1', untouchable)).toEqual({ ok: true });
     config.compat = { lockEnabled: true, unlockFree: true };
-    expect(await assertCanUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
-    expect(await checkUnlock('u1', untouchable)).toEqual({ ok: true });
+    expect(await checkUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
     expect(await chargeUnlockWithin(tx, 'u1', 'row1', untouchable)).toEqual({ ok: true });
   });
 
   test('checkUnlock grants the welcome gift, then only reads the balance', async () => {
     config.compat = { lockEnabled: true, unlockFree: false };
     const calls: string[] = [];
-    const reader = (balance: number) => ({
+    const reader = (balance: number, paid = false) => ({
       ensureWelcome: async () => void calls.push('welcome'),
       canAfford: async (_userId: string, price: number) => (calls.push('canAfford'), { ok: balance >= price, balance, price }),
-      spend: async () => {
-        throw new Error('checkUnlock must not spend');
-      },
+      hasPaid: async () => (calls.push('hasPaid'), paid),
       spendWithin: async () => {
         throw new Error('checkUnlock must not spend');
       },
     });
-    expect(await checkUnlock('u1', reader(49))).toEqual({ ok: true });
-    expect(await checkUnlock('u1', reader(10))).toEqual({ ok: false, body: { error: 'insufficient_balance', balance: 10, price: 49 } });
-    expect(calls).toEqual(['welcome', 'canAfford', 'welcome', 'canAfford']);
+    expect(await checkUnlock('u1', 'row1', reader(49))).toEqual({ ok: true });
+    expect(await checkUnlock('u1', 'row1', reader(10))).toEqual({ ok: false, body: { error: 'insufficient_balance', balance: 10, price: 49 } });
+    expect(calls).toEqual(['hasPaid', 'welcome', 'canAfford', 'hasPaid', 'welcome', 'canAfford']);
+  });
+
+  test('checkUnlock skips the balance for a row already paid for', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const calls: string[] = [];
+    const paidAtZero = {
+      ensureWelcome: async () => void calls.push('welcome'),
+      canAfford: async (_userId: string, price: number) => (calls.push('canAfford'), { ok: false, balance: 0, price }),
+      hasPaid: async () => (calls.push('hasPaid'), true),
+      spendWithin: async () => {
+        throw new Error('checkUnlock must not spend');
+      },
+    };
+    expect(await checkUnlock('u1', 'row1', paidAtZero)).toEqual({ ok: true });
+    expect(calls).toEqual(['hasPaid']);
   });
 
   test('chargeUnlockWithin maps a short balance to the 402 body and throws anything else', async () => {
@@ -294,6 +289,17 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     expect(await wallet.canAfford(userId, 49)).toEqual({ ok: false, balance: 0, price: 49 });
     await wallet.ensureWelcome(userId);
     expect(await wallet.canAfford(userId, 49)).toEqual({ ok: true, balance: 49, price: 49 });
+  });
+
+  test('hasPaid: a spend on that row, not refunded', async () => {
+    const userId = await newUser();
+    await wallet.ensureWelcome(userId);
+    expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-p')).toBe(false);
+    await wallet.spend(userId, 'compat_unlock', 'row-p');
+    expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-p')).toBe(true);
+    expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-other')).toBe(false);
+    await wallet.refundSpend(userId, 'compat_unlock', 'row-p', 'test');
+    expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-p')).toBe(false);
   });
 
   test('refundSpend restores the price once, and the refunded thing is never unlocked free', async () => {

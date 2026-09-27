@@ -2,7 +2,8 @@ import type { compatibility } from '../../../lib/db';
 import { RelationshipTypeSchema, shapeCompatibilityView, shareCompatibilityV4, type CompatibilityV4Stored } from '../../../lib/shared';
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Detail } from '../../lib/compatibility-generation';
-import { assertCanUnlock } from '../../lib/entitlements';
+import { chargeUnlockWithin, checkUnlock, type UnlockDecision } from '../../lib/entitlements';
+import type { WalletTx } from '../../lib/wallet';
 import type { InsufficientBalanceBody } from '../../../lib/shared/types/wallet';
 import { generationKey, type GenerationSingleFlight } from '../../lib/generation-singleflight';
 
@@ -99,8 +100,16 @@ export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | '
 
 export interface UnlockStore {
   load(id: string): Promise<CompatibilityRow | null>;
-  /** Writes the row's analysis (and drops its cached copy); returns the updated row. */
-  saveAnalysis(id: string, analysis: string): Promise<CompatibilityRow>;
+  /**
+   * One transaction: `charge(tx)` first, then the row's analysis, written only
+   * if the charge went through. Returns the updated row (its cached copy
+   * dropped after commit), or the refusal, with nothing written or charged.
+   */
+  saveDetailPaid(
+    id: string,
+    analysis: string,
+    charge: (tx: WalletTx) => Promise<UnlockDecision>,
+  ): Promise<{ ok: true; row: CompatibilityRow } | Extract<UnlockDecision, { ok: false }>>;
 }
 
 export type UnlockResult =
@@ -112,8 +121,14 @@ export type UnlockResult =
  * Unlock a locked v4 report: write its detail from the stored insight plan and
  * patch it into the same row. Owner only. Idempotent: an unlocked row (or any
  * row that is not a locked v4 report) comes back as it is, with no model call
- * and no entitlement check. One generation per row across concurrent taps and
+ * and no wallet access. One generation per row across concurrent taps and
  * processes (the single-flight lock; a waiter gets the owner's result).
+ *
+ * Paid with delivery (docs/wallet.md): checkUnlock (read-only) → 402 before any
+ * model call; then the detail is generated; then one transaction charges the
+ * row once and patches the detail. A generation that throws has charged
+ * nothing. A balance spent elsewhere meanwhile makes the charge refuse: the
+ * detail is discarded and the answer is 402.
  *
  * Deadline: the same arithmetic as the POST route (docs/compatibility-response-fix.md,
  * "v4 live budget"): every model call ends by requestStartedAt + 220 s, so the
@@ -133,21 +148,22 @@ export async function unlockReading(args: {
   if (!row || row.profileAId !== profileId) return notFound;
   if (!lockedStored(row.analysis)) return { status: 200, body: readingResponse(row) };
 
-  const decision = await assertCanUnlock(userId, id);
+  const decision = await checkUnlock(userId, id);
   if (!decision.ok) return { status: 402, body: decision.body };
 
-  const flight = await args.flight.run({
+  const flight = await args.flight.run<UnlockResult>({
     operation: 'compatibility',
     key: generationKey('compatibility', 'unlock', id),
     lockTtlMs: 300_000,
     waitTimeoutMs: 250_000,
-    resultTtlSeconds: 60,
+    // A refusal is not replayed for long: the reader may top up and tap again.
+    resultTtlSeconds: (value) => (value.status === 200 ? 60 : 1),
     run: async () => {
       // Re-read inside the lock: another process may have written the detail since.
       const current = await store.load(id);
       if (!current) throw new Error(`Compatibility ${id} disappeared during unlock`);
       const stored = lockedStored(current.analysis);
-      if (!stored) return readingResponse(current);
+      if (!stored) return { status: 200, body: readingResponse(current) };
       const generation = await generateCompatibilityV4Detail(stored, {
         partner: { name: current.partnerName },
         relationshipType: RelationshipTypeSchema.parse(current.relationshipType),
@@ -159,8 +175,13 @@ export async function unlockReading(args: {
       }
       console.log('[compatibility v4] detail written', { id, timings: generation.timings });
       const unlocked: CompatibilityV4Stored = { ...stored, detail: generation.detail, detailGeneratedAt: new Date().toISOString() };
-      return readingResponse(await store.saveAnalysis(id, JSON.stringify(unlocked)));
+      const saved = await store.saveDetailPaid(id, JSON.stringify(unlocked), (tx) => chargeUnlockWithin(tx, userId, id));
+      if (!saved.ok) {
+        console.warn('[compatibility v4] unlock refused at charge; detail discarded', { id, body: saved.body });
+        return { status: 402, body: saved.body };
+      }
+      return { status: 200, body: readingResponse(saved.row) };
     },
   });
-  return { status: 200, body: flight.value };
+  return flight.value;
 }

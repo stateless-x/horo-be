@@ -88,14 +88,9 @@ The unlock pays atomically with delivery. The seam is in `src/lib/entitlements.t
    - If the balance dropped since step 1, it returns the same 402 body, and the caller rolls back instead of saving.
    - If the patch fails, the charge rolls back with it. `tests/wallet.test.ts` covers this rollback.
 
-**Until the route moves to this order,** it still calls `assertCanUnlock` (welcome gift, then `spend`, before
-generating). A failure that repeats on every attempt then leaves the user paid with no report. Example: a partner
-name with digits failed the detail's number check on every retry, 2026-09-27. Delete `assertCanUnlock` when the route
-lands.
+**The route follows this order** (`unlockReading` in `src/systems/compatibility/reading.ts`, 2026-09-27). A failed generation charges nothing. A spend made elsewhere during generation turns the charge into a 402, and the detail is discarded. `assertCanUnlock` is deleted.
 
-**Known dev-only gap.** A row relocked by devtools after it was paid for has a spend but no detail. `checkUnlock` only
-reads the balance, so at a balance of 0 that row gets a 402, although `spendWithin` would not charge it again. Use the
-dev grant.
+**A row already paid for** skips the balance pre-check. `checkUnlock` asks `wallet.hasPaid(user, 'compat_unlock', rowId)` first. This covers a row devtools relocked after it was paid, and a retry after a failed patch. The charge then finds the existing spend and costs nothing.
 
 ## Routes
 

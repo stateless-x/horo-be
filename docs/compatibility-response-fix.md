@@ -163,13 +163,17 @@ A locked teaser has no detail to count its reading time from. The door shows `V4
 `unlockReading` in `src/systems/compatibility/reading.ts` runs these steps:
 1. Session, then profile.
 2. Load the row. 404 unless the session's profile owns it.
-3. If the row is not a locked v4 report, return it as it is. That makes the call idempotent: no model call and no entitlement check.
-4. Call `assertCanUnlock(userId, rowId)`, which spends 49 มู for this row, or nothing if this row was already paid for. If the balance is short, answer 402 with `InsufficientBalanceBody` (`lib/shared/types/wallet.ts`).
-5. Take the single-flight lock `generationKey('compatibility', 'unlock', rowId)`. A second tap, or a second process, waits for the first and gets the same result.
+3. If the row is not a locked v4 report, return it as it is. That makes the call idempotent: no model call and no wallet access.
+4. `checkUnlock(userId, rowId)` (`src/lib/entitlements.ts`) is read-only apart from the welcome gift. A row already paid for skips the balance check, for example a row devtools relocked or a retry after a failed patch. Otherwise, if the balance is short, the route answers 402 with `InsufficientBalanceBody` (`lib/shared/types/wallet.ts`) before any model call.
+5. Take the single-flight lock `generationKey('compatibility', 'unlock', rowId)`. A second tap, or a second process, waits for the first and gets the same result. A 402 is replayed for 1 s, a 200 for 60 s.
 6. Inside the lock, re-read the row, since another process may have finished. Then `generateCompatibilityV4Detail(stored, …)` runs the three detail calls from `stored.plan`.
    - `now` is the teaser's `generatedOn`, so the calendar months and the week plan match the plan's month insights.
    - The charts come from `stored.inputs`.
-7. Patch `analysis` on the same row, drop the `compat:{userId}:{id}` cache entry, and return the full report.
+   - If generation throws, nothing has been charged. The route answers 500.
+7. One transaction (`saveDetailPaid`): `chargeUnlockWithin(tx, userId, rowId)` charges 49 มู once per row, then `analysis` is patched on the same row.
+   - If the balance dropped meanwhile, the charge refuses. The detail is discarded and the answer is 402, with nothing charged or written.
+   - If the patch fails, the charge rolls back with it.
+   - After the commit, drop the `compat:{userId}:{id}` cache entry and return the full report.
 
 The frontend updates its `['compatibility', id]` query with the response and plays the reveal in place.
 

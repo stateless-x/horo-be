@@ -20,11 +20,18 @@ import {
   generateCompatibilityV4Stored,
 } from '../src/lib/compatibility-generation';
 import { GenerationSingleFlight } from '../src/lib/generation-singleflight';
-import { historyItem, readingResponse, shareResponse, unlockReading, type CompatibilityRow } from '../src/systems/compatibility/reading';
+import {
+  historyItem,
+  readingResponse,
+  shareResponse,
+  unlockReading,
+  type CompatibilityRow,
+  type UnlockStore,
+} from '../src/systems/compatibility/reading';
 import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 import { ELEMENT_IMAGE } from '../src/lib/prompts';
 import { PRODUCT_PRICES } from '../src/lib/pricing';
-import { InsufficientBalance, wallet } from '../src/lib/wallet';
+import { InsufficientBalance, wallet, type WalletTx } from '../src/lib/wallet';
 import { INSUFFICIENT_BALANCE } from '../lib/shared/types/wallet';
 
 const originalFetch = globalThis.fetch;
@@ -533,19 +540,26 @@ function row(analysis: string): CompatibilityRow {
   };
 }
 
+/**
+ * The unlock's store in memory. saveDetailPaid stands in for the route's
+ * transaction: a fresh token is the `tx` the charge gets, and the row is
+ * written only after the charge went through, recorded with that token.
+ */
 function memoryStore(initial: CompatibilityRow) {
-  const state = { row: initial, saves: 0 };
-  return {
-    state,
-    store: {
-      load: async (id: string) => (id === state.row.id ? state.row : null),
-      saveAnalysis: async (_id: string, analysis: string) => {
-        state.saves += 1;
-        state.row = { ...state.row, analysis };
-        return state.row;
-      },
+  const state = { row: initial, saves: 0, savedInTx: [] as unknown[] };
+  const store: UnlockStore = {
+    load: async (id) => (id === state.row.id ? state.row : null),
+    saveDetailPaid: async (_id, analysis, charge) => {
+      const tx = {} as WalletTx;
+      const decision = await charge(tx);
+      if (!decision.ok) return decision;
+      state.saves += 1;
+      state.savedInTx.push(tx);
+      state.row = { ...state.row, analysis };
+      return { ok: true, row: state.row };
     },
   };
+  return { state, store };
 }
 
 /** Every paid string of a full report, and the input snapshot, none of which a locked response may carry. */
@@ -658,42 +672,57 @@ describe('locked mode (teaser-first)', () => {
   });
 
   /**
-   * The wallet is replaced on the shared `wallet` object, so these run without a database;
-   * the ledger itself is tested on a real Postgres in tests/wallet.test.ts.
+   * A ledger in memory, swapped in on the shared `wallet` object, so these run
+   * without a database (the real ledger is tested on Postgres in
+   * tests/wallet.test.ts). spendWithin keeps the real rules: once per row,
+   * refused below the price, and it records the transaction it charged in.
    */
-  function stubWallet(spend: () => Promise<never>) {
+  function fakeLedger(balance: number, paidRows: string[] = []) {
+    const ledger = { balance, spends: paidRows.map((refId) => ({ refId, tx: null as unknown })) };
     const spies = [
       spyOn(wallet, 'ensureWelcome').mockImplementation(async () => {}),
-      spyOn(wallet, 'spend').mockImplementation(spend),
+      spyOn(wallet, 'hasPaid').mockImplementation(async (_userId, _productId, refId) => ledger.spends.some((s) => s.refId === refId)),
+      spyOn(wallet, 'canAfford').mockImplementation(async (_userId, price) => ({ ok: ledger.balance >= price, balance: ledger.balance, price })),
+      spyOn(wallet, 'spendWithin').mockImplementation(async (tx, _userId, productId, refId) => {
+        const price = PRODUCT_PRICES[productId];
+        if (ledger.spends.some((s) => s.refId === refId)) return { charged: false as const, balance: ledger.balance };
+        if (ledger.balance < price) throw new InsufficientBalance(ledger.balance, price);
+        ledger.balance -= price;
+        ledger.spends.push({ refId, tx });
+        return { charged: true as const, balance: ledger.balance };
+      }),
+      spyOn(wallet, 'spend').mockImplementation(async () => {
+        throw new Error('the unlock charges inside its own transaction, never with spend()');
+      }),
     ];
-    return { spies, restore: () => spies.forEach((spy) => spy.mockRestore()) };
+    return { ledger, spies, restore: () => spies.forEach((spy) => spy.mockRestore()) };
   }
+
+  const locked = async () => {
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    return memoryStore(row(JSON.stringify(stored)));
+  };
 
   test('with locking on and a balance of 0, unlock answers 402 with the wallet contract before any model call', async () => {
     config.compat = { lockEnabled: true, unlockFree: false };
-    const stub = stubWallet(async () => {
-      throw new InsufficientBalance(0, PRODUCT_PRICES.compat_unlock);
-    });
+    const fake = fakeLedger(0);
     try {
-      countingModel();
-      const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
-      const { store, state } = memoryStore(row(JSON.stringify(stored)));
+      const { store, state } = await locked();
       const counter = countingModel();
       const result = await unlockReading(unlockArgs(store));
       expect(result).toEqual({ status: 402, body: { error: INSUFFICIENT_BALANCE, balance: 0, price: 49 } });
-      expect(stub.spies[1]).toHaveBeenCalledWith('user-1', 'compat_unlock', 'row-1');
       expect(counter.calls).toBe(0);
       expect(state.saves).toBe(0);
+      expect(fake.ledger.spends).toEqual([]);
     } finally {
-      stub.restore();
+      fake.restore();
     }
   });
 
   test('a row whose detail exists opens without touching the wallet, even at a balance of 0', async () => {
     config.compat = { lockEnabled: true, unlockFree: false };
-    const stub = stubWallet(async () => {
-      throw new Error('the wallet must not be touched for an unlocked row');
-    });
+    const fake = fakeLedger(0);
     try {
       countingModel();
       const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
@@ -703,11 +732,101 @@ describe('locked mode (teaser-first)', () => {
       expect(result.status).toBe(200);
       if (result.status !== 200) throw new Error('unreachable');
       expect(result.body.locked).toBe(false);
-      for (const spy of stub.spies) expect(spy).not.toHaveBeenCalled();
+      for (const spy of fake.spies) expect(spy).not.toHaveBeenCalled();
       expect(counter.calls).toBe(0);
       expect(state.saves).toBe(0);
     } finally {
-      stub.restore();
+      fake.restore();
+    }
+  });
+
+  test('a paid unlock charges once, in the same transaction that writes the detail', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const fake = fakeLedger(49);
+    try {
+      const { store, state } = await locked();
+      const result = await unlockReading(unlockArgs(store));
+      expect(result.status).toBe(200);
+      expect(fake.ledger.balance).toBe(0);
+      expect(fake.ledger.spends).toHaveLength(1);
+      expect(state.saves).toBe(1);
+      expect(fake.ledger.spends[0].tx).toBe(state.savedInTx[0]);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  test('a generation that fails leaves the ledger untouched', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const fake = fakeLedger(49);
+    try {
+      const { store, state } = await locked();
+      countingModel(() => ({ ...sections(), overview: { story: 'สั้นไป', dimensionLines: {} } }));
+      await expect(unlockReading(unlockArgs(store))).rejects.toThrow('Invalid compatibility JSON');
+      expect(fake.ledger.balance).toBe(49);
+      expect(fake.ledger.spends).toEqual([]);
+      expect(state.saves).toBe(0);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  test('a balance spent elsewhere during generation: 402, the detail discarded, one charge only', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const fake = fakeLedger(49);
+    try {
+      const { store, state } = await locked();
+      // The same reader unlocks another row while this detail is being written.
+      let spentElsewhere = false;
+      countingModel(() => {
+        if (!spentElsewhere) {
+          spentElsewhere = true;
+          fake.ledger.balance -= 49;
+          fake.ledger.spends.push({ refId: 'row-2', tx: null });
+        }
+        return sections();
+      });
+      const result = await unlockReading(unlockArgs(store));
+      expect(result).toEqual({ status: 402, body: { error: INSUFFICIENT_BALANCE, balance: 0, price: 49 } });
+      expect(state.saves).toBe(0);
+      expect(fake.ledger.spends.map((s) => s.refId)).toEqual(['row-2']);
+      expect(fake.ledger.balance).toBe(0);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  test('two concurrent paid unlocks of one row charge once', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const fake = fakeLedger(98);
+    try {
+      const { store, state } = await locked();
+      const flight = new GenerationSingleFlight(null);
+      const [a, b] = await Promise.all([unlockReading(unlockArgs(store, flight)), unlockReading(unlockArgs(store, flight))]);
+      expect(a.status).toBe(200);
+      expect(b).toEqual(a);
+      expect(fake.ledger.spends).toHaveLength(1);
+      expect(fake.ledger.balance).toBe(49);
+      expect(state.saves).toBe(1);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  test('a row already paid for (relocked, or a patch that failed) opens at a balance of 0 with no second charge', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const fake = fakeLedger(0, ['row-1']);
+    try {
+      const { store, state } = await locked();
+      const result = await unlockReading(unlockArgs(store));
+      expect(result.status).toBe(200);
+      if (result.status !== 200) throw new Error('unreachable');
+      expect(result.body.locked).toBe(false);
+      expect(state.saves).toBe(1);
+      expect(fake.ledger.spends).toHaveLength(1);
+      expect(fake.ledger.balance).toBe(0);
+    } finally {
+      fake.restore();
     }
   });
 
