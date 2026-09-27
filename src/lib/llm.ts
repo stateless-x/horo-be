@@ -3,8 +3,13 @@ import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
 import {
   CompatibilityStructuredContentSchema,
+  CompatibilityV3GeneratedSchema,
+  COMPATIBILITY_V3_DETAIL_SECTIONS,
+  COMPATIBILITY_V3_TIMING_BASIS,
   type CompatibilityStructuredContent,
 } from "../../lib/shared";
+
+type CompatibilityV3Generated = z.infer<typeof CompatibilityV3GeneratedSchema>;
 import { CHART_BUDGET, DAILY_BUDGET } from "../../lib/shared/types/generation-budget";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
@@ -192,18 +197,28 @@ const GeneratedCompatibilityContentSchema = CompatibilityStructuredContentSchema
   nextSteps: true,
 }).required();
 
-/** Generate the compact narrative portion of compatibility v2. */
-export async function generateStructuredCompatibilityReading(
+/** Called once per model request, retries included. Lets a caller count calls without changing the result. */
+export type OnModelCall = () => void;
+
+/**
+ * The compatibility generation loop, shared by v2 and v3: JSON mode, 60 s per
+ * call, up to two transport retries with backoff, and one validation repair
+ * that re-asks with a short correction appended.
+ */
+async function generateValidatedCompatibilityJson<T>(
   prompt: string,
-  maxTokens: number = 1000,
-): Promise<GeneratedCompatibilityContent> {
-  let effectivePrompt = `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`;
+  schema: z.ZodType<T>,
+  maxTokens: number,
+  onModelCall?: OnModelCall,
+): Promise<T> {
+  let effectivePrompt = prompt;
   let validationRetryUsed = false;
   let transportFailures = 0;
 
   while (true) {
     let text: string;
     try {
+      onModelCall?.();
       text = await callDeepSeek(
         [
           { role: "system", content: SYSTEM_PROMPT },
@@ -225,7 +240,7 @@ export async function generateStructuredCompatibilityReading(
 
     try {
       const parsed = JSON.parse(text) as Record<string, unknown>;
-      const result = GeneratedCompatibilityContentSchema.safeParse(parsed);
+      const result = schema.safeParse(parsed);
       if (result.success) return result.data;
 
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
@@ -237,6 +252,65 @@ export async function generateStructuredCompatibilityReading(
       effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
     }
   }
+}
+
+/** Generate the compact narrative portion of compatibility v2. */
+export async function generateStructuredCompatibilityReading(
+  prompt: string,
+  maxTokens: number = 1000,
+  onModelCall?: OnModelCall,
+): Promise<GeneratedCompatibilityContent> {
+  return generateValidatedCompatibilityJson(
+    `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`,
+    GeneratedCompatibilityContentSchema,
+    maxTokens,
+    onModelCall,
+  );
+}
+
+const STRUCTURED_COMPATIBILITY_V3_SHAPE = `
+Return valid JSON matching exactly this shape (all fields required, write "detail" before "teaser"):
+{
+  "detail": {
+    "dynamic": string,
+    "understandingPartner": string,
+    "yourSide": string,
+    "communication": [ { "do": string, "avoid": string } ],
+    "friction": [ { "scenario": string, "repair": string } ],
+    "timing": { "advice": string, "basis": [string] },
+    "longTerm": string,
+    "nextSteps": { "action": string, "conversationStarter": string, "watchFor": string }
+  },
+  "teaser": {
+    "verdict": string,
+    "hook": string,
+    "lockedHints": [ { "text": string, "section": string } ]
+  }
+}
+communication has exactly 3 items. friction has exactly 2 items and every scenario starts with "ถ้า".
+timing.basis values come only from: ${COMPATIBILITY_V3_TIMING_BASIS.join(', ')}.
+lockedHints has exactly 3 items; each section is a different one of: ${COMPATIBILITY_V3_DETAIL_SECTIONS.join(', ')}.
+Length limits: nextSteps.action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
+Do not include the score, markdown, comments, or any text outside this JSON object.`;
+
+/**
+ * Output token ceiling for v3. Measured completions ran 1,300 to 1,970
+ * tokens (prototype, 60 runs); 3,000 leaves room without letting a runaway
+ * reply eat the 60 s budget.
+ */
+const COMPATIBILITY_V3_MAX_TOKENS = 3000;
+
+/** Generate compatibility v3: the free teaser and the full detail in one call. */
+export async function generateStructuredCompatibilityReadingV3(
+  prompt: string,
+  onModelCall?: OnModelCall,
+): Promise<CompatibilityV3Generated> {
+  return generateValidatedCompatibilityJson(
+    `${prompt}\n${STRUCTURED_COMPATIBILITY_V3_SHAPE}`,
+    CompatibilityV3GeneratedSchema,
+    COMPATIBILITY_V3_MAX_TOKENS,
+    onModelCall,
+  );
 }
 
 const TEASER_SHAPE = `

@@ -6,6 +6,8 @@ export * from './types/compatibility';
 export * from './types/loading-lines';
 export * from './types/analytics';
 export * from './types/generation-budget';
+export * from './types/compatibility-v3';
+export * from './types/dev-tools';
 
 // Constants
 export * from './constants/thai-time';

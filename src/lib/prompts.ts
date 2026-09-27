@@ -10,7 +10,7 @@
  * (see ./prompts/render.ts for the {{var}} / {{#block}} syntax).
  */
 
-import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType } from "../../lib/shared";
+import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType, Gender } from "../../lib/shared";
 import type { FortuneCategoryKey } from "../../lib/shared/types/astrology";
 import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance } from "../../lib/shared";
 import { getReadingPeriod, toBuddhistYear } from "../../lib/shared/utils/date";
@@ -22,7 +22,11 @@ import systemMd from "./prompts/md/system.md" with { type: "text" };
 import systemStructuredMd from "./prompts/md/system-structured.md" with { type: "text" };
 import teaserMd from "./prompts/md/teaser.md" with { type: "text" };
 import chartMd from "./prompts/md/chart.md" with { type: "text" };
-import compatibilityMd from "./prompts/md/compatibility.md" with { type: "text" };
+import compatibilityDataMd from "./prompts/md/compatibility-data.md" with { type: "text" };
+import compatibilityV2TasksMd from "./prompts/md/compatibility-v2-tasks.md" with { type: "text" };
+import compatibilityV3ContextMd from "./prompts/md/compatibility-v3-context.md" with { type: "text" };
+import compatibilityV3TasksMd from "./prompts/md/compatibility-v3-tasks.md" with { type: "text" };
+import compatibilityRulesMd from "./prompts/md/compatibility-rules.md" with { type: "text" };
 import compatibilityMbtiGuidanceMd from "./prompts/md/compatibility-mbti-guidance.md" with { type: "text" };
 import mbtiContextMd from "./prompts/md/mbti-context.md" with { type: "text" };
 import focusTalkingMd from "./prompts/md/compatibility-focus/talking.md" with { type: "text" };
@@ -165,33 +169,37 @@ const RELATIONSHIP_FOCUS: Record<RelationshipType, string> = {
 };
 
 /**
- * Generate compatibility reading between two people
- * Analyzes element interactions and relationship dynamics
- * Tailored to the specific relationship type
+ * The compatibility prompt is three shared pieces: the data block (both
+ * people, MBTI guidance, relationship focus, deterministic score), a task list
+ * that differs per content version, and the style and safety rules. v2 and v3
+ * render the same data and rules, so a rule fixed once applies to both.
+ * tests/compatibility-prompt-golden.test.ts pins the v2 result byte for byte.
  */
-export function buildCompatibilityPrompt(
-  person1: {
-    name: string;
-    birthDate: Date;
-    baziChart: BaziChart;
-    thaiAstrology: ThaiAstrology;
-    mbtiType?: string | null;
-  },
-  person2: {
-    name: string;
-    birthDate: Date;
-    baziChart: BaziChart;
-    thaiAstrology: ThaiAstrology;
-    mbtiType?: string | null;
-  },
-  relationshipType: RelationshipType = 'romantic',
-  scoreContext: {
-    score: number;
-    scoreExplanation: string;
-    strengths: string[];
-    challenges: string[];
-  },
-): string {
+const COMPATIBILITY_V2_TEMPLATE = compatibilityDataMd + compatibilityV2TasksMd + compatibilityRulesMd;
+const COMPATIBILITY_V3_TEMPLATE =
+  compatibilityDataMd + compatibilityV3ContextMd + compatibilityV3TasksMd + compatibilityRulesMd;
+
+interface CompatibilityPromptPerson {
+  name: string;
+  birthDate: Date;
+  baziChart: BaziChart;
+  thaiAstrology: ThaiAstrology;
+  mbtiType?: string | null;
+}
+
+interface CompatibilityScoreContext {
+  score: number;
+  scoreExplanation: string;
+  strengths: string[];
+  challenges: string[];
+}
+
+function compatibilityDataVars(
+  person1: CompatibilityPromptPerson,
+  person2: CompatibilityPromptPerson,
+  relationshipType: RelationshipType,
+  scoreContext: CompatibilityScoreContext,
+) {
   const mbtiGuidance = person1.mbtiType ? getMbtiActionableGuidance(person1.mbtiType) : null;
 
   const relationGuidance = mbtiGuidance
@@ -209,7 +217,7 @@ export function buildCompatibilityPrompt(
       }).trim()
     : '';
 
-  return renderPrompt(compatibilityMd, {
+  return {
     mbti: Boolean(person1.mbtiType),
     p2Name: person2.name,
     p1BirthDate: person1.birthDate.toLocaleDateString("th-TH"),
@@ -231,6 +239,82 @@ export function buildCompatibilityPrompt(
     mbtiContext: buildMbtiContext(person1.mbtiType),
     mbtiGuidanceBlock,
     focusBlock: RELATIONSHIP_FOCUS[relationshipType],
+  };
+}
+
+/**
+ * Generate compatibility reading between two people (content v2).
+ * Analyzes element interactions and relationship dynamics
+ * Tailored to the specific relationship type
+ */
+export function buildCompatibilityPrompt(
+  person1: CompatibilityPromptPerson,
+  person2: CompatibilityPromptPerson,
+  relationshipType: RelationshipType = 'romantic',
+  scoreContext: CompatibilityScoreContext,
+): string {
+  return renderPrompt(
+    COMPATIBILITY_V2_TEMPLATE,
+    compatibilityDataVars(person1, person2, relationshipType, scoreContext),
+  );
+}
+
+/** 'ดวงอังคาร (Mars)' -> 'ดาวอังคาร'. The input comes from a fixed table in lib/astrology/thai.ts. */
+function thaiPlanetName(planet: string): string {
+  const match = planet.match(/^ดวง(.+) \(.+\)$/);
+  if (!match) throw new Error(`Unexpected Thai planet label: ${planet}`);
+  return `ดาว${match[1]}`;
+}
+
+/** 'Si (ความทรงจำเชิงประสบการณ์)' -> 'ความทรงจำเชิงประสบการณ์'. Bare codes leaked into prose. */
+function cognitiveFunctionThai(fn: string): string {
+  const match = fn.match(/\((.+)\)/);
+  if (!match) throw new Error(`Unexpected cognitive function label: ${fn}`);
+  return match[1];
+}
+
+/** Thai day and element labels exactly as the onboarding trait chips show them, plus the planet. */
+function thaiLabels(person: CompatibilityPromptPerson): string {
+  const chips = buildTraitChips(person.thaiAstrology.day, person.baziChart.element, null)
+    .map((chip) => `${chip.label} (${chip.trait})`)
+    .join(' ');
+  return `${chips} ${thaiPlanetName(person.thaiAstrology.planet)}`;
+}
+
+/**
+ * Compatibility content v3: the v2 data and rules, plus a context block (Thai
+ * labels so the model never echoes codes like "ding", the reader's gender for
+ * the conversation starter, the partner's MBTI tendencies) and the v3 task
+ * list that asks for `detail` and `teaser` in one JSON object.
+ */
+export function buildCompatibilityPromptV3(
+  person1: CompatibilityPromptPerson & { gender: Gender },
+  person2: CompatibilityPromptPerson,
+  relationshipType: RelationshipType,
+  scoreContext: CompatibilityScoreContext,
+): string {
+  const partnerInfo = person2.mbtiType ? getMbtiInfo(person2.mbtiType) : undefined;
+  const partnerCognitive = person2.mbtiType ? getMbtiCognitiveFunctions(person2.mbtiType) : undefined;
+  if (person2.mbtiType && (!partnerInfo || !partnerCognitive)) {
+    throw new Error(`Unknown partner MBTI type: ${person2.mbtiType}`);
+  }
+  const missingMbti = [!person1.mbtiType ? 'คุณ' : null, !person2.mbtiType ? person2.name : null]
+    .filter((who): who is string => who !== null)
+    .join(' และ ');
+
+  return renderPrompt(COMPATIBILITY_V3_TEMPLATE, {
+    ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
+    p1Personality: person1.thaiAstrology.personality,
+    p2Personality: person2.thaiAstrology.personality,
+    p1ThaiLabels: thaiLabels(person1),
+    p2ThaiLabels: thaiLabels(person2),
+    readerGenderTh: person1.gender === 'female' ? 'ผู้หญิง' : 'ผู้ชาย',
+    p2MbtiNameTh: partnerInfo?.nameTh ?? '',
+    p2MbtiDominant: partnerCognitive ? cognitiveFunctionThai(partnerCognitive.dominantFunction) : '',
+    p2MbtiAuxiliary: partnerCognitive ? cognitiveFunctionThai(partnerCognitive.auxiliaryFunction) : '',
+    p2MbtiStrengths: partnerCognitive?.strengths ?? '',
+    p2MbtiWeaknesses: partnerCognitive?.weaknesses ?? '',
+    missingMbti,
   });
 }
 
