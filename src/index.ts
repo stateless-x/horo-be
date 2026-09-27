@@ -26,6 +26,7 @@ let analyticsRoutes: any;
 let unsubscribeRoutes: any;
 let internalCampaignRoutes: any;
 let resendWebhookRoutes: any;
+let walletRoutes: any;
 
 let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
   .use(cors({
@@ -88,6 +89,9 @@ if (configErrors.length === 0) {
     const unsubscribeModule = await import('./routes/unsubscribe');
     unsubscribeRoutes = unsubscribeModule.unsubscribeRoutes;
 
+    const walletModule = await import('./routes/wallet');
+    walletRoutes = walletModule.walletRoutes;
+
     // Only mounted when the shared secret exists, so a deploy that forgets it
     // has no send endpoint at all rather than an unauthenticated one.
     if (config.adminApi.secret) {
@@ -133,58 +137,11 @@ if (configErrors.length === 0) {
           expiresAt: session.expiresAt,
         };
       })
-      // Debug endpoint to reset rate limit (supports both Redis and in-memory)
-      .post('/api/debug/reset-rate-limit', async ({ request, set }) => {
-        const { validateSessionFromRequest } = await import('./lib/session');
-        const { resetRateLimit } = await import('./lib/rate-limit');
-        const { getRedisClient } = await import('./lib/redis');
-
-        const session = await validateSessionFromRequest(request);
-
-        if (!session) {
-          set.status = 401;
-          return { error: 'Not authenticated' };
-        }
-
-        const userId = session.userId;
-        let redisDeleted = 0;
-        let memoryDeleted = false;
-
-        // Try to delete from Redis first. Keys are `ratelimit:<bucket>:<id>`,
-        // so the bucket sits between the prefix and the user — a
-        // `ratelimit:<userId>*` pattern would match nothing.
-        const redis = getRedisClient();
-        if (redis) {
-          try {
-            const keys = await redis.keys(`ratelimit:*:${userId}`);
-            if (keys.length > 0) {
-              redisDeleted = await redis.del(...keys);
-            }
-          } catch (err) {
-            console.error('[Debug] Redis delete error:', err);
-          }
-        }
-
-        // Also clear every in-memory bucket for this user.
-        const { RATE_LIMITS } = await import('./lib/rate-limit');
-        memoryDeleted = Object.values(RATE_LIMITS)
-          .map((limit) => resetRateLimit(userId, limit))
-          .some(Boolean);
-
-        return {
-          success: true,
-          userId,
-          redisDeleted,
-          memoryDeleted,
-          message: redisDeleted > 0 || memoryDeleted
-            ? `Rate limit cleared (Redis: ${redisDeleted} keys, Memory: ${memoryDeleted})`
-            : 'No rate limit found',
-        };
-      })
       .use(systemsRoutes)
       .use(onboardingRoutes)
       .use(analyticsRoutes)
-      .use(unsubscribeRoutes);
+      .use(unsubscribeRoutes)
+      .use(walletRoutes());
 
     if (internalCampaignRoutes) {
       app = app.use(internalCampaignRoutes);
@@ -196,10 +153,63 @@ if (configErrors.length === 0) {
       console.log('[STARTUP] Resend webhook route mounted at /webhooks/resend');
     }
 
+    // Dev-only surfaces. The rate-limit reset used to be chained above with the
+    // always-mounted routes, so production exposed it and any signed-in user
+    // could clear their own LLM rate caps.
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');
-      app = app.use(devModule.devRoutes);
-      console.log('[STARTUP] Dev routes mounted at /api/dev (login, generate/compatibility, generate/teaser)');
+      app = app
+        .use(devModule.devRoutes)
+        .use(walletModule.walletDevRoutes())
+        // Debug endpoint to reset rate limit (supports both Redis and in-memory)
+        .post('/api/debug/reset-rate-limit', async ({ request, set }) => {
+          const { validateSessionFromRequest } = await import('./lib/session');
+          const { resetRateLimit } = await import('./lib/rate-limit');
+          const { getRedisClient } = await import('./lib/redis');
+
+          const session = await validateSessionFromRequest(request);
+
+          if (!session) {
+            set.status = 401;
+            return { error: 'Not authenticated' };
+          }
+
+          const userId = session.userId;
+          let redisDeleted = 0;
+          let memoryDeleted = false;
+
+          // Try to delete from Redis first. Keys are `ratelimit:<bucket>:<id>`,
+          // so the bucket sits between the prefix and the user — a
+          // `ratelimit:<userId>*` pattern would match nothing.
+          const redis = getRedisClient();
+          if (redis) {
+            try {
+              const keys = await redis.keys(`ratelimit:*:${userId}`);
+              if (keys.length > 0) {
+                redisDeleted = await redis.del(...keys);
+              }
+            } catch (err) {
+              console.error('[Debug] Redis delete error:', err);
+            }
+          }
+
+          // Also clear every in-memory bucket for this user.
+          const { RATE_LIMITS } = await import('./lib/rate-limit');
+          memoryDeleted = Object.values(RATE_LIMITS)
+            .map((limit) => resetRateLimit(userId, limit))
+            .some(Boolean);
+
+          return {
+            success: true,
+            userId,
+            redisDeleted,
+            memoryDeleted,
+            message: redisDeleted > 0 || memoryDeleted
+              ? `Rate limit cleared (Redis: ${redisDeleted} keys, Memory: ${memoryDeleted})`
+              : 'No rate limit found',
+          };
+        });
+      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*), /api/wallet/dev/grant, /api/debug/reset-rate-limit');
     }
 
     console.log('[STARTUP] Auth and routes loaded successfully');
