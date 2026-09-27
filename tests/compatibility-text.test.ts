@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   birthDataInventory,
+  chartSilence,
   elementCreditedToPlanet,
+  elementsNamed,
+  fixKnownTypos,
   foreignElementWords,
   guessesPartnerView,
   mapStrings,
@@ -103,6 +106,52 @@ describe('v4 prose checks', () => {
     expect(stockLine('อย่าคุยตอนเหนื่อยหรือหิว')).toBe('เหนื่อยหรือหิว');
     expect(stockLine('ลองคุยสรุปสัปดาห์ละครั้ง')).toBe('สัปดาห์ละครั้ง');
     expect(stockLine('ส่งข้อความหาต้นก่อนประชุมวันพฤหัส')).toBeNull();
+  });
+
+  test('a claim that the chart is silent is caught, in every form the samples used', () => {
+    // Verbatim from the v4 samples and the PO audit.
+    const silent = [
+      'ดวงของคุณกับมายด์ไม่มีแรงดึงหรือแรงต้านจากฟ้า',
+      'ดวงนี้ไม่มีแรงดึงหรือแรงปะทะจากฟ้า',
+      'คู่นี้ไม่มีแรงดึงหรือแรงปะทะจากดวงเป็นพิเศษ ความสัมพันธ์นี้ไม่ใช่สิ่งที่ฟ้าลิขิตไว้',
+      'แรงดึงที่มาจากความต่าง ไม่ใช่จากดวง',
+      'เคมีกลาง ๆ เพราะตำแหน่งคู่ในดวงและธาตุของทั้งสองคนไม่มีแรงดึงพิเศษ',
+      'ดวงคู่นี้ไม่ใช่คู่ที่ฟ้าเป็นใจง่าย ๆ',
+      'เพราะตำแหน่งคู่ในดวงและธาตุของทั้งสองไม่ได้ส่งแรงพิเศษให้กันหรือขัดกันรุนแรง',
+      'ตำแหน่งคู่ในดวงของนักษัตรวันเกิดทั้งสองคนไม่ได้สร้างแรงดึงหรือแรงปะทะพิเศษ',
+      'เมื่อตำแหน่งคู่ในดวงไม่มีแรงพิเศษ',
+      'ประกอบกับธาตุที่เหมือนกันและตำแหน่งคู่ในดวงที่ไม่มีแรงหนุน',
+      'แต่ก็ไม่มีแรงส่งเป็นพิเศษ',
+      'สิ่งที่ทำให้ความสัมพันธ์นี้ไปรอดจึงไม่ใช่โชคจากดวง',
+      'นี่แปลว่าความดึงดูดระหว่างคุณกับต้นไม่ได้มาจากดวงเป็นตัวนำ',
+      'ความดึงดูดของคู่นี้ไม่ได้มาจากแรงพิเศษของดวง',
+      'ความสัมพันธ์นี้จึงไม่ได้ถูกผลักให้เดินเร็วหรือช้าจากดวง',
+      'ความอบอุ่นระหว่างคุณกับบีมไม่ได้มาจากจังหวะที่ฟ้าจัดให้',
+      'ทุกอย่างจึงขึ้นอยู่กับวิธีที่คุณสองคนตกลงกันเอง ไม่ใช่โชคชะตาที่กำหนดไว้',
+      'ดวงคู่นี้จึงเป็นบทเรียน ไม่ใช่เรื่องโชคชะตาที่จะลงเอยเอง',
+    ];
+    for (const text of silent) expect(chartSilence(text)).not.toBeNull();
+    // A negative force that is absent, the open palace, and ฟ้าผ่า (love at first sight) are fine.
+    const fine = [
+      'ความไว้ใจดีเพราะตำแหน่งคู่ในดวงไม่มีแรงบั่นทอนและไม่มีแรงต้าน',
+      'นักษัตรวันเกิดเปิดทางให้กัน ความสัมพันธ์ไม่ถูกบังคับ เลือกสร้างเองได้',
+      'จุดเริ่มต้นของคู่นี้ไม่ได้มาจากแรงดึงแบบฟ้าผ่า',
+      'ไฟของต้นหลอมทองของคุณให้คมขึ้น',
+    ];
+    for (const text of fine) expect(chartSilence(text)).toBeNull();
+  });
+
+  test('known typos from the samples are corrected, and correct text is untouched', () => {
+    expect(fixKnownTypos('ช่วยกันเขียงลำดับว่าอะไรสำคัญ')).toBe('ช่วยกันเรียงลำดับว่าอะไรสำคัญ');
+    expect(fixKnownTypos('รายละเอียดที่คุณเคยเลาไว้ ปล่าวเลย')).toBe('รายละเอียดที่คุณเคยเล่าไว้ เปล่าเลย');
+    expect(fixKnownTypos('แผนเปลี่ยนกระทันหัน เงียบได้ครึ่งค้อนวัน')).toBe('แผนเปลี่ยนกะทันหัน เงียบได้ครึ่งค่อนวัน');
+    const correct = 'ช่วยกันเรียงลำดับเมื่อแผนเปลี่ยนกะทันหัน เรื่องที่เล่าไว้ เปล่าเลย ครึ่งค่อนวัน จำได้เลา ๆ';
+    expect(fixKnownTypos(correct)).toBe(correct);
+  });
+
+  test('elementsNamed reads whole words and skips idioms', () => {
+    expect(elementsNamed('ไฟของต้นหลอมทองของคุณ')).toEqual(['fire', 'metal']);
+    expect(elementsNamed('คุณเดินหน้าเร็วและมีไฟในการทำงาน')).toEqual([]);
   });
 
   test('thaiWordCount counts words, not characters', () => {

@@ -389,15 +389,52 @@ function partnerContextVars(person1: CompatibilityPromptPerson, person2: Compati
 
 // ---------------------------------------------------------------- v4 report
 
+/**
+ * The neutral relation is half of all pairs (6 of 12 branches). Described as
+ * "no special force" it became the headline of 6 in 10 v4 verdicts ("the
+ * chart has nothing to say"), so it is described as what it is: an open
+ * palace that does not force the relationship either way.
+ */
 const BRANCH_RELATION_TH: Record<BranchRelation, string> = {
   combine: 'เป็นคู่ประสานกัน ดึงเข้าหากันเอง',
   trine: 'อยู่กลุ่มพลังเดียวกัน ร่วมมือกันง่าย',
   same: 'เป็นนักษัตรเดียวกัน มองหลายเรื่องคล้ายกัน',
-  neutral: 'ไม่มีแรงดึงหรือแรงปะทะพิเศษ ความสัมพันธ์ขึ้นกับสิ่งที่ทำมากกว่าดวง',
+  neutral: 'เปิดทางให้กัน ความสัมพันธ์ไม่ถูกบังคับ เลือกสร้างเองได้',
   harm: 'มีแรงบั่นทอนกันแบบเงียบ ๆ ความน้อยใจสะสมง่าย',
   clash: 'ปะทะกันตรง ๆ ดึงดูดแรงแต่ขัดกันแรง',
 };
-const YEAR_RELATION_TH: Record<BranchRelation, string> = { ...BRANCH_RELATION_TH, clash: 'ปะทะกัน (ปีชงกัน) จังหวะชีวิตสวนทางกันง่าย' };
+const YEAR_RELATION_TH: Record<BranchRelation, string> = {
+  ...BRANCH_RELATION_TH,
+  neutral: 'ไม่ชงและไม่บั่นทอนกัน จังหวะชีวิตไม่ถูกดึงให้สวนทาง',
+  clash: 'ปะทะกัน (ปีชงกัน) จังหวะชีวิตสวนทางกันง่าย',
+};
+
+/**
+ * DRAFT for owner review, like the archetype names: these open most verdicts,
+ * so every pair with the same two elements gets the same image.
+ *
+ * One image per element pair, keyed `${from}-${to}` (the producing or
+ * controlling element first; the two cycles never share an ordered pair).
+ * Each names only the pair's own elements: a third element in the verdict,
+ * the overview or the attraction chapter fails the reading.
+ */
+export const ELEMENT_IMAGE: Readonly<Record<string, string>> = {
+  'wood-wood': 'ไม้สองต้นที่โตเคียงกัน ช่วยกันกันลม แต่ก็แย่งแสงกันได้',
+  'fire-fire': 'ไฟสองกองที่รวมกันแล้วสว่างและอุ่นขึ้น แต่ร้อนเร็วถ้าไม่มีใครลดไฟลงบ้าง',
+  'earth-earth': 'ดินสองผืนที่ต่อกันเป็นผืนเดียว มั่นคงและพึ่งพากันได้ แต่ขยับช้าถ้าไม่มีใครเริ่มพรวน',
+  'metal-metal': 'ทองสองชิ้นที่แข็งและมีคมพอกัน ยืนหยัดด้วยกันได้ดี แต่กระทบกันเมื่อไรก็ดังทั้งคู่',
+  'water-water': 'น้ำสองสายที่ไหลมารวมกัน ลึกและเข้าใจกันโดยไม่ต้องพูด แต่ถ้าไม่มีทางไหลก็นิ่งจนขุ่น',
+  'wood-fire': 'ไม้เป็นเชื้อให้ไฟลุก คนหนึ่งเติมเชื้อ อีกคนส่องสว่าง แต่ถ้าเติมไม่หยุด ไม้ก็หมดแรง',
+  'fire-earth': 'ไฟเผาดินให้แกร่งเป็นภาชนะ คนหนึ่งให้ความอุ่น อีกคนให้ความมั่นคงที่จับต้องได้',
+  'earth-metal': 'ดินบ่มแร่จนเป็นทอง คนหนึ่งให้ที่ยืน อีกคนได้เปล่งประกาย',
+  'metal-water': 'ทองเป็นภาชนะที่ให้น้ำมีรูปทรง คนหนึ่งวางกรอบ อีกคนเติมให้เต็ม',
+  'water-wood': 'น้ำเลี้ยงไม้ให้งอกงาม คนหนึ่งหล่อเลี้ยงเงียบ ๆ อีกคนเติบโตให้เห็น',
+  'wood-earth': 'รากไม้ยึดดินไว้ไม่ให้พังทลาย แรงตึงที่ทำให้มั่นคง แต่ถ้ายึดแน่นเกิน ดินก็อึดอัด',
+  'earth-water': 'ดินเป็นตลิ่งให้น้ำมีทางไหล คนหนึ่งวางขอบ อีกคนไหลไปได้ไกล แต่ถ้าตลิ่งแน่นเกิน น้ำก็เอ่อ',
+  'water-fire': 'น้ำคุมไฟไม่ให้ลุกลาม ไฟทำให้น้ำอุ่นขึ้น แต่ถ้าน้ำมากไป ไฟก็มอด',
+  'fire-metal': 'ไฟหลอมทองให้เป็นรูปและคมขึ้น ความร้อนที่ขัดเกลา แต่ถ้าร้อนเกิน ทองก็เสียรูป',
+  'metal-wood': 'ทองแกะสลักไม้ให้เป็นรูปทรง คมที่ขัดเกลา แต่ถ้าตัดลึกเกิน ไม้ก็เจ็บ',
+};
 const DIMENSION_INPUT_TH: Record<DimensionInput, string> = {
   dayBranch: 'ตำแหน่งคู่ในดวง',
   yearBranch: 'ปีนักษัตร',
@@ -439,6 +476,29 @@ function elementRelationTh(p1: CompatibilityPromptPerson, p2: CompatibilityPromp
   return `ธาตุของ${p2.name}ข่มธาตุของคุณ`;
 }
 
+function elementImage(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPerson): string {
+  const a = p1.baziChart.element;
+  const b = p2.baziChart.element;
+  const readerLeads = a === b || ELEMENT_PRODUCING[a] === b || ELEMENT_CONTROLLING[a] === b;
+  return ELEMENT_IMAGE[readerLeads ? `${a}-${b}` : `${b}-${a}`];
+}
+
+/**
+ * The pair's signals, strongest first, for the verdict, the overview story
+ * and the attraction chapter to lead with. The spouse palace leads only when
+ * it is not neutral; otherwise the element relation leads, since it always
+ * says something, then the year branch, then the MBTI pairing.
+ */
+function leadSignalsTh(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPerson, inputs: PairInputs): string {
+  const signals = [
+    inputs.dayRelation !== 'neutral' ? `ตำแหน่งคู่ในดวง: นักษัตรวันเกิด${BRANCH_RELATION_TH[inputs.dayRelation]}` : null,
+    `ธาตุ: ${elementRelationTh(p1, p2)} ภาพของคู่นี้คือ ${elementImage(p1, p2)}`,
+    inputs.yearRelation !== 'neutral' ? `ปีนักษัตร: ${YEAR_RELATION_TH[inputs.yearRelation]}` : null,
+    inputs.mbti ? `MBTI: คุณเป็น ${inputs.mbti.reader} ส่วน${p2.name}เป็น ${inputs.mbti.partner}` : null,
+  ].filter((signal): signal is string => signal !== null);
+  return signals.map((signal, i) => `  ${i + 1}. ${signal}`).join('\n');
+}
+
 const thaiMonth = (month: string) => {
   const [year, m] = month.split('-').map(Number);
   return `${THAI_MONTHS_FULL[m - 1]} ${toBuddhistYear(year)}`;
@@ -476,16 +536,20 @@ export function buildCompatibilityPromptV4(
     archetypeName: facts.archetype.name,
     archetypeTagline: facts.archetype.tagline,
     dayRelationTh: BRANCH_RELATION_TH[facts.inputs.dayRelation],
+    dayNeutral: facts.inputs.dayRelation === 'neutral',
+    leadSignals: leadSignalsTh(person1, person2, facts.inputs),
     yearRelationTh: YEAR_RELATION_TH[facts.inputs.yearRelation],
     elementRelationTh: elementRelationTh(person1, person2),
     stemCombine: facts.inputs.stemCombine,
     dimensionList: facts.dimensions
-      .map((d) => `  - ${d.key} ${d.label} ${d.score}/100 (${band(d.score)}) คำนวณจาก ${d.basis.map((b) => DIMENSION_INPUT_TH[b]).join(' และ ')}`)
+      // The level only. With the number here, all 40 dimension lines in the round-4 samples repeated it
+      // ("เคมีอยู่ที่ 57 จาก 100") and insights quoted it; the bar already shows it.
+      .map((d) => `  - ${d.key} ${d.label}: ระดับ${band(d.score)} คำนวณจาก ${d.basis.map((b) => DIMENSION_INPUT_TH[b]).join(' และ ')}`)
       .join('\n'),
     calendarList: facts.calendar
       .map((m, i) => {
         const reasons = m.reasons.map((r) => MONTH_REASON_TH[r.relation](who(r.who))).join(' และ ');
-        return `  - month${i + 1} ${m.month} (${thaiMonth(m.month)}): ${MONTH_LABEL_TH[m.label]}${reasons ? ` เพราะ ${reasons}` : ' ไม่มีแรงหนุนหรือแรงกดดันพิเศษ'}`;
+        return `  - month${i + 1} ${m.month} (${thaiMonth(m.month)}): ${MONTH_LABEL_TH[m.label]}${reasons ? ` เพราะ ${reasons}` : ' ธาตุและนักษัตรประจำเดือนเป็นกลางกับทั้งสองคน'}`;
       })
       .join('\n'),
     nextStepKind: future.nextStep,

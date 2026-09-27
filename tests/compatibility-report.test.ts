@@ -9,7 +9,7 @@ import {
   selectArchetype,
   type PairInputs,
 } from '../lib/astrology';
-import { foreignElementWords } from '../src/lib/compatibility-text';
+import { chartSilence, foreignElementWords } from '../src/lib/compatibility-text';
 
 const MBTI = ['INTJ', 'INTP', 'ENTJ', 'ENTP', 'INFJ', 'INFP', 'ENFJ', 'ENFP', 'ISTJ', 'ISFJ', 'ESTJ', 'ESFJ', 'ISTP', 'ISFP', 'ESTP', 'ESFP'];
 
@@ -93,6 +93,8 @@ describe('pair archetype', () => {
       // Element words are data in the prose checks; names must not carry them. No doom names.
       expect(foreignElementWords(`${entry.name} ${entry.tagline}`, [])).toEqual([]);
       expect(entry.name).not.toContain('กรรม');
+      // The tagline sits on the cover: it must not say the chart is silent.
+      expect(chartSilence(`${entry.name} ${entry.tagline}`)).toBeNull();
     }
   });
 

@@ -224,8 +224,11 @@ async function generateValidatedCompatibilityJson<T>(
   onModelCall?: OnModelCall,
   /**
    * Quality checks that are worth one repair but not worth failing the
-   * reading over: they go into the repair turn with the schema problems, and
-   * whatever still fails after it is returned as `softIssues`, not thrown.
+   * reading over: they get the first repair turn, and whatever still fails
+   * after it is returned as `softIssues`, not thrown. A quality repair can
+   * break a rule the reply had passed (a stray Chinese word); if the repairs
+   * run out on that, the reply before the quality repair is returned with its
+   * issues, so a quality repair never costs a valid reading.
    */
   softCheck?: (data: T) => string[],
   /**
@@ -239,6 +242,8 @@ async function generateValidatedCompatibilityJson<T>(
   let repairTurn: ChatMessage[] = [];
   let repairsUsed = 0;
   let transportFailures = 0;
+  /** The valid reply a quality repair was asked of, returned if that repair breaks the schema on the last try. */
+  let beforeQualityRepair: { data: T; softIssues: string[] } | null = null;
 
   while (true) {
     let text: string;
@@ -271,6 +276,7 @@ async function generateValidatedCompatibilityJson<T>(
         const softIssues = softCheck?.(result.data) ?? [];
         // Quality issues get one repair, and only as the first one.
         if (softIssues.length === 0 || repairsUsed > 0) return { data: result.data, softIssues };
+        beforeQualityRepair = { data: result.data, softIssues };
         repairsUsed += 1;
         repairTurn = [
           { role: "assistant", content: text },
@@ -279,6 +285,7 @@ async function generateValidatedCompatibilityJson<T>(
         continue;
       }
 
+      if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
       if (repairsUsed >= maxRepairs) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       repairsUsed += 1;
       repairTurn = [
@@ -286,6 +293,7 @@ async function generateValidatedCompatibilityJson<T>(
         { role: "user", content: describeInvalid(result.error.issues.map(issueLine)) },
       ];
     } catch (error) {
+      if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
       if (repairsUsed >= maxRepairs) throw error;
       repairsUsed += 1;
       effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;

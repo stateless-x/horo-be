@@ -43,7 +43,10 @@ import {
 } from './llm';
 import {
   birthDataInventory,
+  chartSilence,
   elementCreditedToPlanet,
+  elementsNamed,
+  fixKnownTypos,
   foreignElementWords,
   guessesPartnerView,
   mapStrings,
@@ -251,7 +254,10 @@ const CHAPTER_TITLES = (partnerName: string, relationshipType: RelationshipType)
 });
 
 const DETAIL_WORDS = { min: 100, max: 300 };
-const GENERIC_VERDICT = /^(?:ดวงคู่นี้|คู่นี้|ความสัมพันธ์นี้)\s*(?:ไปได้|ไปด้วยกันได้|มีพื้นฐาน|เข้ากันได้)/;
+/** Openings and over-claims that fit any pair ("บทเรียนลึกที่สุดที่คุณเคยเจอ"), all from the samples. */
+const GENERIC_VERDICT = /^(?:ดวงคู่นี้|คู่นี้|ความสัมพันธ์นี้)\s*(?:ไปได้|ไปด้วยกันได้|มีพื้นฐาน|เข้ากันได้)|ที่สุดที่คุณเคย/;
+/** Words that tie a verdict to the pair's chart when the palace or year relation is not neutral. */
+const RELATION_TERMS = /นักษัตร|ตำแหน่งคู่|ประสาน|ปะทะ|ชง|บั่นทอน/;
 const SPOUSE_PALACE = /ตำแหน่งคู่|นักษัตรวันเกิด/;
 /** A hint that tells the reader what to try has given the chapter's answer away. */
 const HINT_GIVES_ANSWER = /ลอง(?!ผิด|ถูก)/;
@@ -270,11 +276,18 @@ type Issue = [path: string, message: string];
  */
 const ELEMENT_CORE = /^cover\.verdict$|^overview\.story$|^attraction\./;
 const ELEMENT_ISSUE = 'Names element';
+/** What every buyer reads first; saying the chart is silent there fails the reading. */
+const HEADLINE = /^cover\.verdict$|^overview\.|^attraction\./;
 
-/** Rules every prose field must pass: correct elements, nothing credited to a planet, the reader's gender. */
+/**
+ * Rules every prose field must pass: correct elements, nothing credited to a
+ * planet, the reader's gender, and no silent-chart claim in the headline fields.
+ */
 function factIssues(entries: Array<[string, string]>, allowedFor: (path: string) => Element[], gender: Gender | null): Issue[] {
   const issues: Issue[] = [];
   for (const [path, text] of entries) {
+    const silent = HEADLINE.test(path) ? chartSilence(text) : null;
+    if (silent) issues.push([path, `"${silent}" says the chart is silent; lead with the pair's first signal instead`]);
     const foreign = foreignElementWords(text, allowedFor(path));
     if (foreign.length) issues.push([path, `Names element ${foreign.join(', ')}, which neither person has`]);
     const credited = elementCreditedToPlanet(text);
@@ -308,6 +321,23 @@ function qualityIssues(entries: Array<[string, string]>, partnerName: string): s
       issues.push(`${path}: mixes เรา with หนู or ดิฉัน in one line; pick one`);
     }
   }
+  return issues;
+}
+
+/**
+ * The verdict must name the partner and hold one concrete from this pair's
+ * chart: one of their elements, or, when the palace or year relation is not
+ * neutral, that relation. A behaviour from the insight plan can't be told
+ * from a generic line by word overlap (tested on 20 sample verdicts), so it
+ * does not count on its own.
+ */
+export function verdictIssues(verdict: string, partnerName: string, pairElements: Element[], anchorsOnRelations: boolean): string[] {
+  const issues: string[] = [];
+  if (!verdict.includes(partnerName)) issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
+  const anchored =
+    elementsNamed(verdict).some((element) => pairElements.includes(element)) || (anchorsOnRelations && RELATION_TERMS.test(verdict));
+  if (!anchored) issues.push("cover.verdict: fits any pair; open with the pair's first signal as a concrete image");
+  if (GENERIC_VERDICT.test(verdict)) issues.push('cover.verdict: a line that fits any pair or over-claims; say what is specific to this pair');
   return issues;
 }
 
@@ -348,6 +378,7 @@ export async function generateCompatibilityV4(
     buildCompatibilityPromptV4(step, person1, person2, input.relationshipType, scoreContext, facts, insights);
   const partnerName = input.partner.name;
   const pairElements: Element[] = [charts.readerBazi.element, charts.partnerBazi.element];
+  const anchorsOnRelations = inputs.dayRelation !== 'neutral' || inputs.yearRelation !== 'neutral';
   const gender = input.reader.gender;
 
   const planPrompt = build('plan');
@@ -400,6 +431,9 @@ export async function generateCompatibilityV4(
       if ((dim.score < 45 && /เด่น|สูงมาก|ดีมาก/.test(line)) || (dim.score >= 75 && /ต่ำ|อ่อนแอ|น่าห่วง/.test(line))) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `contradicts the score ${dim.score}` });
       }
+      if (/[0-9๐-๙]/.test(line)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: 'has a number; the bar shows the score, explain the level in words' });
+      }
     }
   };
   const softCheck = (content: Partial<V4Sections>) => {
@@ -412,10 +446,7 @@ export async function generateCompatibilityV4(
     )) {
       if (message.startsWith(ELEMENT_ISSUE)) issues.push(`${path}: ${message}`);
     }
-    if (content.cover && !content.cover.verdict.includes(partnerName)) {
-      issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
-    }
-    if (content.cover && GENERIC_VERDICT.test(content.cover.verdict)) issues.push('cover.verdict: opens with a line that fits any pair');
+    if (content.cover) issues.push(...verdictIssues(content.cover.verdict, partnerName, pairElements, anchorsOnRelations));
     content.calendar?.forEach((entry, i) => {
       // Soft: a regex can't tell "เดือนดี" from "ยังไม่ใช่เดือนดี", and the label itself is shown from the computation.
       if (LABEL_CONTRADICTION[calendar[i].label]?.test(entry.text)) {
@@ -457,7 +488,7 @@ export async function generateCompatibilityV4(
         plan: sections.plan,
         insights: plan.data.insights,
       },
-      (text) => tightenNameSpacing(text, partnerName),
+      (text) => fixKnownTypos(tightenNameSpacing(text, partnerName)),
     ),
   );
   return {

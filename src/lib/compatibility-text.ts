@@ -48,15 +48,18 @@ const thaiWords = new Intl.Segmenter('th', { granularity: 'word' });
  */
 export function foreignElementWords(text: string, allowed: readonly Element[]): string[] {
   const permitted = new Set(allowed.flatMap((element) => ELEMENT_WORDS[element]));
+  return [...new Set(elementWordsIn(text).filter((word) => !permitted.has(word)))];
+}
+
+/** Element words used as elements in `text`, bare or as ธาตุX, idioms skipped. */
+function elementWordsIn(text: string): string[] {
   const words = [...thaiWords.segment(text)].map((part) => part.segment.replace(/^ธาตุ/, ''));
-  const found = words.filter(
+  return words.filter(
     (word, index) =>
       ALL_ELEMENT_WORDS.has(word) &&
-      !permitted.has(word) &&
       !(NOT_AN_ELEMENT_BEFORE[word] ?? []).includes(words[index + 1] ?? '') &&
       !(NOT_AN_ELEMENT_AFTER[word] ?? []).includes(words[index - 1] ?? ''),
   );
-  return [...new Set(found)];
 }
 
 /**
@@ -160,6 +163,56 @@ export function stockLine(text: string): string | null {
     if (match) return match[0];
   }
   return null;
+}
+
+/**
+ * A claim that the chart is silent or absent: "ไม่มีแรงดึงหรือแรงปะทะจากฟ้า",
+ * "แรงดึงที่มาจากความต่าง ไม่ใช่จากดวง", "ไม่ใช่สิ่งที่ฟ้าลิขิต". It came from
+ * the neutral spouse palace, described to the model as "no special force",
+ * and it headlined 6 of 10 v4 verdicts. Every pattern was seen in the samples
+ * or named by the PO. Not included: ไม่มีแรงต้าน and ไม่มีแรงบั่นทอน, which say
+ * a negative force is absent rather than that the chart says nothing.
+ */
+const CHART_SILENCE: RegExp[] = [
+  // ไม่มีแรงดึง, ไม่ได้สร้างแรงดึง, ไม่มีแรงพิเศษ, ไม่ได้ส่งแรงพิเศษ, ไม่มีแรงหนุน, ไม่มีแรงส่ง, ไม่มีแรงปะทะ
+  /ไม่(?:ได้)?(?:มี|สร้าง|ให้|ส่ง)แรง(?:ดึง|ปะทะ|พิเศษ|หนุน|ส่ง)/,
+  // ไม่ใช่จากดวง, ไม่ใช่โชคจากดวง, ไม่ได้มาจากแรงพิเศษของดวง, ไม่ได้มาจากจังหวะที่ฟ้าจัดให้ (not ฟ้าผ่า, love at first sight)
+  /ไม่(?:ใช่|ได้)\S{0,30}?(?:จาก|เพราะ|ของ|ที่)(?:ดวง|ฟ้า(?!ผ่า))/,
+  // ไม่ใช่คู่ที่ฟ้าเป็นใจ, ไม่ใช่สิ่งที่ฟ้าลิขิต, ไม่ใช่เรื่องโชคชะตา
+  /ไม่ใช่\S{0,12}(?:ฟ้า(?:เป็นใจ|ลิขิต)|โชคชะตา|พรหมลิขิต)/,
+  /จากฟ้า\S{0,12}ไม่มี/,
+];
+
+export function chartSilence(text: string): string | null {
+  for (const pattern of CHART_SILENCE) {
+    const match = text.match(pattern);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+/**
+ * Misspellings the model produced in the samples, with the right spelling.
+ * Evidence only; none is part of a valid word. Corrected in place rather than
+ * repaired: กระทันหัน alone cost 4 repair turns in 10 reports.
+ */
+const KNOWN_TYPOS: Record<string, string> = {
+  เขียงลำดับ: 'เรียงลำดับ',
+  เลาไว้: 'เล่าไว้',
+  ปล่าว: 'เปล่า',
+  กระทันหัน: 'กะทันหัน',
+  ครึ่งค้อน: 'ครึ่งค่อน',
+};
+
+/** `text` with every known typo corrected. */
+export function fixKnownTypos(text: string): string {
+  return Object.entries(KNOWN_TYPOS).reduce((out, [typo, correct]) => out.replaceAll(typo, correct), text);
+}
+
+/** The elements `text` names (whole words, idioms skipped), e.g. ['fire', 'metal'] for "ไฟหลอมทอง". */
+export function elementsNamed(text: string): Element[] {
+  const words = new Set(elementWordsIn(text));
+  return (Object.keys(ELEMENT_WORDS) as Element[]).filter((element) => ELEMENT_WORDS[element].some((word) => words.has(word)));
 }
 
 /** Every string in a JSON-shaped value with its dotted path, e.g. ['friction.scenarios.0.repair', '...']. */

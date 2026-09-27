@@ -1,7 +1,7 @@
 ---
 type: REFERENCE
 status: active
-scope: compatibility-v2 score, report v4 dimensions, archetype and calendar
+scope: compatibility-v2 score, report v4 dimensions, archetype, calendar and how they are worded for the model
 last_reviewed: 2026-09-27
 owner: backend
 supersedes: []
@@ -102,3 +102,18 @@ There is no fifth "อนาคต" bar. Nothing the engine computes speaks to a
 - **Label:** a total of 3 or more is ดี (`good`), −1 or less is ระวัง (`caution`), otherwise กลาง (`mixed`). A month whose branch clashes either spouse palace is never ดี.
 - **Distribution:** across random pairs the labels land about 27% / 46% / 27%.
 - **The recommended month** for the future chapter's next step is the first ดี month. With none it is the first กลาง month, and otherwise the first month.
+
+### How the facts are worded for the model
+
+`buildCompatibilityPromptV4` in `src/lib/prompts.ts` turns the facts into Thai. Two wording rules matter for what the buyer reads first:
+- **A neutral relation is open, not empty.** Half of all pairs have a neutral spouse palace (6 of 12 branches). The prompt used to call it "no special force", and 6 of 10 sample verdicts then said the chart had nothing to say. The prompt now describes it as an open palace that doesn't force the relationship either way.
+- **The report leads with the strongest signal.** The spouse palace comes first when it is not neutral. Otherwise the element relation leads, with a fixed image per element pair (`ELEMENT_IMAGE`, e.g. fire controlling metal is ไฟหลอมทอง), then the year branch, then the MBTI pairing. The 15 images are a draft for owner review; every pair with the same two elements gets the same image.
+
+Dimension scores reach the model as a level (เด่น, ดี, กลาง, ต้องใส่ใจ) without the number, since the bar already shows it.
+
+`generateCompatibilityV4` checks the result (`tests/compatibility-v4.test.ts`):
+- **Fail the reading if the repair turns don't fix them:**
+  - a claim that the chart is silent in the verdict, the overview or the attraction chapter (`chartSilence`);
+  - a digit in a dimension line.
+- **Get one repair, then a quality flag:** a verdict that doesn't name the partner, has no concrete from the pair's chart (one of their elements, or a non-neutral palace or year relation), or uses a known cliché or over-claim. Quality issues get only the first repair turn of a call. If that repair breaks a rule and the repairs run out, the reply before it is kept with its flags, so a quality repair never costs a valid reading.
+- **Corrected without a repair:** the known misspellings in `fixKnownTypos` (กระทันหัน, เลาไว้ and others seen in the samples).

@@ -5,7 +5,10 @@ import {
   type MbtiType,
   type V4SectionKey,
 } from '../lib/shared';
+import { ELEMENT_CONTROLLING, ELEMENT_PRODUCING } from '../lib/astrology';
 import { generateCompatibilityV4 } from '../src/lib/compatibility-generation';
+import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
+import { ELEMENT_IMAGE } from '../src/lib/prompts';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -40,7 +43,8 @@ const INSIGHTS = {
 function sections(overrides: Partial<Record<V4SectionKey, unknown>> = {}): Record<V4SectionKey, unknown> {
   return {
     cover: {
-      verdict: `${name}กับคุณดึงกันด้วยความต่างที่ต้องคุยให้ชัด`,
+      // Reader metal, partner fire: the verdict names the pair's elements.
+      verdict: `ไฟของ${name}หลอมทองของคุณ ดึงกันด้วยความต่างที่ต้องคุยให้ชัด`,
       lockedHints: [
         { text: `ทำไม${name}ถึงเงียบเมื่อแผนเปลี่ยนกะทันหัน`, chapter: 'partner' },
         { text: 'สิ่งที่คุณเก็บไว้คนเดียวจนเรื่องเล็กกลายเป็นเรื่องใหญ่', chapter: 'you' },
@@ -127,6 +131,107 @@ describe('generateCompatibilityV4', () => {
     mockModel(() => sections({ you: chapter('ธาตุน้ำในตัวคุณทำให้ใจเย็น ') }));
     const result = await generateCompatibilityV4(input);
     expect(result.qualityFlags.some((flag) => flag.startsWith('you.detail: Names element น้ำ'))).toBe(true);
+  });
+});
+
+describe('v4 prompt facts', () => {
+  test('a neutral palace reads as open, and the element image leads; dimension levels carry no number', async () => {
+    // The fixture pair has a neutral spouse palace and year branch; partner fire controls reader metal.
+    const prompts: string[] = [];
+    mockModel((_keys, messages) => {
+      prompts.push(messages[1]);
+      return sections();
+    });
+    await generateCompatibilityV4(input);
+    const facts = prompts[0];
+    expect(facts).not.toContain('ไม่มีแรง');
+    expect(facts).toContain('ตำแหน่งคู่ในดวง (นักษัตรวันเกิดของทั้งสองคน): เปิดทางให้กัน');
+    expect(facts).toMatch(/1\. ธาตุ: ธาตุของต้นข่มธาตุของคุณ ภาพของคู่นี้คือ ไฟหลอมทอง/);
+    expect(facts).toContain('chemistry เคมี: ระดับ');
+    expect(facts).not.toMatch(/chemistry เคมี \d/);
+  });
+
+  test('every element pair has an image that names only its own elements', () => {
+    const elements = ['wood', 'fire', 'earth', 'metal', 'water'] as const;
+    for (const from of elements) {
+      for (const to of elements) {
+        if (from !== to && ELEMENT_PRODUCING[from] !== to && ELEMENT_CONTROLLING[from] !== to) continue;
+        const image = ELEMENT_IMAGE[`${from}-${to}`];
+        expect(image).toBeString();
+        expect(foreignElementWords(image, [from, to])).toEqual([]);
+        expect(elementsNamed(image).sort()).toEqual([...new Set([from, to])].sort());
+      }
+    }
+    expect(Object.keys(ELEMENT_IMAGE)).toHaveLength(15);
+  });
+});
+
+describe('v4 headline rules', () => {
+  const withVerdict = (verdict: string) => sections({ cover: { ...(sections().cover as object), verdict } });
+  const SILENT = `ดวงของคุณกับ${name}ไม่มีแรงดึงหรือแรงปะทะจากฟ้า แต่ไฟของ${name}กับทองของคุณต้องคุยให้ชัด`;
+  const UNANCHORED = `${name}กับคุณดึงกันด้วยความต่างที่ต้องคุยให้ชัด`;
+
+  /** Answers the cover call with `replies` in turn (the last one repeats); the other calls get valid sections. */
+  function coverReplies(replies: Array<Record<V4SectionKey, unknown>>) {
+    const calls: string[][] = [];
+    mockModel((keys, messages) => {
+      if (!keys.includes('cover')) return sections();
+      calls.push(messages);
+      return replies[Math.min(calls.length, replies.length) - 1];
+    });
+    return calls;
+  }
+
+  test('a silent-chart verdict is repaired, and fails the reading if it stays', async () => {
+    const calls = coverReplies([withVerdict(SILENT), sections()]);
+    const { content } = await generateCompatibilityV4(input);
+    expect(calls[1].at(-1)).toContain('ไม่มีแรงดึง" says the chart is silent');
+    expect(content.cover.verdict).toBe((sections().cover as { verdict: string }).verdict);
+
+    coverReplies([withVerdict(SILENT)]);
+    await expect(generateCompatibilityV4(input)).rejects.toThrow('says the chart is silent');
+  });
+
+  test('a dimension line with a number is repaired, and fails the reading if it stays', async () => {
+    const overview = sections().overview as { story: string; dimensionLines: Record<string, string> };
+    const bad = sections({
+      overview: { ...overview, dimensionLines: { ...overview.dimensionLines, chemistry: `เคมีอยู่ที่ 57 จาก 100 ${prose(8)}` } },
+    });
+    const calls: string[][] = [];
+    mockModel((keys, messages) => {
+      if (!keys.includes('overview')) return sections();
+      calls.push(messages);
+      return calls.length === 1 ? bad : sections();
+    });
+    await generateCompatibilityV4(input);
+    expect(calls[1].at(-1)).toContain('overview.dimensionLines.chemistry: has a number');
+
+    mockModel(() => bad);
+    await expect(generateCompatibilityV4(input)).rejects.toThrow('has a number');
+  });
+
+  test('a known typo is corrected without a repair turn', async () => {
+    mockModel(() => sections({ attraction: chapter('ช่วยกันเขียงลำดับ นักษัตรวันเกิดของทั้งสองคนประสานกัน ') }));
+    let calls = 0;
+    const { content } = await generateCompatibilityV4({ ...input, onModelCall: () => calls++ });
+    expect(calls).toBe(4);
+    expect(content.chapters[0].detail).toContain('ช่วยกันเรียงลำดับ');
+  });
+
+  test('a verdict with no concrete from the chart gets the quality repair', async () => {
+    const calls = coverReplies([withVerdict(UNANCHORED), sections()]);
+    const result = await generateCompatibilityV4(input);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].at(-1)).toContain('cover.verdict: fits any pair');
+    expect(result.qualityFlags).toEqual([]);
+  });
+
+  test('when the quality repair breaks a rule and the repairs run out, the valid reply before it is kept and flagged', async () => {
+    const calls = coverReplies([withVerdict(UNANCHORED), withVerdict(SILENT)]);
+    const result = await generateCompatibilityV4(input);
+    expect(calls).toHaveLength(3);
+    expect(result.content.cover.verdict).toBe(UNANCHORED);
+    expect(result.qualityFlags.some((flag) => flag.startsWith('cover.verdict: fits any pair'))).toBe(true);
   });
 });
 
