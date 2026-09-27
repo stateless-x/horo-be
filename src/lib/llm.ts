@@ -356,6 +356,7 @@ export type TeaserContent = z.infer<typeof TeaserContentSchema>;
 export async function generateTeaserReading(
   prompt: string,
   userName: string,
+  onModelCall?: OnModelCall,
 ): Promise<TeaserContent> {
   let effectivePrompt = `${prompt}\n${TEASER_SHAPE}`;
   let validationRetryUsed = false;
@@ -364,6 +365,7 @@ export async function generateTeaserReading(
   while (true) {
     let text: string;
     try {
+      onModelCall?.();
       text = await callDeepSeek(
         [
           { role: "system", content: SYSTEM_PROMPT },
