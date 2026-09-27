@@ -8,6 +8,7 @@ import {
   COMPATIBILITY_V3_TIMING_BASIS,
   V4InsightPlanSchema,
   V4AllSectionsSchema,
+  V4_HINT_MAX,
   foreignTokenIn,
   type CompatibilityStructuredContent,
   type V4InsightPlan,
@@ -249,11 +250,18 @@ async function generateValidatedCompatibilityJson<T>(
    * The live route uses it to keep a synchronous request inside its budget.
    */
   deadlineAt?: number,
+  /**
+   * A targeted fix tried once, before the whole-reply repair, for failures a
+   * small call can mend (a locked hint over its length cap). It returns the
+   * patched reply, which is validated again, or null when it does not apply.
+   */
+  patch?: (data: unknown, issues: z.ZodIssue[]) => Promise<unknown | null>,
 ): Promise<{ data: T; softIssues: string[] }> {
   let effectivePrompt = prompt;
   let repairTurn: ChatMessage[] = [];
   let repairsUsed = 0;
   let transportFailures = 0;
+  let patchUsed = false;
   /** The valid reply a quality repair was asked of, returned if that repair breaks the schema on the last try. */
   let beforeQualityRepair: { data: T; softIssues: string[] } | null = null;
 
@@ -288,35 +296,46 @@ async function generateValidatedCompatibilityJson<T>(
       continue;
     }
 
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(text) as Record<string, unknown>;
-      const result = schema.safeParse(parsed);
-      if (result.success) {
-        const softIssues = softCheck?.(result.data) ?? [];
-        // Quality issues get one repair, and only as the first one.
-        if (softIssues.length === 0 || repairsUsed > 0) return { data: result.data, softIssues };
-        beforeQualityRepair = { data: result.data, softIssues };
-        repairsUsed += 1;
-        repairTurn = [
-          { role: "assistant", content: text },
-          { role: "user", content: describeInvalid(softIssues) },
-        ];
-        continue;
-      }
-
-      if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
-      if (repairsUsed >= maxRepairs) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
-      repairsUsed += 1;
-      repairTurn = [
-        { role: "assistant", content: text },
-        { role: "user", content: describeInvalid(result.error.issues.map(issueLine)) },
-      ];
+      parsed = JSON.parse(text);
     } catch (error) {
       if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
       if (repairsUsed >= maxRepairs) throw error;
       repairsUsed += 1;
       effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
+      continue;
     }
+
+    let result = schema.safeParse(parsed);
+    if (!result.success && patch && !patchUsed) {
+      patchUsed = true;
+      const patched = await patch(parsed, result.error.issues);
+      if (patched !== null) {
+        text = JSON.stringify(patched);
+        result = schema.safeParse(patched);
+      }
+    }
+    if (result.success) {
+      const softIssues = softCheck?.(result.data) ?? [];
+      // Quality issues get one repair, and only as the first one.
+      if (softIssues.length === 0 || repairsUsed > 0) return { data: result.data, softIssues };
+      beforeQualityRepair = { data: result.data, softIssues };
+      repairsUsed += 1;
+      repairTurn = [
+        { role: "assistant", content: text },
+        { role: "user", content: describeInvalid(softIssues) },
+      ];
+      continue;
+    }
+
+    if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
+    if (repairsUsed >= maxRepairs) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
+    repairsUsed += 1;
+    repairTurn = [
+      { role: "assistant", content: text },
+      { role: "user", content: describeInvalid(result.error.issues.map(issueLine)) },
+    ];
   }
 }
 
@@ -434,7 +453,7 @@ insights has 6 to 8 items. Do not include markdown or any text outside this JSON
 const V4_SECTION_SHAPES: Record<V4SectionKey, { json: string; rules?: string }> = {
   cover: {
     json: '"cover": { "verdict": string, "lockedHints": [ { "text": string, "chapter": string } ] }',
-    rules: 'lockedHints has exactly 3 items, each chapter a different one of: partner, you, communication, friction.',
+    rules: `lockedHints has exactly 3 items, each chapter a different one of: partner, you, communication, friction; each text is at most ${V4_HINT_MAX} characters.`,
   },
   overview: {
     json: '"overview": { "story": string, "dimensionLines": { "chemistry": string, "communication": string, "trust": string, "rhythm": string } }',
@@ -485,6 +504,8 @@ export interface V4PartOptions<T> {
   pairCheck?: (content: T, ctx: z.RefinementCtx) => void;
   /** Quality rules worth one repair; see generateValidatedCompatibilityJson. */
   softCheck?: (content: T) => string[];
+  /** A targeted fix tried before the whole-reply repair; see generateValidatedCompatibilityJson. */
+  patch?: (data: unknown, issues: z.ZodIssue[]) => Promise<unknown | null>;
 }
 
 /**
@@ -508,7 +529,7 @@ export const V4_DETAIL_SPLIT: ReadonlyArray<readonly V4SectionKey[]> = [
  * up to about 2,300. The ceilings leave room without letting a runaway reply
  * eat the 60 s per-call budget.
  */
-const V4_MAX_TOKENS = { plan: 1500, sections: 3500 } as const;
+const V4_MAX_TOKENS = { plan: 1500, sections: 3500, hints: 600 } as const;
 
 export function generateCompatibilityV4Plan(prompt: string, options: V4PartOptions<V4InsightPlan>) {
   return generateValidatedCompatibilityJson(
@@ -539,7 +560,36 @@ export function generateCompatibilityV4Sections(
     options.softCheck,
     options.maxRepairs ?? 2,
     options.deadlineAt,
+    options.patch,
   );
+}
+
+const V4_HINT_REWRITE_SHAPE = `
+Return valid JSON matching exactly this shape: { "texts": [string] }, one text per numbered line above, in the same order.
+Do not include markdown or any text outside this JSON object.`;
+
+/**
+ * Rewrites only the locked hints that ran over their cap: a small call
+ * (about 2 s) in place of rewriting the whole cover. Its reply is checked by
+ * the cover's own schema and pair check once patched in, so it gets no repair
+ * of its own.
+ */
+export async function rewriteV4Hints(
+  prompt: string,
+  count: number,
+  options: { onModelCall?: OnModelCall; deadlineAt?: number },
+): Promise<string[]> {
+  const { data } = await generateValidatedCompatibilityJson(
+    `${prompt}\n${V4_HINT_REWRITE_SHAPE}`,
+    z.object({ texts: z.array(z.string().trim().min(1)).length(count) }),
+    V4_MAX_TOKENS.hints,
+    describeInvalid,
+    options.onModelCall,
+    undefined,
+    0,
+    options.deadlineAt,
+  );
+  return data.texts;
 }
 
 const TEASER_SHAPE = `

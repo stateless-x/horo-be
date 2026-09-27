@@ -44,6 +44,7 @@ import compatibilityV4ContextMd from "./prompts/md/compatibility-v4-context.md" 
 import compatibilityV4RulesMd from "./prompts/md/compatibility-v4-rules.md" with { type: "text" };
 import compatibilityV4TasksPlanMd from "./prompts/md/compatibility-v4-tasks-plan.md" with { type: "text" };
 import compatibilityV4TasksWriteMd from "./prompts/md/compatibility-v4-tasks-write.md" with { type: "text" };
+import compatibilityV4HintRewriteMd from "./prompts/md/compatibility-v4-hint-rewrite.md" with { type: "text" };
 import compatibilityV4SectionsMd from "./prompts/md/compatibility-v4-sections.md" with { type: "text" };
 import compatibilityV2TasksMd from "./prompts/md/compatibility-v2-tasks.md" with { type: "text" };
 import compatibilityV3ContextMd from "./prompts/md/compatibility-v3-context.md" with { type: "text" };
@@ -630,4 +631,19 @@ export function buildStructuredChartPrompt(
     healthScoreValue: categoryScores?.health ?? '',
     familyScoreValue: categoryScores?.family ?? '',
   });
+}
+
+/**
+ * The hint-only rewrite: the hints over their cap, each with the plan's
+ * insights for the chapter it sells, so the shorter line keeps its substance.
+ */
+export function buildV4HintRewritePrompt(
+  partnerName: string,
+  target: number,
+  hints: ReadonlyArray<{ text: string; insights: readonly string[] }>,
+): string {
+  const hintList = hints
+    .map((hint, i) => `${i + 1}. ข้อความเดิม: ${hint.text}\n   ข้อสังเกตของบทนี้: ${hint.insights.join(' / ') || '-'}`)
+    .join('\n');
+  return renderPrompt(compatibilityV4HintRewriteMd, { p2Name: partnerName, target, hintList });
 }

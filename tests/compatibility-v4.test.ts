@@ -6,6 +6,7 @@ import {
   shapeCompatibilityView,
   shareCompatibilityV4,
   V4InsightPlanSchema,
+  V4_HINT_MAX,
   type MbtiType,
   type V4SectionKey,
 } from '../lib/shared';
@@ -350,6 +351,47 @@ describe('partner names that are ordinary words', () => {
     await expect(generateCompatibilityV4Stored({ ...named('ดาว'), withDetail: false })).rejects.toThrow(
       'is an astrology or MBTI term',
     );
+  });
+});
+
+describe('locked hint length', () => {
+  const cover = sections().cover as { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };
+  const long = `${cover.lockedHints[0].text} ${'แล้วคุณก็เลือกเงียบต่อไปอีกหลายวันโดยไม่ได้ถามอะไรเลย '.repeat(4)}`.trim();
+  const short = `ทำไม${name}ถึงเงียบทุกครั้งที่แผนของคุณเปลี่ยนกะทันหัน`;
+
+  /** The cover call answers with one hint over the cap; the hint rewrite call answers with `rewrite`. */
+  function model(rewrite: unknown) {
+    const calls = { cover: [] as string[][], rewrite: [] as string[] };
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+      const prompt = body.messages[1].content;
+      if (prompt.includes('{ "insights"')) return reply(INSIGHTS);
+      if (prompt.includes('{ "texts"')) {
+        calls.rewrite.push(prompt);
+        return reply(rewrite);
+      }
+      calls.cover.push(body.messages.map((m) => m.content));
+      return reply({ cover: { ...cover, lockedHints: [{ ...cover.lockedHints[0], text: long }, ...cover.lockedHints.slice(1)] } });
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  test('a hint over the cap is rewritten alone; the cover gets no whole repair', async () => {
+    expect(long.length).toBeGreaterThan(V4_HINT_MAX);
+    const calls = model({ texts: [short] });
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    expect(calls.cover).toHaveLength(1);
+    expect(calls.rewrite).toHaveLength(1);
+    expect(calls.rewrite[0]).toContain(long);
+    expect(stored.teaser.cover.lockedHints[0].text).toBe(short);
+    expect(stored.teaser.cover.lockedHints[1]).toEqual(cover.lockedHints[1]);
+  });
+
+  test('a rewrite still over the cap falls back to the whole repair, and the cap holds', async () => {
+    const calls = model({ texts: [long] });
+    await expect(generateCompatibilityV4Stored({ ...input, withDetail: false, maxRepairs: 1 })).rejects.toThrow('at most 170');
+    expect(calls.rewrite).toHaveLength(1);
+    expect(calls.cover).toHaveLength(2);
   });
 });
 

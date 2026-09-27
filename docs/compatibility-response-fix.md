@@ -177,6 +177,16 @@ The frontend updates its `['compatibility', id]` query with the response and pla
 
 The hints must not use astrology or MBTI terms (ธาตุ, ดาว, วันเกิด, นักษัตร, MBTI codes and so on), and they are prompted to name the partner. A partner is often called ดาว. So the rule is checked at generation, in the v4 pair check (`hintJargon` in `src/lib/compatibility-text.ts`), not in the shared schema, which cannot know the name. It reads the hint with the partner's name masked (`maskName`). The element, planet-credit, birth-data, gender-word and verdict-anchor checks read the masked text too. So partners called น้ำ, ไฟ, ทอง or หนู are not flagged, and ดาวอังคาร, ดวงดาว and ธาตุไฟ are still caught. Until 2026-09-27 the rule sat in the schema, and every check for a partner called ดาว returned 500.
 
+### Locked hint length
+
+A hint may be up to `V4_HINT_MAX` (170) characters. 243 distinct passing hints from the ten v4 sample result sets (2026-09-27) measured 63 to 145 characters: median 101, p90 127, p95 130. The cap is about 1.3 × p95. The old 150 was set before hints named the partner and a situation. On 2026-09-27 a live check for "Mind" failed because a hint ran past it twice. The cover prompt now states the cap.
+
+When the only failures in a cover reply are hints over the cap, the cover does not spend its one whole-reply repair on them. A small call (`rewriteV4Hints`) rewrites just those hints, aiming at 130 characters. It gets the plan's insights for each hint's chapter. The patched cover is validated again by the same schema and pair check, so the cap still holds. If the rewrite fails or is still too long, the whole-reply repair runs as before.
+
+### A failed check costs no daily check
+
+The route takes the hourly and daily counts before it generates. If generation or the save throws, `refundChecksOnFailure` (`src/systems/compatibility/check-limit.ts`) gives both counts back, so a 500 does not cost one of the five daily checks. The unlock has no rate limit.
+
 ### Latency and deadline
 
 Both stages use the v4 live budget above: one repair per call, and every model call ends by request start + 220 s.
@@ -204,5 +214,5 @@ Three unlocks on the local stack the same day took 16.5, 18.5 and 32.6 s end to 
   - unlock is owner-only, answers 402 `insufficient_balance` at a balance of 0, is idempotent, and writes once under two concurrent taps;
   - a row whose detail exists opens without touching the wallet (the wallet is stubbed; `tests/wallet.test.ts` covers the ledger itself);
   - partners called ดาว, ดาวใจ, น้ำ, ไฟ and ทอง pass without a repair, and a real jargon hint is still repaired or rejected.
-- To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`. A relocked row that was already paid for unlocks again for free, because its spend exists.
+- To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`. A relocked row that was already paid for is not charged again. Once the route pre-checks with `checkUnlock`, a balance of 0 gets a 402 for it first (see `docs/wallet.md`).
 - To run locally, start the backend with `COMPAT_LOCK_ENABLED=1 COMPAT_UNLOCK_FREE=1`. Never set `COMPAT_UNLOCK_FREE` in production.

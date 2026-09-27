@@ -41,12 +41,19 @@ import {
   type MbtiType,
   type RelationshipType,
 } from '../../lib/shared';
-import { buildCompatibilityPrompt, buildCompatibilityPromptV3, buildCompatibilityPromptV4, V4_FUTURE_BY_RELATIONSHIP } from './prompts';
+import {
+  buildCompatibilityPrompt,
+  buildCompatibilityPromptV3,
+  buildCompatibilityPromptV4,
+  buildV4HintRewritePrompt,
+  V4_FUTURE_BY_RELATIONSHIP,
+} from './prompts';
 import {
   generateStructuredCompatibilityReading,
   generateStructuredCompatibilityReadingV3,
   generateCompatibilityV4Plan,
   generateCompatibilityV4Sections,
+  rewriteV4Hints,
   V4_DETAIL_SPLIT,
   V4_TEASER_SECTIONS,
   type OnModelCall,
@@ -498,12 +505,52 @@ function v4Context(input: V4Input) {
     return issues;
   };
 
+  /**
+   * A cover whose only failures are locked hints over the cap: rewrite just
+   * those hints in a small call, from the plan's insights for their chapters,
+   * instead of spending the cover's one whole-reply repair. The patched cover
+   * is validated again, so the cap and the pair check still hold. Null (the
+   * whole repair runs) when anything else failed or the rewrite call failed.
+   */
+  const hintPatch = (insights: V4InsightPlan['insights']) => async (data: unknown, issues: z.ZodIssue[]) => {
+    const overLong = issues.map((issue) =>
+      issue.code === 'too_big' && issue.path.length === 4 && issue.path[0] === 'cover' && issue.path[1] === 'lockedHints' && issue.path[3] === 'text'
+        ? Number(issue.path[2])
+        : null,
+    );
+    if (overLong.length === 0 || overLong.includes(null)) return null;
+    const reply = CoverReplySchema.safeParse(data);
+    if (!reply.success) return null;
+    const hints = reply.data.cover.lockedHints;
+    const indexes = [...new Set(overLong.filter((i): i is number => i !== null))];
+    const prompt = buildV4HintRewritePrompt(
+      partnerName,
+      V4_HINT_REWRITE_TARGET,
+      indexes.map((i) => ({ text: hints[i].text, insights: insights.filter((x) => x.chapter === hints[i].chapter).map((x) => x.text) })),
+    );
+    let texts: string[];
+    try {
+      texts = await rewriteV4Hints(prompt, indexes.length, { onModelCall: input.onModelCall, deadlineAt: budget.deadlineAt });
+    } catch (error) {
+      console.warn('[compatibility v4] hint rewrite failed; the cover gets its whole repair', error);
+      return null;
+    }
+    const lockedHints = hints.map((hint, i) => (indexes.includes(i) ? { ...hint, text: texts[indexes.indexOf(i)] } : hint));
+    return { ...reply.data, cover: { ...reply.data.cover, lockedHints } };
+  };
+
   /** The section calls for `split`, in parallel, from one insight plan. */
   const writeSections = async (split: ReadonlyArray<readonly V4SectionKey[]>, insights: V4InsightPlan['insights']) => {
     const prompts = split.map((sections) => build(sections, insights));
     const parts = await Promise.all(
       split.map((sections, i) =>
-        generateCompatibilityV4Sections(prompts[i], sections, { onModelCall: input.onModelCall, pairCheck, softCheck, ...budget }),
+        generateCompatibilityV4Sections(prompts[i], sections, {
+          onModelCall: input.onModelCall,
+          pairCheck,
+          softCheck,
+          ...budget,
+          patch: sections.includes('cover') ? hintPatch(insights) : undefined,
+        }),
       ),
     );
     return {
@@ -667,6 +714,18 @@ export async function generateCompatibilityV4Detail(
 }
 
 const PLAN_BUDGET_MS = 75_000;
+
+/** What a rewritten hint aims for: the p95 of the sample hints, well inside V4_HINT_MAX. */
+const V4_HINT_REWRITE_TARGET = 130;
+
+/** Just enough of a cover reply to patch its hints; everything else passes through untouched. */
+const CoverReplySchema = z
+  .object({
+    cover: z
+      .object({ lockedHints: z.array(z.object({ text: z.string(), chapter: z.string() }).passthrough()) })
+      .passthrough(),
+  })
+  .passthrough();
 
 /**
  * The live route's budget (docs/compatibility-response-fix.md, "v4 live

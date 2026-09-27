@@ -53,12 +53,20 @@ const chapter = {
 };
 
 /**
+ * A locked hint's length cap. 243 distinct passing hints from the v4 sample
+ * runs (2026-09-27, ten result sets) measured 63 to 145 characters, median
+ * 101, p95 130; the cap is about 1.3 × p95. The old 150 predates hints that
+ * name the partner and a situation, and failed live checks.
+ */
+export const V4_HINT_MAX = 170;
+
+/**
  * The no-astrology-terms rule for hint text is checked at generation, with the
  * partner's name masked (hintJargon in horo-be src/lib/compatibility-text.ts):
  * a schema can't know the name, and a partner called ดาว would fail every hint.
  */
 const hint = z.object({
-  text: thaiProse(20, 150),
+  text: thaiProse(20, V4_HINT_MAX),
   chapter: z.enum(V4_HINT_CHAPTERS),
 });
 
