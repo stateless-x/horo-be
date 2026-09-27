@@ -13,6 +13,8 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
+import { elementCreditedToPlanet, foreignElementWords } from '../../src/lib/compatibility-text';
+import type { Element } from '../../lib/shared';
 
 type Json = Record<string, any>;
 const argv = process.argv.slice(2);
@@ -24,7 +26,7 @@ const opt = (name: string) => {
 };
 const outPath = opt('--out');
 const auditPath = opt('--audit');
-const SHOW = opt('--show') ?? 'v3.2';
+const SHOW = opt('--show') ?? 'v3';
 if (!outPath || argv.length === 0) throw new Error('usage: render.ts --out out.md [--audit a.md] [--show v3.2] results.json...');
 let fixtures: Json[] = [];
 const records: Json[] = [];
@@ -61,7 +63,7 @@ w();
 w(`Generated ${new Date().toISOString()} by \`horo-be/scripts/prototype-compat-v3/run.ts\` + \`render.ts\`.`);
 w('All people are synthetic fixtures. No database, no real user data. Model: DeepSeek `deepseek-chat`, JSON mode, temperature 0.7, same system prompt as production.');
 w('v2 = the unchanged production `generateStructuredCompatibilityReading`. v3 = one prompt, one call; the teaser view and the full view are two projections of the same stored JSON object.');
-w('v3.0 = first draft prompt; v3.1 and v3.2 = prompt fixes for defects found in v3.0 (see "Prompt iterations"). v3.1 and v3.2 also reject English words in Thai prose at schema level, so those runs count a leak as a first-try failure followed by a repair call.');
+w('A reply that fails validation (a foreign word, a wrong element, a hint rule) gets one repair turn; "first-try" counts replies that passed without it.');
 w();
 
 const preamble = audits.get('_preamble');
@@ -166,6 +168,35 @@ function v2View(c: Json) {
   w();
 }
 
+/**
+ * The PO's quality checklist. Items 1, 2, 4, 5 and 6 are checked from the
+ * text; 3, 7 and 8 need a reader, so they come from the audit file.
+ */
+function checklist(c: Json, elements: Element[], f: Json) {
+  const mark = (ok: boolean) => (ok ? 'ok' : '**FAIL**');
+  const elementFields = [c.teaser.verdict, c.teaser.hook, c.detail.dynamic];
+  const foreign = [...new Set(elementFields.flatMap((text: string) => foreignElementWords(text, elements)))];
+  const credited = elementFields.map((text: string) => elementCreditedToPlanet(text)).filter(Boolean);
+  const inventory = /^\S*\s*(คุณ|[^\s]+)?เกิดวัน/;
+  const opensWithData = [c.detail.dynamic, c.teaser.hook].filter((text: string) => inventory.test(text.slice(0, 40)));
+  const hintJargon = c.teaser.lockedHints.filter((h: Json) => /ธาตุ|ดาว|วันเกิด|MBTI|[IE][NS][TF][JP]/.test(h.text));
+  const hintTiming = c.teaser.lockedHints.filter((h: Json) => h.section === 'timing');
+  const all = JSON.stringify(c);
+  const spaced = all.includes(` ${f.partner.name} `);
+  const starter: string = c.detail.nextSteps.conversationStarter;
+  const genderOk = f.reader.gender === 'female' ? !/ผม|ครับ/.test(starter) : !/ดิฉัน|ค่ะ|คะ/.test(starter);
+  w('**Issues checklist (v3)**');
+  w();
+  w(`1. Elements and systems: ${mark(foreign.length === 0 && credited.length === 0)}${foreign.length ? ` foreign element ${foreign.join(',')}` : ''}${credited.length ? ` credited to planet: ${credited.join(' / ')}` : ''}`);
+  w(`2. Opens with a birth-data inventory (dynamic / hook): ${mark(opensWithData.length === 0)}`);
+  w('3. Timing: see audit');
+  w(`4. Locked hints: situational, no jargon, no timing: ${mark(hintJargon.length === 0 && hintTiming.length === 0)}`);
+  w(`5. Name spacing: ${mark(!spaced)}`);
+  w(`6. Gender in the conversation starter (reader ${f.reader.gender}): ${mark(genderOk)}`);
+  w('7, 8. Planet as mind reader; repetition without a new fact: see audit');
+  w();
+}
+
 for (const f of fixtures) {
   const readerDate = new Date(f.reader.birthDate);
   const partnerDate = new Date(f.partner.birthDate);
@@ -194,13 +225,14 @@ for (const f of fixtures) {
 
   const v2 = rs.find((r) => r.arch === 'v2' && r.run === 1 && r.content);
   const v3r = rs.find((r) => r.arch === SHOW && r.run === 1 && r.content && r.finalPass);
-  if (v2) v2View(v2.content);
   if (v3r) {
-    w(`<sub>v3 sample below: prompt ${SHOW}, run 1</sub>`);
+    w(`<sub>v3 sample below: ${SHOW}, run 1</sub>`);
     w();
     teaserView(v3r.content);
     fullView(v3r.content);
+    checklist(v3r.content, [rb.element, pb.element], f);
   }
+  if (v2) v2View(v2.content);
   const audit = audits.get(f.id);
   if (audit) {
     w('**Self-audit (coder)**');
