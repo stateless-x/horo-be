@@ -6,7 +6,13 @@ import {
   CompatibilityV3GeneratedSchema,
   COMPATIBILITY_V3_HINT_SECTIONS,
   COMPATIBILITY_V3_TIMING_BASIS,
+  V4InsightPlanSchema,
+  V4AllSectionsSchema,
+  foreignTokenIn,
   type CompatibilityStructuredContent,
+  type V4InsightPlan,
+  type V4SectionKey,
+  type V4Sections,
 } from "../../lib/shared";
 
 type CompatibilityV3Generated = z.infer<typeof CompatibilityV3GeneratedSchema>;
@@ -210,13 +216,19 @@ async function generateValidatedCompatibilityJson<T>(
   schema: z.ZodType<T>,
   maxTokens: number,
   /**
-   * Describes a schema failure for the repair turn: the model sees its own
-   * reply and this description, and corrects that reply. Regenerating from
-   * scratch repeated the same slips.
+   * Describes what failed for the repair turn: the model sees its own reply
+   * and this description, and corrects that reply. Regenerating from scratch
+   * repeated the same slips.
    */
-  describeInvalid: (issues: z.ZodIssue[]) => string,
+  describeInvalid: (problems: string[]) => string,
   onModelCall?: OnModelCall,
-): Promise<T> {
+  /**
+   * Quality checks that are worth one repair but not worth failing the
+   * reading over: they go into the repair turn with the schema problems, and
+   * whatever still fails after it is returned as `softIssues`, not thrown.
+   */
+  softCheck?: (data: T) => string[],
+): Promise<{ data: T; softIssues: string[] }> {
   let effectivePrompt = prompt;
   let repairTurn: ChatMessage[] = [];
   let validationRetryUsed = false;
@@ -249,13 +261,22 @@ async function generateValidatedCompatibilityJson<T>(
     try {
       const parsed = JSON.parse(text) as Record<string, unknown>;
       const result = schema.safeParse(parsed);
-      if (result.success) return result.data;
+      if (result.success) {
+        const softIssues = softCheck?.(result.data) ?? [];
+        if (softIssues.length === 0 || validationRetryUsed) return { data: result.data, softIssues };
+        validationRetryUsed = true;
+        repairTurn = [
+          { role: "assistant", content: text },
+          { role: "user", content: describeInvalid(softIssues) },
+        ];
+        continue;
+      }
 
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       validationRetryUsed = true;
       repairTurn = [
         { role: "assistant", content: text },
-        { role: "user", content: describeInvalid(result.error.issues) },
+        { role: "user", content: describeInvalid(result.error.issues.map(issueLine)) },
       ];
     } catch (error) {
       if (validationRetryUsed) throw error;
@@ -271,9 +292,10 @@ async function generateValidatedCompatibilityJson<T>(
  * to repair with a generic hint that never said which field; a verdict over
  * 180 characters then failed twice in a row.
  */
-function describeInvalid(issues: z.ZodIssue[]): string {
-  const fields = issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
-  return `Your JSON above failed validation: ${fields}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
+const issueLine = (issue: z.ZodIssue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`;
+
+function describeInvalid(problems: string[]): string {
+  return `Your JSON above failed validation: ${problems.join('; ')}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
 }
 
 /** Generate the compact narrative portion of compatibility v2. */
@@ -282,13 +304,14 @@ export async function generateStructuredCompatibilityReading(
   maxTokens: number = 1000,
   onModelCall?: OnModelCall,
 ): Promise<GeneratedCompatibilityContent> {
-  return generateValidatedCompatibilityJson(
+  const { data } = await generateValidatedCompatibilityJson(
     `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`,
-    GeneratedCompatibilityContentSchema,
+    GeneratedCompatibilityContentSchema.superRefine(rejectForeignWords),
     maxTokens,
     describeInvalid,
     onModelCall,
   );
+  return data;
 }
 
 const STRUCTURED_COMPATIBILITY_V3_SHAPE = `
@@ -333,12 +356,141 @@ export async function generateStructuredCompatibilityReadingV3(
   onModelCall?: OnModelCall,
   pairCheck?: (content: CompatibilityV3Generated, ctx: z.RefinementCtx) => void,
 ): Promise<CompatibilityV3Generated> {
-  return generateValidatedCompatibilityJson(
+  const { data } = await generateValidatedCompatibilityJson(
     `${prompt}\n${STRUCTURED_COMPATIBILITY_V3_SHAPE}`,
     pairCheck ? CompatibilityV3GeneratedSchema.superRefine(pairCheck) : CompatibilityV3GeneratedSchema,
     COMPATIBILITY_V3_MAX_TOKENS,
     describeInvalid,
     onModelCall,
+  );
+  return data;
+}
+
+/**
+ * v2's schema is also the stored-content schema, which old rows with English
+ * in them must still parse against, so the foreign-word rule lives here, on
+ * generation only. v2 leaked "naturally" into Thai output in the samples.
+ */
+function rejectForeignWords(content: GeneratedCompatibilityContent, ctx: z.RefinementCtx) {
+  const fields: Array<[string, string]> = [
+    ['verdict', content.verdict],
+    ['chemistry', content.chemistry],
+    ['caution', content.caution],
+    ['advice', content.advice],
+    ['nextSteps.action', content.nextSteps.action],
+    ['nextSteps.conversationStarter', content.nextSteps.conversationStarter],
+    ['nextSteps.watchFor', content.nextSteps.watchFor],
+  ];
+  for (const [path, text] of fields) {
+    const token = foreignTokenIn(text);
+    if (token) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message: `Non-Thai text in prose: "${token}"` });
+  }
+}
+
+// ---------------------------------------------------------------- v4 report
+
+const V4_PLAN_SHAPE = `
+Return valid JSON matching exactly this shape:
+{ "insights": [ { "text": string, "basis": [string], "chapter": string } ] }
+insights has 6 to 8 items. Do not include markdown or any text outside this JSON object.`;
+
+/** The JSON each section contributes to a call's shape, plus its count rules. */
+const V4_SECTION_SHAPES: Record<V4SectionKey, { json: string; rules?: string }> = {
+  cover: {
+    json: '"cover": { "verdict": string, "lockedHints": [ { "text": string, "chapter": string } ] }',
+    rules: 'lockedHints has exactly 3 items, each chapter a different one of: partner, you, communication, friction.',
+  },
+  overview: {
+    json: '"overview": { "story": string, "dimensionLines": { "chemistry": string, "communication": string, "trust": string, "rhythm": string } }',
+  },
+  attraction: { json: '"attraction": { "summary": string, "detail": string, "move": string }' },
+  partner: { json: '"partner": { "summary": string, "detail": string, "move": string }' },
+  you: { json: '"you": { "summary": string, "detail": string, "move": string }' },
+  communication: {
+    json: '"communication": { "summary": string, "detail": string, "move": string, "pairs": [ { "do": string, "avoid": string } ], "lines": [string] }',
+    rules: 'communication.pairs has exactly 3 items and communication.lines exactly 3.',
+  },
+  friction: {
+    json: '"friction": { "summary": string, "detail": string, "move": string, "scenarios": [ { "scenario": string, "repair": string } ] }',
+    rules: 'friction.scenarios has 2 or 3 items and every scenario starts with "ถ้า".',
+  },
+  future: {
+    json: '"future": { "summary": string, "detail": string, "move": string, "goSignals": [string], "slowSignals": [string], "nextStep": { "month": "YYYY-MM", "step": string } }',
+    rules: 'future.goSignals and future.slowSignals have 2 or 3 items each.',
+  },
+  calendar: {
+    json: '"calendar": [ { "month": "YYYY-MM", "text": string } ]',
+    rules: 'calendar has exactly 3 items, one per given month, in order.',
+  },
+  plan: {
+    json: '"plan": [ { "day": number, "action": string, "conversationStarter": string, "watchFor": string } ]',
+    rules: 'plan has exactly 3 items with day from 1 to 7 in increasing order.',
+  },
+};
+
+function v4Shape(sections: readonly V4SectionKey[]): string {
+  const rules = sections.map((key) => V4_SECTION_SHAPES[key].rules).filter(Boolean);
+  return `
+Return valid JSON matching exactly this shape (all fields required):
+{
+${sections.map((key) => `  ${V4_SECTION_SHAPES[key].json}`).join(',\n')}
+}
+${rules.join('\n')}
+Do not include the score, markdown, comments, or any text outside this JSON object.`;
+}
+
+export interface V4PartOptions<T> {
+  onModelCall?: OnModelCall;
+  /** Pair-specific rules that must hold (they fail the reading if the repair doesn't fix them). */
+  pairCheck?: (content: T, ctx: z.RefinementCtx) => void;
+  /** Quality rules worth one repair; see generateValidatedCompatibilityJson. */
+  softCheck?: (content: T) => string[];
+}
+
+/**
+ * How the report's sections are split across parallel calls, after the
+ * insight plan. Measured on the five fixtures (see the report samples): three
+ * calls of about 1,500 to 1,900 output tokens each finish together in about
+ * the time one 2,300-token half took.
+ */
+export const V4_SPLIT: ReadonlyArray<readonly V4SectionKey[]> = [
+  ['cover', 'partner', 'you', 'plan'],
+  ['communication', 'friction'],
+  ['overview', 'attraction', 'future', 'calendar'],
+];
+
+/**
+ * Output ceilings: the plan measured about 900 tokens and each section call
+ * up to about 2,300. The ceilings leave room without letting a runaway reply
+ * eat the 60 s per-call budget.
+ */
+const V4_MAX_TOKENS = { plan: 1500, sections: 3500 } as const;
+
+export function generateCompatibilityV4Plan(prompt: string, options: V4PartOptions<V4InsightPlan>) {
+  return generateValidatedCompatibilityJson(
+    `${prompt}\n${V4_PLAN_SHAPE}`,
+    options.pairCheck ? V4InsightPlanSchema.superRefine(options.pairCheck) : V4InsightPlanSchema,
+    V4_MAX_TOKENS.plan,
+    describeInvalid,
+    options.onModelCall,
+    options.softCheck,
+  );
+}
+
+export function generateCompatibilityV4Sections(
+  prompt: string,
+  sections: readonly V4SectionKey[],
+  options: V4PartOptions<Partial<V4Sections>>,
+) {
+  const mask: Partial<Record<V4SectionKey, true>> = Object.fromEntries(sections.map((key) => [key, true]));
+  const schema: z.ZodType<Partial<V4Sections>> = V4AllSectionsSchema.pick(mask);
+  return generateValidatedCompatibilityJson(
+    `${prompt}\n${v4Shape(sections)}`,
+    options.pairCheck ? schema.superRefine(options.pairCheck) : schema,
+    V4_MAX_TOKENS.sections,
+    describeInvalid,
+    options.onModelCall,
+    options.softCheck,
   );
 }
 

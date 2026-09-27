@@ -21,8 +21,14 @@ const ALL_ELEMENT_WORDS = new Set(Object.values(ELEMENT_WORDS).flat());
  */
 const NOT_AN_ELEMENT_BEFORE: Record<string, readonly string[]> = {
   น้ำ: ['เสียง', 'ใจ', 'หนัก', 'ตา', 'คำ', 'มือ'],
-  ไฟ: ['ฟ้า'],
+  ไฟ: ['ฟ้า', 'แรง'],
   ไม้: ['บรรทัด'],
+};
+
+/** Idioms where the word before makes it not an element: หมดไฟ (burnt out), ติดดิน (down to earth). */
+const NOT_AN_ELEMENT_AFTER: Record<string, readonly string[]> = {
+  ไฟ: ['หมด'],
+  ดิน: ['ติด'],
 };
 
 const thaiWords = new Intl.Segmenter('th', { granularity: 'word' });
@@ -30,7 +36,7 @@ const thaiWords = new Intl.Segmenter('th', { granularity: 'word' });
 /**
  * Element words in `text` that belong to neither person, e.g. "ไฟ" for a pair
  * who are both earth. Matching is on whole Thai words (ICU segmentation), so
- * เดิน is never ดิน, and the compounds listed above are skipped. A third element is never
+ * เดิน is never ดิน, and the compounds and idioms listed above are skipped. A third element is never
  * allowed: the prompt gives the model only the two people's elements and no
  * generating or controlling cycle to reason with.
  */
@@ -41,7 +47,8 @@ export function foreignElementWords(text: string, allowed: readonly Element[]): 
     (word, index) =>
       ALL_ELEMENT_WORDS.has(word) &&
       !permitted.has(word) &&
-      !(NOT_AN_ELEMENT_BEFORE[word] ?? []).includes(words[index + 1] ?? ''),
+      !(NOT_AN_ELEMENT_BEFORE[word] ?? []).includes(words[index + 1] ?? '') &&
+      !(NOT_AN_ELEMENT_AFTER[word] ?? []).includes(words[index - 1] ?? ''),
   );
   return [...new Set(found)];
 }
@@ -84,4 +91,77 @@ export function mapStrings<T>(value: T, fn: (text: string) => string): T {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, fn)])) as T;
   }
   return value;
+}
+
+/** Thai words in `text` (ICU segmentation), for the report's depth floor. */
+export function thaiWordCount(text: string): number {
+  return [...thaiWords.segment(text)].filter((part) => part.isWordLike).length;
+}
+
+/**
+ * First-person words and polite particles that belong to the other gender,
+ * e.g. หนู in a male reader's report. When the gender is unknown every
+ * gendered word is wrong. Matched on whole words, so คะแนน is not คะ.
+ */
+export function wrongGenderWords(text: string, gender: 'male' | 'female' | null): string[] {
+  const male = ['ผม', 'ครับ'];
+  const female = ['ดิฉัน', 'หนู', 'ค่ะ', 'คะ'];
+  const wrong = new Set(gender === 'male' ? female : gender === 'female' ? male : [...male, ...female]);
+  return [...new Set([...thaiWords.segment(text)].map((part) => part.segment).filter((word) => wrong.has(word)))];
+}
+
+/** One spoken line that mixes เรา with หนู or ดิฉัน reads unnatural. */
+export function mixesPronouns(line: string): boolean {
+  const words = new Set([...thaiWords.segment(line)].map((part) => part.segment));
+  return words.has('เรา') && (words.has('หนู') || words.has('ดิฉัน'));
+}
+
+/**
+ * A birth-data inventory: three or more kinds of chart data (day master,
+ * element, weekday, planet) inside 80 characters, as in "เจ้าวันไฟหยิน
+ * ธาตุไฟ เกิดวันอังคาร ดาวอังคาร". Returns the offending stretch.
+ */
+export function birthDataInventory(text: string): string | null {
+  const markers = [/เจ้าวัน/g, /ธาตุ/g, /เกิดวัน/g, /ดาว/g];
+  const hits = markers.flatMap((marker, kind) => [...text.matchAll(marker)].map((m) => ({ kind, at: m.index ?? 0 })));
+  hits.sort((x, y) => x.at - y.at);
+  for (const start of hits) {
+    const kinds = new Set(hits.filter((h) => h.at >= start.at && h.at < start.at + 80).map((h) => h.kind));
+    if (kinds.size >= 3) return text.slice(start.at, start.at + 80);
+  }
+  return null;
+}
+
+/**
+ * The partner "reading" or "interpreting" the reader: a guess at their view,
+ * e.g. "มายด์อาจอ่านว่าคุณไม่จริงจัง", "เธอมองว่าความเงียบคือ...".
+ */
+export function guessesPartnerView(text: string, partnerName: string): string | null {
+  const subject = `(?:${escapeRegExp(partnerName)}|เขา|เธอ|ท่าน)`;
+  const match = text.match(new RegExp(`${subject}\\s*(?:อาจ|มัก|จะ|ก็)?\\s*(?:อ่าน|ตีความ|มองว่า|คิดว่า)`));
+  return match ? match[0] : null;
+}
+
+/**
+ * Stock advice the samples kept producing for every pair. A hit means the
+ * line is not about this pair. Evidence-based and short on purpose.
+ */
+const STOCK_LINES: RegExp[] = [/เหนื่อยหรือหิว/, /สัปดาห์ละครั้ง/, /คำถามปลายเปิด/, /ฟัง(?:ให้|จน)จบก่อน/];
+
+export function stockLine(text: string): string | null {
+  for (const pattern of STOCK_LINES) {
+    const match = text.match(pattern);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+/** Every string in a JSON-shaped value with its dotted path, e.g. ['friction.scenarios.0.repair', '...']. */
+export function stringLeaves(value: unknown, path = ''): Array<[string, string]> {
+  if (typeof value === 'string') return [[path, value]];
+  if (Array.isArray(value)) return value.flatMap((item, index) => stringLeaves(item, path ? `${path}.${index}` : `${index}`));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, item]) => stringLeaves(item, path ? `${path}.${key}` : key));
+  }
+  return [];
 }

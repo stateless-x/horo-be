@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { RelationshipTypeSchema, type RelationshipType } from './compatibility';
 import { COMPATIBILITY_VIEWS, type CompatibilityV3Shaped } from './compatibility-v3';
+import type { CompatibilityV4Shaped } from './compatibility-v4';
 import type { CompatibilityStructuredContent } from './reading';
 
 /**
@@ -32,6 +33,8 @@ const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 const MbtiCodeSchema = z.string().regex(/^[IE][NS][TF][JP]$/, 'Use a 4-letter MBTI code');
 
 export const DevCompatibilityPersonSchema = z.object({
+  /** Display only (the report cover); never sent to the model. */
+  name: z.string().trim().min(1).max(40).optional(),
   birthDate: IsoDateSchema,
   /** 0-23, omitted when unknown. */
   birthHour: z.number().int().min(0).max(23).optional(),
@@ -51,7 +54,7 @@ export const DevCompatibilityRequestSchema = z.object({
   reader: DevCompatibilityPersonSchema,
   partner: DevCompatibilityPartnerSchema,
   relationshipType: RelationshipTypeSchema,
-  version: z.enum(['v2', 'v3']),
+  version: z.enum(['v2', 'v3', 'v4']),
   view: z.enum(COMPATIBILITY_VIEWS),
 });
 export type DevCompatibilityRequest = z.infer<typeof DevCompatibilityRequestSchema>;
@@ -60,7 +63,11 @@ export type DevCompatibilityRequest = z.infer<typeof DevCompatibilityRequestSche
 export interface DevCompatibilityOutput {
   score: number;
   relationshipType: RelationshipType;
-  structuredContent: CompatibilityStructuredContent | CompatibilityV3Shaped;
+  readerName: string | null;
+  partnerName: string;
+  structuredContent: CompatibilityStructuredContent | CompatibilityV3Shaped | CompatibilityV4Shaped;
+  /** v4: quality checks that still failed after the one repair turn (see generateCompatibilityV4). */
+  qualityFlags?: string[];
 }
 
 /**

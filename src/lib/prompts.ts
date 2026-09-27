@@ -10,19 +10,41 @@
  * (see ./prompts/render.ts for the {{var}} / {{#block}} syntax).
  */
 
-import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType, Gender, HeavenlyStem } from "../../lib/shared";
+import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType, Gender, HeavenlyStem, V4SectionKey } from "../../lib/shared";
 import type { FortuneCategoryKey } from "../../lib/shared/types/astrology";
 import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance } from "../../lib/shared";
 import { getReadingPeriod, toBuddhistYear } from "../../lib/shared/utils/date";
 import { THAI_MONTHS_FULL } from "../../lib/shared/constants/thai-time";
 import { renderPrompt } from "./prompts/render";
-import { buildTraitChips, BAZI_ELEMENT_LABELS, THAI_DAY_LABELS, HEAVENLY_STEMS, type DailyCategory, type TraitChip } from "../../lib/astrology";
+import {
+  buildTraitChips,
+  BAZI_ELEMENT_LABELS,
+  THAI_DAY_LABELS,
+  HEAVENLY_STEMS,
+  ELEMENT_PRODUCING,
+  ELEMENT_CONTROLLING,
+  type BranchRelation,
+  type CalendarMonth,
+  type Dimension,
+  type DimensionInput,
+  type MonthLabel,
+  type PairArchetype,
+  type PairInputs,
+  type DailyCategory,
+  type TraitChip,
+} from "../../lib/astrology";
 
 import systemMd from "./prompts/md/system.md" with { type: "text" };
 import systemStructuredMd from "./prompts/md/system-structured.md" with { type: "text" };
 import teaserMd from "./prompts/md/teaser.md" with { type: "text" };
 import chartMd from "./prompts/md/chart.md" with { type: "text" };
 import compatibilityDataMd from "./prompts/md/compatibility-data.md" with { type: "text" };
+import compatibilityScoreMd from "./prompts/md/compatibility-score.md" with { type: "text" };
+import compatibilityV4ContextMd from "./prompts/md/compatibility-v4-context.md" with { type: "text" };
+import compatibilityV4RulesMd from "./prompts/md/compatibility-v4-rules.md" with { type: "text" };
+import compatibilityV4TasksPlanMd from "./prompts/md/compatibility-v4-tasks-plan.md" with { type: "text" };
+import compatibilityV4TasksWriteMd from "./prompts/md/compatibility-v4-tasks-write.md" with { type: "text" };
+import compatibilityV4SectionsMd from "./prompts/md/compatibility-v4-sections.md" with { type: "text" };
 import compatibilityV2TasksMd from "./prompts/md/compatibility-v2-tasks.md" with { type: "text" };
 import compatibilityV3ContextMd from "./prompts/md/compatibility-v3-context.md" with { type: "text" };
 import compatibilityV3TasksMd from "./prompts/md/compatibility-v3-tasks.md" with { type: "text" };
@@ -179,9 +201,37 @@ const RELATIONSHIP_FOCUS: Record<RelationshipType, string> = {
  * render the same data and rules, so a rule fixed once applies to both.
  * tests/compatibility-prompt-golden.test.ts pins the v2 result byte for byte.
  */
-const COMPATIBILITY_V2_TEMPLATE = compatibilityDataMd + compatibilityV2TasksMd + compatibilityRulesMd;
+const COMPATIBILITY_V2_TEMPLATE =
+  compatibilityDataMd + compatibilityScoreMd + compatibilityV2TasksMd + compatibilityRulesMd;
 const COMPATIBILITY_V3_TEMPLATE =
-  compatibilityDataMd + compatibilityV3ContextMd + compatibilityV3TasksMd + compatibilityRulesMd;
+  compatibilityDataMd + compatibilityScoreMd + compatibilityV3ContextMd + compatibilityV3TasksMd + compatibilityRulesMd;
+/**
+ * v4 leaves out the score block (the canned 4-band explanation and stock
+ * strengths the owner called empty) and gives the computed report facts
+ * instead: archetype, dimension scores with their inputs, month labels.
+ */
+const V4_HEAD = compatibilityDataMd + compatibilityV4ContextMd + compatibilityV3ContextMd + compatibilityV4RulesMd;
+const V4_PLAN_TEMPLATE = V4_HEAD + compatibilityV4TasksPlanMd + compatibilityRulesMd;
+
+/** The per-section instructions, keyed by the `### key` headings in compatibility-v4-sections.md. */
+const V4_SECTION_TASKS: Record<string, string> = Object.fromEntries(
+  compatibilityV4SectionsMd
+    .split(/^### /m)
+    .slice(1)
+    .map((block) => {
+      const [key, ...body] = block.split('\n');
+      return [key.trim(), body.join('\n').trim()];
+    }),
+);
+
+function v4WriteTemplate(sections: readonly V4SectionKey[]): string {
+  const tasks = sections.map((key, n) => {
+    const task = V4_SECTION_TASKS[key];
+    if (!task) throw new Error(`No instructions for report section ${key}`);
+    return `${n + 1}. ${task}`;
+  });
+  return V4_HEAD + compatibilityV4TasksWriteMd.replace('{{SECTION_TASKS}}', tasks.join('\n')) + compatibilityRulesMd;
+}
 
 interface CompatibilityPromptPerson {
   name: string;
@@ -309,6 +359,14 @@ export function buildCompatibilityPromptV3(
   relationshipType: RelationshipType,
   scoreContext: CompatibilityScoreContext,
 ): string {
+  return renderPrompt(COMPATIBILITY_V3_TEMPLATE, {
+    ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
+    ...partnerContextVars(person1, person2),
+  });
+}
+
+/** Thai day personalities and the partner's MBTI tendencies (compatibility-v3-context.md), shared by v3 and v4. */
+function partnerContextVars(person1: CompatibilityPromptPerson, person2: CompatibilityPromptPerson) {
   const partnerInfo = person2.mbtiType ? getMbtiInfo(person2.mbtiType) : undefined;
   const partnerCognitive = person2.mbtiType ? getMbtiCognitiveFunctions(person2.mbtiType) : undefined;
   if (person2.mbtiType && (!partnerInfo || !partnerCognitive)) {
@@ -317,9 +375,7 @@ export function buildCompatibilityPromptV3(
   const missingMbti = [!person1.mbtiType ? 'คุณ' : null, !person2.mbtiType ? person2.name : null]
     .filter((who): who is string => who !== null)
     .join(' และ ');
-
-  return renderPrompt(COMPATIBILITY_V3_TEMPLATE, {
-    ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
+  return {
     p1Personality: person1.thaiAstrology.personality,
     p2Personality: person2.thaiAstrology.personality,
     p2MbtiNameTh: partnerInfo?.nameTh ?? '',
@@ -328,6 +384,115 @@ export function buildCompatibilityPromptV3(
     p2MbtiStrengths: partnerCognitive?.strengths ?? '',
     p2MbtiWeaknesses: partnerCognitive?.weaknesses ?? '',
     missingMbti,
+  };
+}
+
+// ---------------------------------------------------------------- v4 report
+
+const BRANCH_RELATION_TH: Record<BranchRelation, string> = {
+  combine: 'เป็นคู่ประสานกัน ดึงเข้าหากันเอง',
+  trine: 'อยู่กลุ่มพลังเดียวกัน ร่วมมือกันง่าย',
+  same: 'เป็นนักษัตรเดียวกัน มองหลายเรื่องคล้ายกัน',
+  neutral: 'ไม่มีแรงดึงหรือแรงปะทะพิเศษ ความสัมพันธ์ขึ้นกับสิ่งที่ทำมากกว่าดวง',
+  harm: 'มีแรงบั่นทอนกันแบบเงียบ ๆ ความน้อยใจสะสมง่าย',
+  clash: 'ปะทะกันตรง ๆ ดึงดูดแรงแต่ขัดกันแรง',
+};
+const YEAR_RELATION_TH: Record<BranchRelation, string> = { ...BRANCH_RELATION_TH, clash: 'ปะทะกัน (ปีชงกัน) จังหวะชีวิตสวนทางกันง่าย' };
+const DIMENSION_INPUT_TH: Record<DimensionInput, string> = {
+  dayBranch: 'ตำแหน่งคู่ในดวง',
+  yearBranch: 'ปีนักษัตร',
+  element: 'ธาตุ',
+  stemCombine: 'เจ้าวันประสานกัน',
+  mbti: 'MBTI ของทั้งสองคน',
+};
+const MONTH_LABEL_TH: Record<MonthLabel, string> = { good: 'ดี', mixed: 'กลาง', caution: 'ระวัง' };
+const MONTH_REASON_TH: Record<string, (who: string) => string> = {
+  resource: (who) => `ธาตุประจำเดือนหนุนเจ้าวันของ${who}`,
+  companion: (who) => `ธาตุประจำเดือนเป็นพวกเดียวกับเจ้าวันของ${who}`,
+  output: (who) => `เดือนนี้${who}แสดงออกได้ง่าย`,
+  pressure: (who) => `ธาตุประจำเดือนกดดันเจ้าวันของ${who}`,
+  combine: (who) => `นักษัตรประจำเดือนประสานกับนักษัตรวันเกิดของ${who}`,
+  trine: (who) => `นักษัตรประจำเดือนอยู่กลุ่มเดียวกับนักษัตรวันเกิดของ${who}`,
+  harm: (who) => `นักษัตรประจำเดือนบั่นทอนนักษัตรวันเกิดของ${who}`,
+  clash: (who) => `นักษัตรประจำเดือนปะทะนักษัตรวันเกิดของ${who}`,
+};
+
+/** The future chapter's title and the next step it times, per relationship stage. */
+export const V4_FUTURE_BY_RELATIONSHIP: Record<RelationshipType, { title: string; nextStep: string }> = {
+  talking: { title: 'สัญญาณว่าไปต่อได้และจังหวะขยับ', nextStep: 'ชวนออกไปเจอกันหรือคุยให้ชัดว่าเป็นอะไรกัน' },
+  romantic: { title: 'สิ่งที่ทำให้อยู่ยาว', nextStep: 'คุยเรื่องใหญ่ของความสัมพันธ์ เช่น อนาคตหรือการตัดสินใจร่วมกัน' },
+  friend: { title: 'มิตรภาพระยะยาว', nextStep: 'ชวนทำแผนใหญ่ด้วยกันหรือคุยเรื่องที่ค้างใจ' },
+  boss: { title: 'โตไปด้วยกันในงาน', nextStep: 'ขอคุยเรื่องขอบเขตงานหรือเรื่องเงินเดือน' },
+  coworker: { title: 'โตไปด้วยกันในงาน', nextStep: 'ตกลงบทบาทหรือขอบเขตงานร่วมกัน' },
+  family: { title: 'ขอบเขตที่รักษาความสัมพันธ์', nextStep: 'บอกขอบเขตที่คุณต้องการ' },
+};
+
+const band = (score: number) => (score >= 75 ? 'เด่น' : score >= 60 ? 'ดี' : score >= 45 ? 'กลาง' : 'ต้องใส่ใจ');
+
+function elementRelationTh(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPerson): string {
+  const a = p1.baziChart.element;
+  const b = p2.baziChart.element;
+  if (a === b) return 'ธาตุเดียวกัน';
+  if (ELEMENT_PRODUCING[a] === b) return `ธาตุของคุณหนุนธาตุของ${p2.name}`;
+  if (ELEMENT_PRODUCING[b] === a) return `ธาตุของ${p2.name}หนุนธาตุของคุณ`;
+  if (ELEMENT_CONTROLLING[a] === b) return `ธาตุของคุณข่มธาตุของ${p2.name}`;
+  return `ธาตุของ${p2.name}ข่มธาตุของคุณ`;
+}
+
+const thaiMonth = (month: string) => {
+  const [year, m] = month.split('-').map(Number);
+  return `${THAI_MONTHS_FULL[m - 1]} ${toBuddhistYear(year)}`;
+};
+
+export interface V4ReportFacts {
+  score: number;
+  inputs: PairInputs;
+  dimensions: Dimension[];
+  archetype: PairArchetype;
+  calendar: CalendarMonth[];
+  bestMonth: CalendarMonth;
+}
+
+/**
+ * Compatibility report v4, one prompt per generation step: 'plan' asks for
+ * the insight plan; a list of sections asks for those sections of the report.
+ * The section calls run in parallel and all see the same facts and insights.
+ */
+export function buildCompatibilityPromptV4(
+  step: 'plan' | readonly V4SectionKey[],
+  person1: CompatibilityPromptPerson,
+  person2: CompatibilityPromptPerson,
+  relationshipType: RelationshipType,
+  scoreContext: CompatibilityScoreContext,
+  facts: V4ReportFacts,
+  insights: Array<{ text: string; basis: string[]; chapter: string }> = [],
+): string {
+  const who = (w: 'reader' | 'partner') => (w === 'reader' ? 'คุณ' : person2.name);
+  const future = V4_FUTURE_BY_RELATIONSHIP[relationshipType];
+  return renderPrompt(step === 'plan' ? V4_PLAN_TEMPLATE : v4WriteTemplate(step), {
+    ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
+    ...partnerContextVars(person1, person2),
+    score: facts.score,
+    archetypeName: facts.archetype.name,
+    archetypeTagline: facts.archetype.tagline,
+    dayRelationTh: BRANCH_RELATION_TH[facts.inputs.dayRelation],
+    yearRelationTh: YEAR_RELATION_TH[facts.inputs.yearRelation],
+    elementRelationTh: elementRelationTh(person1, person2),
+    stemCombine: facts.inputs.stemCombine,
+    dimensionList: facts.dimensions
+      .map((d) => `  - ${d.key} ${d.label} ${d.score}/100 (${band(d.score)}) คำนวณจาก ${d.basis.map((b) => DIMENSION_INPUT_TH[b]).join(' และ ')}`)
+      .join('\n'),
+    calendarList: facts.calendar
+      .map((m, i) => {
+        const reasons = m.reasons.map((r) => MONTH_REASON_TH[r.relation](who(r.who))).join(' และ ');
+        return `  - month${i + 1} ${m.month} (${thaiMonth(m.month)}): ${MONTH_LABEL_TH[m.label]}${reasons ? ` เพราะ ${reasons}` : ' ไม่มีแรงหนุนหรือแรงกดดันพิเศษ'}`;
+      })
+      .join('\n'),
+    nextStepKind: future.nextStep,
+    bestMonthKey: facts.bestMonth.month,
+    bestMonthTh: thaiMonth(facts.bestMonth.month),
+    futureTitle: future.title,
+    insightList: insights.map((i, n) => `  ${n + 1}. [${i.chapter}] ${i.text} (อ้างอิง ${i.basis.join(', ')})`).join('\n'),
   });
 }
 

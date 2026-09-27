@@ -1,9 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  birthDataInventory,
   elementCreditedToPlanet,
   foreignElementWords,
+  guessesPartnerView,
   mapStrings,
+  mixesPronouns,
+  stockLine,
+  thaiWordCount,
   tightenNameSpacing,
+  wrongGenderWords,
 } from '../src/lib/compatibility-text';
 
 describe('foreignElementWords', () => {
@@ -60,5 +66,43 @@ describe('mapStrings', () => {
       b: ['Y', { c: 'Z' }],
       n: 1,
     });
+  });
+});
+
+describe('v4 prose checks', () => {
+  test('idioms around element words are not elements', () => {
+    expect(foreignElementWords('ช่วงนี้คุณหมดไฟกับงาน แต่เป็นคนติดดิน และเป็นเด็กไฟแรง', ['water'])).toEqual([]);
+  });
+
+  test('gendered words must match the reader; คะแนน is not คะ', () => {
+    expect(wrongGenderWords('หนูเข้าใจว่าแม่ห่วง', 'male')).toEqual(['หนู']);
+    expect(wrongGenderWords('ผมขอคุยหน่อยครับ', 'female')).toEqual(['ผม', 'ครับ']);
+    expect(wrongGenderWords('คะแนนด้านนี้ของคุณดี', null)).toEqual([]);
+  });
+
+  test('a line that mixes เรา with หนู is flagged', () => {
+    expect(mixesPronouns('เรามีเรื่องหนึ่งที่หนูเก็บไว้')).toBe(true);
+    expect(mixesPronouns('เราอยากคุยเรื่องนี้')).toBe(false);
+  });
+
+  test('a birth-data inventory is caught, a single data point is not', () => {
+    expect(birthDataInventory('ต้นเป็นเจ้าวันไฟหยิน ธาตุไฟ เกิดวันอังคาร ดาวอังคาร จึงมักเดินหน้าเร็ว')).not.toBeNull();
+    expect(birthDataInventory('ธาตุไฟของต้นกับธาตุทองของคุณหนุนกัน')).toBeNull();
+  });
+
+  test('a guess at how the partner reads the reader is caught; the reader reading the partner is not', () => {
+    expect(guessesPartnerView('เพราะต้นอาจอ่านว่าคุณไม่แคร์', 'ต้น')).toBe('ต้นอาจอ่าน');
+    expect(guessesPartnerView('เธอมองว่าความเงียบคือความเสี่ยง', 'คุณวิภา')).toBe('เธอมองว่า');
+    expect(guessesPartnerView('คุณมักตีความความเงียบของบีมผิด', 'บีม')).toBeNull();
+  });
+
+  test('stock advice from the samples is caught', () => {
+    expect(stockLine('อย่าคุยตอนเหนื่อยหรือหิว')).toBe('เหนื่อยหรือหิว');
+    expect(stockLine('ลองคุยสรุปสัปดาห์ละครั้ง')).toBe('สัปดาห์ละครั้ง');
+    expect(stockLine('ส่งข้อความหาต้นก่อนประชุมวันพฤหัส')).toBeNull();
+  });
+
+  test('thaiWordCount counts words, not characters', () => {
+    expect(thaiWordCount('คุณกับต้นคุยกันได้ดี')).toBeLessThan(10);
   });
 });

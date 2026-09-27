@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { CompatibilityV4Content, CompatibilityV4Shaped } from './compatibility-v4';
 
 /**
  * Compatibility reading v3: one generation, two views.
@@ -57,7 +58,8 @@ export function foreignTokenIn(text: string): string | null {
   return match ? match[0] : null;
 }
 
-const thaiProse = (min: number, max: number) =>
+/** A Thai prose field: trimmed, bounded, and free of non-Thai words except MBTI codes. */
+export const thaiProse = (min: number, max: number) =>
   z
     .string()
     .trim()
@@ -156,16 +158,27 @@ export type CompatibilityV3Shaped = Omit<CompatibilityV3Content, 'detail'> & {
 };
 
 /**
- * The one place that decides what a view contains. The server must call this
- * before responding, so a teaser response never carries the detail text.
+ * The one place that decides what a view contains, for v3 and v4. The server
+ * must call this before responding, so a teaser response never carries paid
+ * text. Each teaser is an allowlist, not a spread-and-delete: a field added to
+ * the content later stays out of the teaser until someone decides it belongs.
  */
+export function shapeCompatibilityView(content: CompatibilityV3Content, view: CompatibilityView): CompatibilityV3Shaped;
+export function shapeCompatibilityView(content: CompatibilityV4Content, view: CompatibilityView): CompatibilityV4Shaped;
 export function shapeCompatibilityView(
-  content: CompatibilityV3Content,
+  content: CompatibilityV3Content | CompatibilityV4Content,
   view: CompatibilityView,
-): CompatibilityV3Shaped {
+): CompatibilityV3Shaped | CompatibilityV4Shaped {
   if (view === 'full') return content;
-  // An allowlist, not a spread-and-delete: a field added to the content later
-  // stays out of the teaser view until someone decides it belongs there.
+  if (content.contentVersion === 4) {
+    return {
+      contentVersion: content.contentVersion,
+      generatedOn: content.generatedOn,
+      archetype: content.archetype,
+      cover: content.cover,
+      dimensions: content.dimensions.map(({ key, label, score }) => ({ key, label, score })),
+    };
+  }
   return {
     contentVersion: content.contentVersion,
     scoreExplanation: content.scoreExplanation,

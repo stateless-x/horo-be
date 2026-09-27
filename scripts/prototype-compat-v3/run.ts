@@ -33,7 +33,9 @@ import {
   calculateCompatibilityCharts,
   generateCompatibilityV2,
   generateCompatibilityV3,
+  generateCompatibilityV4,
 } from '../../src/lib/compatibility-generation';
+import { thaiWordCount } from '../../src/lib/compatibility-text';
 
 type Fixture = (typeof COMPATIBILITY_DEV_FIXTURES)[number];
 
@@ -167,16 +169,20 @@ function autoChecks(f: Fixture, score: number, content: Record<string, unknown>)
   return { flags, maxSectionOverlap: Math.round(maxSectionOverlap * 100) / 100 };
 }
 
-async function runOnce(f: Fixture, arch: 'v2' | 'v3', run: number) {
+async function runOnce(f: Fixture, arch: 'v2' | 'v3' | 'v4', run: number) {
   attemptLog = [];
   let modelCalls = 0;
   const t0 = performance.now();
-  const generate = arch === 'v2' ? generateCompatibilityV2 : generateCompatibilityV3;
+  const generate = { v2: generateCompatibilityV2, v3: generateCompatibilityV3, v4: generateCompatibilityV4 }[arch];
   try {
     const result = await generate({ ...inputOf(f), onModelCall: () => modelCalls++ });
     const content = result.content as unknown as Record<string, unknown>;
+    const v4 = 'qualityFlags' in result ? result : null;
     return {
       fixture: f.id, arch, run, totalMs: Math.round(performance.now() - t0), modelCalls,
+      timings: result.timings,
+      qualityFlags: v4?.qualityFlags,
+      detailWords: v4?.content.chapters.map((c) => `${c.key}:${thaiWordCount(c.detail)}`),
       attempts: attemptLog.map(({ text: _text, ...a }) => a),
       firstTryPass: modelCalls === 1, finalPass: true,
       firstTryError: arch === 'v3' && modelCalls > 1 ? firstReplyIssue(attemptLog[0]) : undefined,
@@ -204,7 +210,7 @@ const arg = (name: string, fallback: string) => {
 };
 const RUNS = Number(arg('--runs', '1'));
 const OUT = arg('--out', '');
-const ONLY = arg('--only', 'v2,v3').split(',') as Array<'v2' | 'v3'>;
+const ONLY = arg('--only', 'v2,v3').split(',') as Array<'v2' | 'v3' | 'v4'>;
 if (!OUT) throw new Error('--out <dir> is required (outputs never go into the repo)');
 
 const printId = arg('--print-prompt', '');
@@ -230,6 +236,8 @@ for (let run = 1; run <= RUNS; run++) {
         `[run ${run}] ${f.id.padEnd(26)} ${arch} ${String(rec.totalMs).padStart(6)}ms calls=${rec.modelCalls} ` +
           `out_tokens=${tokens} finish=${rec.attempts.map((a) => a.finishReason).join(',')} ` +
           `first=${rec.firstTryPass} final=${rec.finalPass}` +
+          `${'timings' in rec && rec.timings ? ` timings=${JSON.stringify(rec.timings)}` : ''}` +
+          `${'qualityFlags' in rec && rec.qualityFlags?.length ? ` quality=${rec.qualityFlags.length}` : ''}` +
           `${rec.error ? ` error=${rec.error.slice(0, 160)}` : ''}${rec.firstTryError ? ` firstErr=${rec.firstTryError.slice(0, 160)}` : ''}`,
       );
       writeFileSync(join(OUT, 'results.json'), JSON.stringify({ fixtures: COMPATIBILITY_DEV_FIXTURES, records }, null, 2));

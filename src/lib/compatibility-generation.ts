@@ -1,4 +1,14 @@
-import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
+import {
+  bestMonth,
+  calculateBazi,
+  calculateThaiAstrology,
+  calculateCompatibility,
+  calculateDimensions,
+  DIMENSION_LABELS,
+  pairInputs,
+  relationshipCalendar,
+  selectArchetype,
+} from '../../lib/astrology';
 import { z } from 'zod';
 import {
   CompatibilityStructuredContentSchema,
@@ -7,17 +17,43 @@ import {
   TOKEN_LIMITS,
   type CompatibilityStructuredContent,
   type CompatibilityV3Content,
+  type CompatibilityV4Content,
+  CompatibilityV4ContentSchema,
+  duplicateInsights,
+  type Element,
   type Gender,
+  V4AllSectionsSchema,
+  V4_CHAPTER_KEYS,
+  type V4ChapterKey,
+  type V4SectionKey,
+  type V4Sections,
+  type V4InsightPlan,
+  type V4MonthLabel,
   type MbtiType,
   type RelationshipType,
 } from '../../lib/shared';
-import { buildCompatibilityPrompt, buildCompatibilityPromptV3 } from './prompts';
+import { buildCompatibilityPrompt, buildCompatibilityPromptV3, buildCompatibilityPromptV4, V4_FUTURE_BY_RELATIONSHIP } from './prompts';
 import {
   generateStructuredCompatibilityReading,
   generateStructuredCompatibilityReadingV3,
+  generateCompatibilityV4Plan,
+  generateCompatibilityV4Sections,
+  V4_SPLIT,
   type OnModelCall,
 } from './llm';
-import { elementCreditedToPlanet, foreignElementWords, mapStrings, tightenNameSpacing } from './compatibility-text';
+import {
+  birthDataInventory,
+  elementCreditedToPlanet,
+  foreignElementWords,
+  guessesPartnerView,
+  mapStrings,
+  mixesPronouns,
+  stockLine,
+  stringLeaves,
+  thaiWordCount,
+  tightenNameSpacing,
+  wrongGenderWords,
+} from './compatibility-text';
 
 /**
  * Compatibility generation from birth data alone: deterministic charts and
@@ -62,6 +98,32 @@ export function calculateCompatibilityCharts(reader: CompatibilityReaderInput, p
 
 export type CompatibilityCharts = ReturnType<typeof calculateCompatibilityCharts>;
 
+function promptPeople(reader: CompatibilityReaderInput, partner: CompatibilityPartnerInput, charts: CompatibilityCharts) {
+  return {
+    person1: {
+      name: 'เจ้า',
+      gender: reader.gender,
+      birthDate: reader.birthDate,
+      baziChart: charts.readerBazi,
+      thaiAstrology: charts.readerThai,
+      mbtiType: reader.mbtiType,
+    },
+    person2: {
+      name: partner.name,
+      birthDate: partner.birthDate,
+      baziChart: charts.partnerBazi,
+      thaiAstrology: charts.partnerThai,
+      mbtiType: partner.mbtiType,
+    },
+    scoreContext: {
+      score: charts.score.score,
+      scoreExplanation: charts.score.overallAnalysis,
+      strengths: charts.score.strengths,
+      challenges: charts.score.challenges,
+    },
+  };
+}
+
 export function buildCompatibilityPromptFor(
   version: 'v2' | 'v3',
   reader: CompatibilityReaderInput,
@@ -69,27 +131,7 @@ export function buildCompatibilityPromptFor(
   relationshipType: RelationshipType,
   charts: CompatibilityCharts,
 ): string {
-  const person1 = {
-    name: 'เจ้า',
-    gender: reader.gender,
-    birthDate: reader.birthDate,
-    baziChart: charts.readerBazi,
-    thaiAstrology: charts.readerThai,
-    mbtiType: reader.mbtiType,
-  };
-  const person2 = {
-    name: partner.name,
-    birthDate: partner.birthDate,
-    baziChart: charts.partnerBazi,
-    thaiAstrology: charts.partnerThai,
-    mbtiType: partner.mbtiType,
-  };
-  const scoreContext = {
-    score: charts.score.score,
-    scoreExplanation: charts.score.overallAnalysis,
-    strengths: charts.score.strengths,
-    challenges: charts.score.challenges,
-  };
+  const { person1, person2, scoreContext } = promptPeople(reader, partner, charts);
   return version === 'v2'
     ? buildCompatibilityPrompt(person1, person2, relationshipType, scoreContext)
     : buildCompatibilityPromptV3(person1, person2, relationshipType, scoreContext);
@@ -195,4 +237,230 @@ export async function generateCompatibilityV3(
     prompt,
     timings: { calcMs: Math.round(llmStart - calcStart), llmMs: Math.round(llmEnd - llmStart) },
   };
+}
+
+// ---------------------------------------------------------------- v4 report
+
+const CHAPTER_TITLES = (partnerName: string, relationshipType: RelationshipType): Record<V4ChapterKey, string> => ({
+  attraction: 'แรงดึงดูด',
+  partner: `ตัวตนของ${partnerName}ในความสัมพันธ์นี้`,
+  you: 'ตัวคุณในความสัมพันธ์นี้',
+  communication: 'การสื่อสาร',
+  friction: 'จุดเสียดทานและวิธีคืนดี',
+  future: V4_FUTURE_BY_RELATIONSHIP[relationshipType].title,
+});
+
+const DETAIL_WORDS = { min: 100, max: 300 };
+const GENERIC_VERDICT = /^(?:ดวงคู่นี้|คู่นี้|ความสัมพันธ์นี้)\s*(?:ไปได้|ไปด้วยกันได้|มีพื้นฐาน|เข้ากันได้)/;
+const SPOUSE_PALACE = /ตำแหน่งคู่|นักษัตรวันเกิด/;
+/** A hint that tells the reader what to try has given the chapter's answer away. */
+const HINT_GIVES_ANSWER = /ลอง(?!ผิด|ถูก)/;
+const LABEL_CONTRADICTION: Record<V4MonthLabel, RegExp | null> = {
+  good: /ระวัง|ไม่ดี|ไม่เหมาะ/,
+  mixed: null,
+  caution: /เดือนดี|ดีมาก|ราบรื่น/,
+};
+
+type Issue = [path: string, message: string];
+
+/** Rules every prose field must pass: correct elements, nothing credited to a planet, the reader's gender. */
+function factIssues(entries: Array<[string, string]>, allowedFor: (path: string) => Element[], gender: Gender | null): Issue[] {
+  const issues: Issue[] = [];
+  for (const [path, text] of entries) {
+    const foreign = foreignElementWords(text, allowedFor(path));
+    if (foreign.length) issues.push([path, `Names element ${foreign.join(', ')}, which neither person has`]);
+    const credited = elementCreditedToPlanet(text);
+    if (credited) issues.push([path, `"${credited}" credits an element to a planet; elements come from Bazi, planets from Thai astrology`]);
+    const wrong = wrongGenderWords(text, gender);
+    if (wrong.length) issues.push([path, `Uses ${wrong.join(', ')}, which does not match the reader's gender`]);
+  }
+  return issues;
+}
+
+/** Quality rules worth one repair: see generateValidatedCompatibilityJson's softCheck. */
+function qualityIssues(entries: Array<[string, string]>, partnerName: string): string[] {
+  const issues: string[] = [];
+  const personal = new RegExp(`${partnerName}|${Object.values(DIMENSION_LABELS).join('|')}`);
+  for (const [path, text] of entries) {
+    const inventory = birthDataInventory(text);
+    if (inventory) issues.push(`${path}: lists birth data in one breath ("${inventory.slice(0, 40)}"); mention one data point per sentence, only as a reason`);
+    const guess = guessesPartnerView(text, partnerName);
+    if (guess) issues.push(`${path}: "${guess}" says how ${partnerName} reads you; describe what ${partnerName} tends to do or need instead`);
+    const stock = stockLine(text);
+    if (stock) issues.push(`${path}: "${stock}" is stock advice that fits anyone; make it specific to this pair`);
+    if (path.endsWith('.detail')) {
+      const words = thaiWordCount(text);
+      if (words < DETAIL_WORDS.min) issues.push(`${path}: ${words} words; write about 120 to 220`);
+      if (words > DETAIL_WORDS.max) issues.push(`${path}: ${words} words; keep it to about 220`);
+    }
+    if (/\.move$|^plan\.\d+\.action$/.test(path) && !personal.test(text)) {
+      issues.push(`${path}: names nothing specific to this pair; tie it to ${partnerName} or one of the scores`);
+    }
+    if (/\.lines\.\d+$|\.repair$|conversationStarter$/.test(path) && mixesPronouns(text)) {
+      issues.push(`${path}: mixes เรา with หนู or ดิฉัน in one line; pick one`);
+    }
+  }
+  return issues;
+}
+
+export interface CompatibilityV4Generation {
+  content: CompatibilityV4Content;
+  charts: CompatibilityCharts;
+  prompt: string;
+  timings: { calcMs: number; llmMs: number; planMs: number; partsMs: number };
+  /** Quality rules still failing after each call's one repair turn. */
+  qualityFlags: string[];
+}
+
+/**
+ * Compatibility report v4. The facts (dimension scores, archetype, month
+ * labels) are computed first. Then one short call plans 6 to 8 distinct
+ * insights, and the section calls in V4_SPLIT write the report in parallel
+ * from the same facts and insights. The insight plan is what keeps the parts
+ * consistent: the cover's hints and every chapter draw on the same list.
+ */
+export async function generateCompatibilityV4(
+  input: GenerateCompatibilityInput & { now?: Date },
+): Promise<CompatibilityV4Generation> {
+  const now = input.now ?? new Date();
+  const calcStart = performance.now();
+  const charts = calculateCompatibilityCharts(input.reader, input.partner);
+  const inputs = pairInputs(charts.readerBazi, charts.partnerBazi, input.reader.mbtiType, input.partner.mbtiType);
+  const calendar = relationshipCalendar(charts.readerBazi, charts.partnerBazi, now);
+  const facts = {
+    score: charts.score.score,
+    inputs,
+    dimensions: calculateDimensions(inputs),
+    archetype: selectArchetype(inputs),
+    calendar,
+    bestMonth: bestMonth(calendar),
+  };
+  const { person1, person2, scoreContext } = promptPeople(input.reader, input.partner, charts);
+  const build = (step: 'plan' | readonly V4SectionKey[], insights?: V4InsightPlan['insights']) =>
+    buildCompatibilityPromptV4(step, person1, person2, input.relationshipType, scoreContext, facts, insights);
+  const partnerName = input.partner.name;
+  const pairElements: Element[] = [charts.readerBazi.element, charts.partnerBazi.element];
+  const gender = input.reader.gender;
+
+  const planPrompt = build('plan');
+  const llmStart = performance.now();
+  const plan = await generateCompatibilityV4Plan(planPrompt, {
+    onModelCall: input.onModelCall,
+    pairCheck: (content, ctx) => {
+      const unavailable = new Set<string>([
+        ...(input.reader.mbtiType ? [] : ['readerMbti']),
+        ...(input.partner.mbtiType ? [] : ['partnerMbti']),
+        ...(inputs.stemCombine ? [] : ['stemCombine']),
+      ]);
+      content.insights.forEach((insight, i) => {
+        const bad = insight.basis.filter((b) => unavailable.has(b));
+        if (bad.length) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['insights', i, 'basis'], message: `${bad.join(', ')} is not in this pair's data` });
+        }
+      });
+    },
+  });
+  const planEnd = performance.now();
+
+  const toIssues = (issues: Issue[], ctx: z.RefinementCtx) => {
+    for (const [path, message] of issues) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message });
+  };
+  const monthElement = (path: string) => calendar[Number(path.split('.')[1])].monthElement;
+  const pairCheck = (content: Partial<V4Sections>, ctx: z.RefinementCtx) => {
+    toIssues(
+      factIssues(
+        stringLeaves(content).filter(([path]) => !path.endsWith('.month')),
+        (path) => (path.startsWith('calendar.') ? [...pairElements, monthElement(path)] : pairElements),
+        gender,
+      ),
+      ctx,
+    );
+    content.calendar?.forEach((entry, i) => {
+      if (entry.month !== calendar[i].month) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['calendar', i, 'month'], message: `must be ${calendar[i].month}` });
+      }
+    });
+    if (content.future && content.future.nextStep.month !== facts.bestMonth.month) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['future', 'nextStep', 'month'], message: `must be ${facts.bestMonth.month}` });
+    }
+    for (const dim of content.overview ? facts.dimensions : []) {
+      const line = content.overview!.dimensionLines[dim.key];
+      const path = ['overview', 'dimensionLines', dim.key];
+      if (!dim.basis.includes('mbti') && /MBTI|[IE][NS][TF][JP]/.test(line)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: 'mentions MBTI, but this score was not computed from MBTI' });
+      }
+      if ((dim.score < 45 && /เด่น|สูงมาก|ดีมาก/.test(line)) || (dim.score >= 75 && /ต่ำ|อ่อนแอ|น่าห่วง/.test(line))) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `contradicts the score ${dim.score}` });
+      }
+    }
+  };
+  const softCheck = (content: Partial<V4Sections>) => {
+    const issues = qualityIssues(stringLeaves(content), partnerName);
+    if (content.cover && !content.cover.verdict.includes(partnerName)) {
+      issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
+    }
+    if (content.cover && GENERIC_VERDICT.test(content.cover.verdict)) issues.push('cover.verdict: opens with a line that fits any pair');
+    content.calendar?.forEach((entry, i) => {
+      // Soft: a regex can't tell "เดือนดี" from "ยังไม่ใช่เดือนดี", and the label itself is shown from the computation.
+      if (LABEL_CONTRADICTION[calendar[i].label]?.test(entry.text)) {
+        issues.push(`calendar.${i}.text: reads against the computed label (${calendar[i].label}); explain that label`);
+      }
+    });
+    content.cover?.lockedHints.forEach((hint, i) => {
+      if (HINT_GIVES_ANSWER.test(hint.text)) {
+        issues.push(`cover.lockedHints.${i}.text: already says what to do ("ลอง..."); tease the moment, keep the answer for the chapter`);
+      }
+    });
+    if (content.attraction && !SPOUSE_PALACE.test(content.attraction.detail)) {
+      issues.push('attraction.detail: give the astrological reason with ตำแหน่งคู่ในดวง or นักษัตรวันเกิด');
+    }
+    return issues;
+  };
+
+  const sectionPrompts = V4_SPLIT.map((sections) => build(sections, plan.data.insights));
+  const parts = await Promise.all(
+    V4_SPLIT.map((sections, i) =>
+      generateCompatibilityV4Sections(sectionPrompts[i], sections, { onModelCall: input.onModelCall, pairCheck, softCheck }),
+    ),
+  );
+  const llmEnd = performance.now();
+
+  const sections = V4AllSectionsSchema.parse(Object.assign({}, ...parts.map((part) => part.data)));
+  const titles = CHAPTER_TITLES(partnerName, input.relationshipType);
+  const content = CompatibilityV4ContentSchema.parse(
+    mapStrings(
+      {
+        contentVersion: 4,
+        generatedOn: bangkokDate(now),
+        archetype: facts.archetype,
+        dimensions: facts.dimensions,
+        cover: sections.cover,
+        overview: sections.overview,
+        chapters: V4_CHAPTER_KEYS.map((key) => ({ key, title: titles[key], ...sections[key] })),
+        calendar: calendar.map((month, i) => ({ month: month.month, label: month.label, text: sections.calendar[i].text })),
+        plan: sections.plan,
+        insights: plan.data.insights,
+      },
+      (text) => tightenNameSpacing(text, partnerName),
+    ),
+  );
+  return {
+    content,
+    charts,
+    prompt: [planPrompt, ...sectionPrompts].join('\n\n==========\n\n'),
+    timings: {
+      calcMs: Math.round(llmStart - calcStart),
+      llmMs: Math.round(llmEnd - llmStart),
+      planMs: Math.round(planEnd - llmStart),
+      partsMs: Math.round(llmEnd - planEnd),
+    },
+    qualityFlags: [
+      ...duplicateInsights(plan.data.insights).map((key) => `insights: two insights cite the same data for ${key}`),
+      ...parts.flatMap((part) => part.softIssues),
+    ],
+  };
+}
+
+function bangkokDate(now: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 }
