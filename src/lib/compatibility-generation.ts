@@ -56,6 +56,7 @@ import {
   chartSilence,
   elementCreditedToPlanet,
   elementsNamed,
+  escapeRegExp,
   fixKnownTypos,
   foreignElementWords,
   guessesPartnerView,
@@ -319,7 +320,7 @@ function factIssues(
 /** Quality rules worth one repair: see generateValidatedCompatibilityJson's softCheck. */
 function qualityIssues(entries: Array<[string, string]>, partnerName: string): string[] {
   const issues: string[] = [];
-  const personal = new RegExp(`${partnerName}|${Object.values(DIMENSION_LABELS).join('|')}`);
+  const personal = new RegExp(`${escapeRegExp(partnerName)}|${Object.values(DIMENSION_LABELS).join('|')}`);
   for (const [path, text] of entries) {
     const inventory = birthDataInventory(maskName(text, partnerName));
     if (inventory) issues.push(`${path}: lists birth data in one breath ("${inventory.slice(0, 40)}"); mention one data point per sentence, only as a reason`);

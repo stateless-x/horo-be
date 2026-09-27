@@ -75,7 +75,8 @@ export function elementCreditedToPlanet(text: string): string | null {
 /** Words that bind to the following noun, so a space after them before the name is an artifact. */
 const BINDING_WORDS = ['ของ', 'กับ', 'ให้', 'ว่า', 'ถึง', 'ต่อ', 'จาก', 'แก่', 'ใน', 'ชวน', 'ถาม', 'บอก'];
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** `value` as a literal RegExp source. Every pattern built from a person's name goes through it. */
+export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Thai planet names that follow ดาว: ดาวอังคาร is the planet even when the partner is called ดาว. */
 const PLANET_NAMES = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์', 'ราหู', 'เกตุ'];

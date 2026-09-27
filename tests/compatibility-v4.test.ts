@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   COMPATIBILITY_DEV_FIXTURES,
   type CompatibilityV4Content,
@@ -22,6 +22,9 @@ import { GenerationSingleFlight } from '../src/lib/generation-singleflight';
 import { historyItem, readingResponse, shareResponse, unlockReading, type CompatibilityRow } from '../src/systems/compatibility/reading';
 import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 import { ELEMENT_IMAGE } from '../src/lib/prompts';
+import { PRODUCT_PRICES } from '../src/lib/pricing';
+import { InsufficientBalance, wallet } from '../src/lib/wallet';
+import { INSUFFICIENT_BALANCE } from '../lib/shared/types/wallet';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -274,6 +277,25 @@ describe('partner names that are ordinary words', () => {
       expect(parseCompatibilityContent(JSON.stringify(stored))?.contentVersion).toBe(4);
     });
   }
+
+  // Names with regex characters. A balanced one built a wrong pattern in the detail stage's
+  // quality check (every move and plan action flagged as not naming the partner); an
+  // unbalanced one threw in the first section call, the free cover stage, and failed the check.
+  test('บีม (ตัวจริง): the detail checks match the name literally', async () => {
+    mockModel(() => renamed('บีม (ตัวจริง)'));
+    let calls = 0;
+    const full = await generateCompatibilityV4({ ...named('บีม (ตัวจริง)'), onModelCall: () => calls++ });
+    expect(full.qualityFlags).toEqual([]);
+    expect(calls).toBe(5);
+  });
+
+  test('(บีม: the free cover stage does not throw', async () => {
+    mockModel(() => renamed('(บีม'));
+    let calls = 0;
+    const { stored } = await generateCompatibilityV4Stored({ ...named('(บีม'), withDetail: false, onModelCall: () => calls++ });
+    expect(calls).toBe(2); // the plan and the cover, no repair
+    expect(stored.teaser.cover.verdict).toContain('(บีม');
+  });
 
   test('ดาว: a real jargon hint gets the repair, which names it', async () => {
     const good = renamed('ดาว');
@@ -562,16 +584,58 @@ describe('locked mode (teaser-first)', () => {
     expect(state.saves).toBe(0);
   });
 
-  test('with locking on and no credit, unlock is refused before any model call', async () => {
+  /**
+   * The wallet is replaced on the shared `wallet` object, so these run without a database;
+   * the ledger itself is tested on a real Postgres in tests/wallet.test.ts.
+   */
+  function stubWallet(spend: () => Promise<never>) {
+    const spies = [
+      spyOn(wallet, 'ensureWelcome').mockImplementation(async () => {}),
+      spyOn(wallet, 'spend').mockImplementation(spend),
+    ];
+    return { spies, restore: () => spies.forEach((spy) => spy.mockRestore()) };
+  }
+
+  test('with locking on and a balance of 0, unlock answers 402 with the wallet contract before any model call', async () => {
     config.compat = { lockEnabled: true, unlockFree: false };
-    countingModel();
-    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
-    const { store, state } = memoryStore(row(JSON.stringify(stored)));
-    const counter = countingModel();
-    const result = await unlockReading(unlockArgs(store));
-    expect(result.status).toBe(402);
-    expect(counter.calls).toBe(0);
-    expect(state.saves).toBe(0);
+    const stub = stubWallet(async () => {
+      throw new InsufficientBalance(0, PRODUCT_PRICES.compat_unlock);
+    });
+    try {
+      countingModel();
+      const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+      const { store, state } = memoryStore(row(JSON.stringify(stored)));
+      const counter = countingModel();
+      const result = await unlockReading(unlockArgs(store));
+      expect(result).toEqual({ status: 402, body: { error: INSUFFICIENT_BALANCE, balance: 0, price: 49 } });
+      expect(stub.spies[1]).toHaveBeenCalledWith('user-1', 'compat_unlock', 'row-1');
+      expect(counter.calls).toBe(0);
+      expect(state.saves).toBe(0);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('a row whose detail exists opens without touching the wallet, even at a balance of 0', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const stub = stubWallet(async () => {
+      throw new Error('the wallet must not be touched for an unlocked row');
+    });
+    try {
+      countingModel();
+      const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+      const { store, state } = memoryStore(row(JSON.stringify(stored)));
+      const counter = countingModel();
+      const result = await unlockReading(unlockArgs(store));
+      expect(result.status).toBe(200);
+      if (result.status !== 200) throw new Error('unreachable');
+      expect(result.body.locked).toBe(false);
+      for (const spy of stub.spies) expect(spy).not.toHaveBeenCalled();
+      expect(counter.calls).toBe(0);
+      expect(state.saves).toBe(0);
+    } finally {
+      stub.restore();
+    }
   });
 
   test('unlock writes the detail once and is idempotent after', async () => {

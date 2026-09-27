@@ -4,6 +4,7 @@ import {
   chartSilence,
   elementCreditedToPlanet,
   elementsNamed,
+  escapeRegExp,
   fixKnownTypos,
   foreignElementWords,
   guessesPartnerView,
@@ -180,6 +181,16 @@ describe('maskName', () => {
   test('a partner named ดาว is not an element credited to a planet or a birth-data run', () => {
     expect(elementCreditedToPlanet(maskName('ไฟของดาวทำให้บ้านอุ่น', 'ดาว'))).toBeNull();
     expect(birthDataInventory(maskName('เจ้าวันไฟ ธาตุไฟ ของดาว', 'ดาว'))).toBeNull();
+  });
+
+  test('names with regex characters become literal patterns', () => {
+    for (const name of ['บีม (ตัวจริง)', 'A+', 'น้อง*', '(บีม', '+1', 'a?b']) {
+      const pattern = new RegExp(escapeRegExp(name));
+      expect(pattern.test(`คุยกับ${name}แล้ว`)).toBe(true);
+      expect(maskName(`คุยกับ${name}แล้ว`, name)).toBe('คุยกับ(ชื่อ)แล้ว');
+      expect(guessesPartnerView(`${name}มองว่าคุณเงียบ`, name)).toBe(`${name}มองว่า`);
+    }
+    expect(new RegExp(escapeRegExp('A+')).test('AA')).toBe(false);
   });
 
   test('a name with regex characters is matched literally', () => {
