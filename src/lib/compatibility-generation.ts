@@ -59,7 +59,9 @@ import {
   fixKnownTypos,
   foreignElementWords,
   guessesPartnerView,
+  hintJargon,
   mapStrings,
+  maskName,
   mixesPronouns,
   stockLine,
   stringLeaves,
@@ -290,10 +292,18 @@ const HEADLINE = /^cover\.verdict$|^overview\.|^attraction\./;
 /**
  * Rules every prose field must pass: correct elements, nothing credited to a
  * planet, the reader's gender, and no silent-chart claim in the headline fields.
+ * They read the text with the partner's name masked (maskName): a partner
+ * called น้ำ is not the element water, and one called หนู is not a pronoun.
  */
-function factIssues(entries: Array<[string, string]>, allowedFor: (path: string) => Element[], gender: Gender | null): Issue[] {
+function factIssues(
+  entries: Array<[string, string]>,
+  allowedFor: (path: string) => Element[],
+  gender: Gender | null,
+  partnerName: string,
+): Issue[] {
   const issues: Issue[] = [];
-  for (const [path, text] of entries) {
+  for (const [path, written] of entries) {
+    const text = maskName(written, partnerName);
     const silent = HEADLINE.test(path) ? chartSilence(text) : null;
     if (silent) issues.push([path, `"${silent}" says the chart is silent; lead with the pair's first signal instead`]);
     const foreign = foreignElementWords(text, allowedFor(path));
@@ -311,7 +321,7 @@ function qualityIssues(entries: Array<[string, string]>, partnerName: string): s
   const issues: string[] = [];
   const personal = new RegExp(`${partnerName}|${Object.values(DIMENSION_LABELS).join('|')}`);
   for (const [path, text] of entries) {
-    const inventory = birthDataInventory(text);
+    const inventory = birthDataInventory(maskName(text, partnerName));
     if (inventory) issues.push(`${path}: lists birth data in one breath ("${inventory.slice(0, 40)}"); mention one data point per sentence, only as a reason`);
     const guess = guessesPartnerView(text, partnerName);
     if (guess) issues.push(`${path}: "${guess}" says how ${partnerName} reads you; describe what ${partnerName} tends to do or need instead`);
@@ -343,7 +353,7 @@ export function verdictIssues(verdict: string, partnerName: string, pairElements
   const issues: string[] = [];
   if (!verdict.includes(partnerName)) issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
   const anchored =
-    elementsNamed(verdict).some((element) => pairElements.includes(element)) || (anchorsOnRelations && RELATION_TERMS.test(verdict));
+    elementsNamed(maskName(verdict, partnerName)).some((element) => pairElements.includes(element)) || (anchorsOnRelations && RELATION_TERMS.test(verdict));
   if (!anchored) issues.push("cover.verdict: fits any pair; open with the pair's first signal as a concrete image");
   if (GENERIC_VERDICT.test(verdict)) issues.push('cover.verdict: a line that fits any pair or over-claims; say what is specific to this pair');
   return issues;
@@ -403,9 +413,22 @@ function v4Context(input: V4Input) {
         stringLeaves(content).filter(([path]) => !path.endsWith('.month')),
         (path) => (path.startsWith('calendar.') ? [...pairElements, monthElement(path)] : pairElements),
         gender,
+        partnerName,
       ).filter(([path, message]) => !message.startsWith(ELEMENT_ISSUE) || ELEMENT_CORE.test(path)),
       ctx,
     );
+    // A locked hint sells a moment, not a spec. Checked here rather than in the
+    // schema because a partner is often called ดาว, which is also the word for a planet.
+    content.cover?.lockedHints.forEach((hint, i) => {
+      const jargon = hintJargon(maskName(hint.text, partnerName));
+      if (jargon) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cover', 'lockedHints', i, 'text'],
+          message: `"${jargon}" is an astrology or MBTI term; a locked hint names a moment with this person in plain words`,
+        });
+      }
+    });
     content.calendar?.forEach((entry, i) => {
       if (entry.month !== calendar[i].month) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['calendar', i, 'month'], message: `must be ${calendar[i].month}` });
@@ -435,6 +458,7 @@ function v4Context(input: V4Input) {
       stringLeaves(content).filter(([p]) => !p.endsWith('.month') && !ELEMENT_CORE.test(p)),
       (p) => (p.startsWith('calendar.') ? [...pairElements, monthElement(p)] : pairElements),
       gender,
+      partnerName,
     )) {
       if (message.startsWith(ELEMENT_ISSUE)) issues.push(`${path}: ${message}`);
     }

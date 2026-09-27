@@ -77,6 +77,37 @@ const BINDING_WORDS = ['ของ', 'กับ', 'ให้', 'ว่า', 'ถ�
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** Thai planet names that follow ดาว: ดาวอังคาร is the planet even when the partner is called ดาว. */
+const PLANET_NAMES = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์', 'ราหู', 'เกตุ'];
+
+/** Stands in for the partner's name while the vocabulary checks run. */
+const NAME_MARK = '(ชื่อ)';
+
+/**
+ * `text` with the partner's name replaced by a neutral mark, so the vocabulary
+ * checks never read a name as a word. Thai nicknames are often ordinary words:
+ * ดาว (star, and the word for a planet), น้ำ, ไฟ, ทอง (element words). The
+ * reader is never named in the prompt (they are เจ้า), so only the partner is.
+ *
+ * Left as they are: the name right after ธาตุ or ดวง, or right before a planet
+ * name (ธาตุไฟ, ดวงดาว, ดาวอังคาร), which are the astrology words, not the
+ * person. The limit: when the name is itself an element word, a bare slip of
+ * that element ("ไฟ" alone for a pair without fire) reads as the name.
+ */
+export function maskName(text: string, name: string): string {
+  const pattern = new RegExp(`(?<!ธาตุ|ดวง)${escapeRegExp(name)}(?!${PLANET_NAMES.join('|')})`, 'g');
+  return text.replace(pattern, NAME_MARK);
+}
+
+/** Astrology vocabulary that turns a locked hint into a spec instead of a moment. */
+const HINT_JARGON = /ธาตุ|ดาว|วันเกิด|ปาจื้อ|โหรา|เจ้าวัน|นักษัตร|MBTI|[IE][NS][TF][JP]/;
+
+/** The astrology or MBTI term in a locked hint, or null. Run it on maskName's output. */
+export function hintJargon(text: string): string | null {
+  const match = text.match(HINT_JARGON);
+  return match ? match[0] : null;
+}
+
 /**
  * Removes the stray spaces the model puts around the partner's name inside a
  * Thai clause ("ให้ มายด์ เห็น" -> "ให้มายด์เห็น", "ของ คุณวิภาและ" ->

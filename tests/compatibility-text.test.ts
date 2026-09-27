@@ -7,7 +7,9 @@ import {
   fixKnownTypos,
   foreignElementWords,
   guessesPartnerView,
+  hintJargon,
   mapStrings,
+  maskName,
   mixesPronouns,
   stockLine,
   thaiWordCount,
@@ -156,5 +158,32 @@ describe('v4 prose checks', () => {
 
   test('thaiWordCount counts words, not characters', () => {
     expect(thaiWordCount('คุณกับต้นคุยกันได้ดี')).toBeLessThan(10);
+  });
+});
+
+describe('maskName', () => {
+  test('a partner called ดาว is not the word ดาว; a planet after the name still is', () => {
+    expect(hintJargon(maskName('ทำไมดาวถึงเงียบเมื่อแผนเปลี่ยน', 'ดาว'))).toBeNull();
+    expect(hintJargon(maskName('ดาวใจเงียบไปทั้งวันหลังคุณพูดประโยคนั้น', 'ดาวใจ'))).toBeNull();
+    expect(hintJargon(maskName('ดาวอังคารทำให้ดาวใจร้อน', 'ดาว'))).toBe('ดาว');
+    expect(hintJargon(maskName('ทำไมดวงดาวถึงพาดาวมาเจอคุณ', 'ดาว'))).toBe('ดาว');
+    expect(hintJargon(maskName('ทำไมดาวถึงเงียบ ธาตุของเขาบอกอะไร', 'ดาว'))).toBe('ธาตุ');
+  });
+
+  test('a partner named after an element is not that element; ธาตุ before the name still is', () => {
+    expect(foreignElementWords(maskName('น้ำกับคุณคุยกันได้ดี', 'น้ำ'), ['earth'])).toEqual([]);
+    expect(foreignElementWords(maskName('ไฟชวนคุณออกไปเดินเล่น', 'ไฟ'), ['earth'])).toEqual([]);
+    expect(foreignElementWords(maskName('ทองรอคุณอยู่ที่ร้าน', 'ทอง'), ['water'])).toEqual([]);
+    expect(foreignElementWords(maskName('ไฟมีธาตุไฟในตัว', 'ไฟ'), ['earth'])).toEqual(['ไฟ']);
+  });
+
+  test('a partner named ดาว is not an element credited to a planet or a birth-data run', () => {
+    expect(elementCreditedToPlanet(maskName('ไฟของดาวทำให้บ้านอุ่น', 'ดาว'))).toBeNull();
+    expect(birthDataInventory(maskName('เจ้าวันไฟ ธาตุไฟ ของดาว', 'ดาว'))).toBeNull();
+  });
+
+  test('a name with regex characters is matched literally', () => {
+    expect(maskName('a.b กับคุณ', 'a.b')).toBe('(ชื่อ) กับคุณ');
+    expect(maskName('axb กับคุณ', 'a.b')).toBe('axb กับคุณ');
   });
 });

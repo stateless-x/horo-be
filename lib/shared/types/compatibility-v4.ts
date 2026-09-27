@@ -42,9 +42,6 @@ export const V4_INSIGHT_BASIS = [
   'month3',
 ] as const;
 
-/** Astrology vocabulary that turns a hint into a spec instead of a moment. */
-const HINT_JARGON = /ธาตุ|ดาว|วันเกิด|ปาจื้อ|โหรา|เจ้าวัน|นักษัตร|MBTI|[IE][NS][TF][JP]/;
-
 // ---------------------------------------------------------------- model output
 
 const chapter = {
@@ -55,10 +52,13 @@ const chapter = {
   move: thaiProse(20, 280),
 };
 
+/**
+ * The no-astrology-terms rule for hint text is checked at generation, with the
+ * partner's name masked (hintJargon in horo-be src/lib/compatibility-text.ts):
+ * a schema can't know the name, and a partner called ดาว would fail every hint.
+ */
 const hint = z.object({
-  text: thaiProse(20, 150).refine((value) => !HINT_JARGON.test(value), {
-    message: 'A locked hint names a moment with this person in plain words, with no astrology or MBTI terms',
-  }),
+  text: thaiProse(20, 150),
   chapter: z.enum(V4_HINT_CHAPTERS),
 });
 

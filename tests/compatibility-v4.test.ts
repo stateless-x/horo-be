@@ -254,6 +254,37 @@ describe('v4 headline rules', () => {
   });
 });
 
+describe('partner names that are ordinary words', () => {
+  /** The fixture's replies with the partner called `partner` everywhere. */
+  const renamed = (partner: string) => JSON.parse(JSON.stringify(sections()).replaceAll(name, partner)) as Record<V4SectionKey, unknown>;
+  const named = (partner: string) => ({ ...input, partner: { ...input.partner, name: partner } });
+
+  // Reader metal, partner fire: น้ำ is neither person's element, and ดาว was read as a planet in every hint.
+  for (const partner of ['ดาว', 'ดาวใจ', 'น้ำ', 'ไฟ', 'ทอง']) {
+    test(`${partner}: the full report and the locked teaser pass with no repair`, async () => {
+      mockModel(() => renamed(partner));
+      let calls = 0;
+      const full = await generateCompatibilityV4({ ...named(partner), onModelCall: () => calls++ });
+      expect(calls).toBe(5);
+      expect(full.qualityFlags).toEqual([]);
+
+      const { stored } = await generateCompatibilityV4Stored({ ...named(partner), withDetail: false });
+      expect(stored.teaser.cover.lockedHints[0].text).toContain(partner);
+      // The read path parses the stored row with the same schema.
+      expect(parseCompatibilityContent(JSON.stringify(stored))?.contentVersion).toBe(4);
+    });
+  }
+
+  test('ดาว: a planet in a hint is still jargon, and fails the reading if it stays', async () => {
+    const cover = renamed('ดาว').cover as { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };
+    const planet = { ...cover, lockedHints: [{ ...cover.lockedHints[0], text: 'ทำไมดาวอังคารทำให้ดาวเงียบเมื่อแผนเปลี่ยน' }, ...cover.lockedHints.slice(1)] };
+    mockModel(() => ({ ...renamed('ดาว'), cover: planet }));
+    await expect(generateCompatibilityV4Stored({ ...named('ดาว'), withDetail: false })).rejects.toThrow(
+      'is an astrology or MBTI term',
+    );
+  });
+});
+
 describe('v4 insight plan', () => {
   test('a plan that misses a chapter is told which one', () => {
     const missingFuture = { insights: INSIGHTS.insights.map((i) => (i.chapter === 'future' ? { ...i, chapter: 'you' } : i)) };
