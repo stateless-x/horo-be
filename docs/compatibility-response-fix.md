@@ -147,7 +147,7 @@ Rules for a v4 row:
 - **No `analysis` field.** The stored JSON carries the plan and the input snapshot.
 - **`structuredContent` comes from `shapeCompatibilityView`,** the teaser view when locked. The teaser view has no overview, chapters, calendar, week plan, palace, insights or inputs.
 - **The share link returns the free fields only,** locked or not.
-- **History returns no reading text,** and it has no `locked` field.
+- **History returns no reading text,** and it has no `locked` field. It does carry `lockEnabled`, the flag rather than any row's state, so the wait screen can say what a new check writes: about 10 s for the teaser alone, 20 to 30 s and six chapters for the full report.
 
 A locked teaser has no detail to count its reading time from. The door shows `V4_LOCKED_READING_MINUTES` (11), an estimate: six written reports measured 9 to 12 minutes, median 11. After the unlock, the report's own minutes replace it.
 
@@ -165,6 +165,10 @@ A locked teaser has no detail to count its reading time from. The door shows `V4
 7. Patch `analysis` on the same row, drop the `compat:{userId}:{id}` cache entry, and return the full report.
 
 The frontend updates its `['compatibility', id]` query with the response and plays the reveal in place.
+
+### Locked hints and partner names
+
+The hints must not use astrology or MBTI terms (ธาตุ, ดาว, วันเกิด, นักษัตร, MBTI codes and so on), and they are prompted to name the partner. A partner is often called ดาว. So the rule is checked at generation, in the v4 pair check (`hintJargon` in `src/lib/compatibility-text.ts`), not in the shared schema, which cannot know the name. It reads the hint with the partner's name masked (`maskName`). The element, planet-credit, birth-data, gender-word and verdict-anchor checks read the masked text too. So partners called น้ำ, ไฟ, ทอง or หนู are not flagged, and ดาวอังคาร, ดวงดาว and ธาตุไฟ are still caught. Until 2026-09-27 the rule sat in the schema, and every check for a partner called ดาว returned 500.
 
 ### Latency and deadline
 
@@ -190,5 +194,7 @@ Three unlocks on the local stack the same day took 16.5, 18.5 and 32.6 s end to 
   - teaser plus a later detail equals the report written in one go;
   - the detail's months follow `generatedOn`;
   - locked responses carry no paid string on the reading, share and history routes;
-  - unlock is owner-only, is refused without credit, is idempotent, and writes once under two concurrent taps.
+  - unlock is owner-only, is refused without credit, is idempotent, and writes once under two concurrent taps;
+  - partners called ดาว, ดาวใจ, น้ำ, ไฟ and ทอง pass without a repair, and a real jargon hint is still repaired or rejected.
+- To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`.
 - To run locally, start the backend with `COMPAT_LOCK_ENABLED=1 COMPAT_UNLOCK_FREE=1`. Never set `COMPAT_UNLOCK_FREE` in production.
