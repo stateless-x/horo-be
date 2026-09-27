@@ -1,7 +1,7 @@
-import type { BaziChart, Element, HeavenlyStem } from '../shared';
+import type { BaziChart, EarthlyBranch, Element, HeavenlyStem } from '../shared';
 import { calculateBazi } from './bazi';
 import { getBranchRelation, getElementInteraction, type BranchRelation } from './compatibility';
-import { ELEMENT_CONTROLLING, ELEMENT_PRODUCING, HEAVENLY_STEMS } from './constants';
+import { EARTHLY_BRANCHES, ELEMENT_CONTROLLING, ELEMENT_PRODUCING, HEAVENLY_STEMS } from './constants';
 import { archetypeKey, PAIR_ARCHETYPES, type PairArchetype } from './compatibility-archetypes';
 
 export type ElementClass = 'same' | 'generating' | 'controlling';
@@ -249,4 +249,45 @@ export function relationshipCalendar(reader: BaziChart, partner: BaziChart, now:
 /** The month the future chapter recommends for the next step: the first good one, else the first mixed one, else the first. */
 export function bestMonth(calendar: CalendarMonth[]): CalendarMonth {
   return calendar.find((m) => m.label === 'good') ?? calendar.find((m) => m.label === 'mixed') ?? calendar[0];
+}
+
+// ---------------------------------------------------------------- spouse palace
+
+/** Thai zodiac-year names for the earthly branches, the name readers know (นักษัตร). */
+const NAKSAT_TH: Record<EarthlyBranch, string> = {
+  zi: 'ชวด', chou: 'ฉลู', yin: 'ขาล', mao: 'เถาะ', chen: 'มะโรง', si: 'มะเส็ง',
+  wu: 'มะเมีย', wei: 'มะแม', shen: 'วอก', you: 'ระกา', xu: 'จอ', hai: 'กุน',
+};
+
+/** The main hidden stem (本氣) of each branch: the element the spouse palace carries inside. */
+const MAIN_HIDDEN_STEM: Record<EarthlyBranch, HeavenlyStem> = {
+  zi: 'gui', chou: 'ji', yin: 'jia', mao: 'yi', chen: 'wu', si: 'bing',
+  wu: 'ding', wei: 'ji', shen: 'geng', you: 'xin', xu: 'wu', hai: 'ren',
+};
+
+export interface SpousePalace {
+  branch: EarthlyBranch;
+  /** Thai zodiac name, e.g. มะเมีย. */
+  naksat: string;
+  /** Plain animal, e.g. ม้า. */
+  animal: string;
+  hidden: { element: Element; yinYang: 'yin' | 'yang' };
+}
+
+/**
+ * The spouse palace (the day branch) and the element hidden in it, shown as
+ * the basis of the attraction chapter. Display only: the hidden element may be
+ * neither person's day-master element, so it never goes into the prompt.
+ */
+export function spousePalace(chart: BaziChart): SpousePalace {
+  const branch = chart.dayPillar.branch;
+  const entry = EARTHLY_BRANCHES.find((b) => b.enumKey === branch);
+  const stem = HEAVENLY_STEMS.find((s) => s.enumKey === MAIN_HIDDEN_STEM[branch]);
+  if (!entry || !stem) throw new Error(`Unknown day branch ${branch}`);
+  return {
+    branch,
+    naksat: NAKSAT_TH[branch],
+    animal: entry.animal.replace(/\s*\(.*\)$/, ''),
+    hidden: { element: stem.element, yinYang: stem.yinYang },
+  };
 }

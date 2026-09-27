@@ -48,6 +48,8 @@ const HINT_JARGON = /ธาตุ|ดาว|วันเกิด|ปาจื�
 
 const chapter = {
   summary: thaiProse(40, 320),
+  /** One line that carries the chapter, set large as a pull quote. */
+  pullQuote: thaiProse(15, 200),
   detail: thaiProse(350, 1600),
   move: thaiProse(20, 280),
 };
@@ -70,8 +72,15 @@ export const V4InsightPlanSchema = z.object({
     )
     .min(6)
     .max(8)
-    .refine((insights) => V4_CHAPTER_KEYS.every((key) => insights.some((i) => i.chapter === key)), {
-      message: 'Every chapter needs at least one insight',
+    .superRefine((insights, ctx) => {
+      // Name the missing chapters: a repair told only "every chapter needs one" sent back the same plan.
+      const missing = V4_CHAPTER_KEYS.filter((key) => !insights.some((i) => i.chapter === key));
+      if (missing.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Every chapter needs at least one insight; add one for ${missing.join(', ')} (change a duplicate chapter or add an insight, 8 at most)`,
+        });
+      }
     }),
 });
 export type V4InsightPlan = z.infer<typeof V4InsightPlanSchema>;
@@ -168,6 +177,7 @@ const ChapterSchema = z.object({
   key: z.enum(V4_CHAPTER_KEYS),
   title: z.string().min(1),
   summary: z.string().min(1),
+  pullQuote: z.string().min(1),
   detail: z.string().min(1),
   move: z.string().min(1),
   pairs: z.array(z.object({ do: z.string(), avoid: z.string() })).optional(),
@@ -187,11 +197,29 @@ export const V4DimensionSchema = z.object({
 });
 export type V4Dimension = z.infer<typeof V4DimensionSchema>;
 
+const ELEMENTS = ['wood', 'fire', 'earth', 'metal', 'water'] as const;
+const PersonSchema = z.object({
+  element: z.enum(ELEMENTS),
+  yinYang: z.enum(['yin', 'yang']),
+  mbti: z.string().nullable(),
+});
+const PalaceSchema = z.object({
+  naksat: z.string(),
+  animal: z.string(),
+  hidden: z.object({ element: z.enum(ELEMENTS), yinYang: z.enum(['yin', 'yang']) }),
+});
+
 export const CompatibilityV4ContentSchema = z.object({
   contentVersion: z.literal(4),
   /** Bangkok date the report was written (YYYY-MM-DD); the week plan counts days from it. */
   generatedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   archetype: z.object({ key: z.string(), name: z.string(), tagline: z.string() }),
+  /** Both people's day masters and MBTI, for the cover. Free. */
+  people: z.object({ reader: PersonSchema, partner: PersonSchema }),
+  /** Both spouse palaces, the computed basis of the attraction chapter. Paid. */
+  palace: z.object({ reader: PalaceSchema, partner: PalaceSchema }),
+  /** Estimated minutes to read the paid report, computed from its text. */
+  readingMinutes: z.number().int().min(1),
   dimensions: z.array(V4DimensionSchema).length(V4_DIMENSION_KEYS.length),
   cover: V4SectionSchemas.cover,
   overview: V4SectionSchemas.overview,
@@ -211,8 +239,27 @@ export const CompatibilityV4ContentSchema = z.object({
 });
 export type CompatibilityV4Content = z.infer<typeof CompatibilityV4ContentSchema>;
 
-/** The teaser view: cover and score bars only. */
-export type CompatibilityV4Teaser = Pick<CompatibilityV4Content, 'contentVersion' | 'generatedOn' | 'archetype' | 'cover'> & {
+/** The teaser view: cover, people and score bars only. */
+export type CompatibilityV4Teaser = Pick<
+  CompatibilityV4Content,
+  'contentVersion' | 'generatedOn' | 'archetype' | 'cover' | 'people' | 'readingMinutes'
+> & {
   dimensions: Array<Pick<V4Dimension, 'key' | 'label' | 'score'>>;
 };
+
+/** What the public share link shows: free fields only, no hints and no paid text. */
+export type CompatibilityV4Share = Pick<CompatibilityV4Content, 'contentVersion' | 'archetype' | 'people'> & {
+  verdict: string;
+  dimensions: Array<Pick<V4Dimension, 'key' | 'label' | 'score'>>;
+};
+
+export function shareCompatibilityV4(content: CompatibilityV4Content): CompatibilityV4Share {
+  return {
+    contentVersion: 4,
+    archetype: content.archetype,
+    people: content.people,
+    verdict: content.cover.verdict,
+    dimensions: content.dimensions.map(({ key, label, score }) => ({ key, label, score })),
+  };
+}
 export type CompatibilityV4Shaped = CompatibilityV4Content | CompatibilityV4Teaser;

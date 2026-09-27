@@ -36,6 +36,7 @@ import {
   generateCompatibilityV4,
 } from '../../src/lib/compatibility-generation';
 import { fixKnownTypos, thaiWordCount } from '../../src/lib/compatibility-text';
+import { COMPATIBILITY_V4_LIVE_BUDGET as LIVE_BUDGET } from '../../src/lib/compatibility-generation';
 
 /** Drops each reply's text from the record, except a reply cut off at the token ceiling, kept to diagnose it. */
 const withoutText = ({ text, ...attempt }: Attempt) => (attempt.finishReason === 'length' ? { ...attempt, text } : attempt);
@@ -185,7 +186,9 @@ async function runOnce(f: Fixture, arch: 'v2' | 'v3' | 'v4', run: number) {
   const t0 = performance.now();
   const generate = { v2: generateCompatibilityV2, v3: generateCompatibilityV3, v4: generateCompatibilityV4 }[arch];
   try {
-    const result = await generate({ ...inputOf(f), onModelCall: () => modelCalls++ });
+    // --live: the live route's budget (one repair per call, a deadline from the start of the request).
+    const budget = arch === 'v4' && LIVE ? { maxRepairs: LIVE_BUDGET.maxRepairs, deadlineAt: Date.now() + LIVE_BUDGET.llmMs } : {};
+    const result = await generate({ ...inputOf(f), ...budget, onModelCall: () => modelCalls++ });
     const content = result.content as unknown as Record<string, unknown>;
     const v4 = 'qualityFlags' in result ? result : null;
     return {
@@ -223,6 +226,7 @@ const arg = (name: string, fallback: string) => {
 const RUNS = Number(arg('--runs', '1'));
 const OUT = arg('--out', '');
 const ONLY = arg('--only', 'v2,v3').split(',') as Array<'v2' | 'v3' | 'v4'>;
+const LIVE = argv.includes('--live');
 if (!OUT) throw new Error('--out <dir> is required (outputs never go into the repo)');
 
 const printId = arg('--print-prompt', '');

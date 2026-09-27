@@ -7,6 +7,7 @@ import {
   pairInputs,
   relationshipCalendar,
   selectArchetype,
+  spousePalace,
   type PairInputs,
 } from '../lib/astrology';
 import { chartSilence, elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
@@ -111,6 +112,17 @@ describe('pair archetype', () => {
       expect(selectArchetype(reader.element, partner.element)).toEqual(once);
       expect(selectArchetype(partner.element, reader.element)).toEqual(once);
     }
+  });
+});
+
+describe('spouse palace', () => {
+  test('names each of the 12 day branches and the element hidden in it', () => {
+    const palaces = Array.from({ length: 12 }, (_, i) => spousePalace(calculateBazi(new Date(Date.UTC(2000, 0, 1 + i)))));
+    expect(new Set(palaces.map((p) => p.naksat)).size).toBe(12);
+    const horse = palaces.find((p) => p.branch === 'wu')!;
+    expect(horse).toEqual({ branch: 'wu', naksat: 'มะเมีย', animal: 'ม้า', hidden: { element: 'fire', yinYang: 'yin' } });
+    const rooster = palaces.find((p) => p.branch === 'you')!;
+    expect(rooster.hidden).toEqual({ element: 'metal', yinYang: 'yin' });
   });
 });
 

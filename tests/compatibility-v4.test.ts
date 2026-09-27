@@ -2,10 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
   COMPATIBILITY_DEV_FIXTURES,
   shapeCompatibilityView,
+  shareCompatibilityV4,
+  V4InsightPlanSchema,
   type MbtiType,
   type V4SectionKey,
 } from '../lib/shared';
 import { ELEMENT_CONTROLLING, ELEMENT_PRODUCING } from '../lib/astrology';
+import { parseCompatibilityContent } from '../src/lib/compatibility-content';
 import { generateCompatibilityV4 } from '../src/lib/compatibility-generation';
 import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 import { ELEMENT_IMAGE } from '../src/lib/prompts';
@@ -27,7 +30,7 @@ const name = fixture.partner.name;
 /** Thai filler of about `words` words that names the partner, so the quality checks pass. */
 const prose = (words: number, lead = '') =>
   (lead + `${name}กับคุณคุยกันได้ดีเมื่อบอกความต้องการให้ชัด `.repeat(Math.ceil(words / 9))).trim();
-const chapter = (extra = '') => ({ summary: prose(12), detail: prose(160, extra), move: prose(12) });
+const chapter = (extra = '') => ({ summary: prose(12), pullQuote: prose(4), detail: prose(160, extra), move: prose(12) });
 
 const INSIGHTS = {
   insights: [
@@ -106,6 +109,12 @@ describe('generateCompatibilityV4', () => {
     expect(content.chapters[1].title).toBe(`ตัวตนของ${name}ในความสัมพันธ์นี้`);
     expect(content.calendar.map((m) => m.month)).toEqual(['2026-10', '2026-11', '2026-12']);
     expect(result.qualityFlags).toEqual([]);
+    // Computed, not written: the cover's people, the attraction basis, the reading time.
+    expect(content.people.reader).toEqual({ element: 'metal', yinYang: expect.any(String), mbti: 'INFP' });
+    expect(content.people.partner.element).toBe('fire');
+    expect(content.palace.reader.naksat).toBeString();
+    // Nine parts (overview, six chapters, calendar, plan), at least a minute each.
+    expect(content.readingMinutes).toBeGreaterThanOrEqual(9);
   });
 
   test('the model never sets a month label; a wrong month key costs a repair naming it', async () => {
@@ -235,12 +244,52 @@ describe('v4 headline rules', () => {
   });
 });
 
+describe('v4 insight plan', () => {
+  test('a plan that misses a chapter is told which one', () => {
+    const missingFuture = { insights: INSIGHTS.insights.map((i) => (i.chapter === 'future' ? { ...i, chapter: 'you' } : i)) };
+    const result = V4InsightPlanSchema.safeParse(missingFuture);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0].message).toContain('add one for future');
+  });
+});
+
+describe('v4 live budget', () => {
+  test('no model call starts without enough time left before the deadline', async () => {
+    let calls = 0;
+    mockModel(() => sections());
+    await expect(generateCompatibilityV4({ ...input, deadlineAt: Date.now() + 5_000, onModelCall: () => calls++ })).rejects.toThrow(
+      'ran out of time',
+    );
+    expect(calls).toBe(0);
+  });
+
+  test('a quality repair cut off by the deadline keeps the valid reply before it, flagged', async () => {
+    const unanchored = `${name}กับคุณดึงกันด้วยความต่างที่ต้องคุยให้ชัด`;
+    let coverCalls = 0;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+      const prompt = body.messages[1].content;
+      if (prompt.includes('{ "insights"')) return reply(INSIGHTS);
+      const all = sections();
+      const keys = (Object.keys(all) as V4SectionKey[]).filter((key) => prompt.includes(`  "${key}": `));
+      if (keys.includes('cover') && ++coverCalls === 2) throw new Error('The operation was aborted.');
+      const chosen = keys.includes('cover') ? sections({ cover: { ...(all.cover as object), verdict: unanchored } }) : all;
+      return reply(Object.fromEntries(keys.map((key) => [key, chosen[key]])));
+    }) as unknown as typeof fetch;
+
+    const result = await generateCompatibilityV4({ ...input, maxRepairs: 1, deadlineAt: Date.now() + 120_000 });
+    expect(coverCalls).toBe(2);
+    expect(result.content.cover.verdict).toBe(unanchored);
+    expect(result.qualityFlags.some((flag) => flag.startsWith('cover.verdict: fits any pair'))).toBe(true);
+  });
+});
+
 describe('shapeCompatibilityView for v4', () => {
   test('the teaser carries the cover and the score bars and no paid text', async () => {
     mockModel(() => sections());
     const { content } = await generateCompatibilityV4(input);
     const teaser = shapeCompatibilityView(content, 'teaser');
-    expect(Object.keys(teaser).sort()).toEqual(['archetype', 'contentVersion', 'cover', 'dimensions', 'generatedOn']);
+    expect(Object.keys(teaser).sort()).toEqual(['archetype', 'contentVersion', 'cover', 'dimensions', 'generatedOn', 'people', 'readingMinutes']);
     expect(teaser.dimensions[0]).toEqual({ key: 'chemistry', label: 'เคมี', score: content.dimensions[0].score });
 
     const json = JSON.stringify(teaser);
@@ -251,6 +300,30 @@ describe('shapeCompatibilityView for v4', () => {
     expect(json).not.toContain('"plan"');
     expect(json).not.toContain('"insights"');
     expect(json).not.toContain('"basis"');
+    expect(json).not.toContain('"palace"');
+    expect(json).not.toContain('"pullQuote"');
+  });
+
+  test('the share view is the free cover and the score numbers, nothing paid', async () => {
+    mockModel(() => sections());
+    const { content } = await generateCompatibilityV4(input);
+    const share = shareCompatibilityV4(content);
+    expect(Object.keys(share).sort()).toEqual(['archetype', 'contentVersion', 'dimensions', 'people', 'verdict']);
+    const json = JSON.stringify(share);
+    for (const chapterContent of content.chapters) {
+      expect(json).not.toContain(chapterContent.detail);
+      expect(json).not.toContain(chapterContent.summary);
+    }
+    for (const hint of content.cover.lockedHints) expect(json).not.toContain(hint.text);
+    expect(json).not.toContain(content.overview.story);
+    expect(json).not.toContain(content.calendar[0].text);
+    expect(json).not.toContain(content.plan[0].action);
+  });
+
+  test('a stored v4 report parses back to the same content', async () => {
+    mockModel(() => sections());
+    const { content } = await generateCompatibilityV4(input);
+    expect(parseCompatibilityContent(JSON.stringify(content))).toEqual(content);
   });
 
   test('the full view is the stored content', async () => {

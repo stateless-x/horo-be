@@ -39,9 +39,9 @@ describe('compatibility v2 content', () => {
   });
 
   test('parses saved v2 with and without next steps and leaves legacy markdown untouched', () => {
-    expect(parseCompatibilityContent(JSON.stringify(structuredFixture))?.nextSteps?.action).toBe(
-      structuredFixture.nextSteps.action.trim(),
-    );
+    const parsed = parseCompatibilityContent(JSON.stringify(structuredFixture));
+    expect(parsed?.contentVersion).toBe(2);
+    expect(parsed?.contentVersion === 2 ? parsed.nextSteps?.action : undefined).toBe(structuredFixture.nextSteps.action.trim());
     expect(parseCompatibilityContent(JSON.stringify(savedV2Fixture))).toEqual(savedV2Fixture);
     expect(parseCompatibilityContent('## ภาพรวม\nคำทำนายแบบเดิม')).toBeNull();
   });

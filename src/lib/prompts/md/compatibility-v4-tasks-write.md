@@ -3,5 +3,5 @@
 {{insightList}}
 
 {{SECTION_TASKS}}
-บท (attraction, partner, you, communication, friction, future) ทุกบทมี `summary` 1 ถึง 2 บรรทัด `detail` เชิงลึก และ `move` หนึ่งอย่างที่ทำได้จริง
+บท (attraction, partner, you, communication, friction, future) ทุกบทมี `summary` 1 ถึง 2 บรรทัด `pullQuote` ประโยคเดียวไม่เกิน 80 ตัวอักษรที่เป็นหัวใจของบทนี้ ใช้เป็นคำคมของบท ไม่ซ้ำกับ summary `detail` เชิงลึก และ `move` หนึ่งอย่างที่ทำได้จริง
 

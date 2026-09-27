@@ -211,6 +211,10 @@ export type OnModelCall = () => void;
  * call, up to two transport retries with backoff, and one validation repair
  * that re-asks with a short correction appended.
  */
+const CALL_TIMEOUT_MS = 60_000;
+/** A section call measured 9 to 20 s; starting one with less time left would only time out. */
+const MIN_CALL_MS = 15_000;
+
 async function generateValidatedCompatibilityJson<T>(
   prompt: string,
   schema: z.ZodType<T>,
@@ -237,6 +241,13 @@ async function generateValidatedCompatibilityJson<T>(
    * sometimes makes another (a stray Chinese word in a fixed plan step).
    */
   maxRepairs = 1,
+  /**
+   * Epoch ms by which this call must have finished, or undefined for no
+   * limit. Each model call gets min(60 s, time left); none starts with less
+   * than MIN_CALL_MS left, and a call cut off by the deadline is not retried.
+   * The live route uses it to keep a synchronous request inside its budget.
+   */
+  deadlineAt?: number,
 ): Promise<{ data: T; softIssues: string[] }> {
   let effectivePrompt = prompt;
   let repairTurn: ChatMessage[] = [];
@@ -247,6 +258,12 @@ async function generateValidatedCompatibilityJson<T>(
 
   while (true) {
     let text: string;
+    const timeLeft = deadlineAt === undefined ? CALL_TIMEOUT_MS : deadlineAt - Date.now();
+    if (timeLeft < MIN_CALL_MS) {
+      // Out of time before the next turn: a quality repair never costs a valid reading.
+      if (beforeQualityRepair) return beforeQualityRepair;
+      throw new Error('Compatibility generation ran out of time');
+    }
     try {
       onModelCall?.();
       text = await callDeepSeek(
@@ -258,11 +275,12 @@ async function generateValidatedCompatibilityJson<T>(
         {
           maxTokens,
           temperature: 0.7,
-          timeoutMs: 60_000,
+          timeoutMs: Math.min(CALL_TIMEOUT_MS, timeLeft),
           jsonMode: true,
         },
       );
     } catch (error) {
+      if (beforeQualityRepair) return beforeQualityRepair;
       if (!isRetryableError(error) || transportFailures >= 2) throw error;
       transportFailures += 1;
       await new Promise(resolve => setTimeout(resolve, 1000 * transportFailures));
@@ -418,19 +436,19 @@ const V4_SECTION_SHAPES: Record<V4SectionKey, { json: string; rules?: string }> 
   overview: {
     json: '"overview": { "story": string, "dimensionLines": { "chemistry": string, "communication": string, "trust": string, "rhythm": string } }',
   },
-  attraction: { json: '"attraction": { "summary": string, "detail": string, "move": string }' },
-  partner: { json: '"partner": { "summary": string, "detail": string, "move": string }' },
-  you: { json: '"you": { "summary": string, "detail": string, "move": string }' },
+  attraction: { json: '"attraction": { "summary": string, "pullQuote": string, "detail": string, "move": string }' },
+  partner: { json: '"partner": { "summary": string, "pullQuote": string, "detail": string, "move": string }' },
+  you: { json: '"you": { "summary": string, "pullQuote": string, "detail": string, "move": string }' },
   communication: {
-    json: '"communication": { "summary": string, "detail": string, "move": string, "pairs": [ { "do": string, "avoid": string } ], "lines": [string] }',
+    json: '"communication": { "summary": string, "pullQuote": string, "detail": string, "move": string, "pairs": [ { "do": string, "avoid": string } ], "lines": [string] }',
     rules: 'communication.pairs has exactly 3 items and communication.lines exactly 3.',
   },
   friction: {
-    json: '"friction": { "summary": string, "detail": string, "move": string, "scenarios": [ { "scenario": string, "repair": string } ] }',
+    json: '"friction": { "summary": string, "pullQuote": string, "detail": string, "move": string, "scenarios": [ { "scenario": string, "repair": string } ] }',
     rules: 'friction.scenarios has 2 or 3 items and every scenario starts with "ถ้า".',
   },
   future: {
-    json: '"future": { "summary": string, "detail": string, "move": string, "goSignals": [string], "slowSignals": [string], "nextStep": { "month": "YYYY-MM", "step": string } }',
+    json: '"future": { "summary": string, "pullQuote": string, "detail": string, "move": string, "goSignals": [string], "slowSignals": [string], "nextStep": { "month": "YYYY-MM", "step": string } }',
     rules: 'future.goSignals and future.slowSignals have 2 or 3 items each.',
   },
   calendar: {
@@ -456,6 +474,10 @@ Do not include the score, markdown, comments, or any text outside this JSON obje
 
 export interface V4PartOptions<T> {
   onModelCall?: OnModelCall;
+  /** Repair turns for rule failures: 2 in the dev tools, 1 on the live route (see the budget in docs). */
+  maxRepairs?: number;
+  /** See generateValidatedCompatibilityJson. */
+  deadlineAt?: number;
   /** Pair-specific rules that must hold (they fail the reading if the repair doesn't fix them). */
   pairCheck?: (content: T, ctx: z.RefinementCtx) => void;
   /** Quality rules worth one repair; see generateValidatedCompatibilityJson. */
@@ -489,7 +511,8 @@ export function generateCompatibilityV4Plan(prompt: string, options: V4PartOptio
     describeInvalid,
     options.onModelCall,
     options.softCheck,
-    2,
+    options.maxRepairs ?? 2,
+    options.deadlineAt,
   );
 }
 
@@ -507,7 +530,8 @@ export function generateCompatibilityV4Sections(
     describeInvalid,
     options.onModelCall,
     options.softCheck,
-    2,
+    options.maxRepairs ?? 2,
+    options.deadlineAt,
   );
 }
 

@@ -1,19 +1,16 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
-import { generateStructuredCompatibilityReading } from '../../lib/llm';
-import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../../lib/astrology';
+import { normalizeMbtiType } from '../../../lib/astrology';
 import { compatibility } from '../../../lib/db';
-import { CompatibilityStructuredContentSchema, MBTI_TYPES, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../../lib/shared';
+import { MBTI_TYPES, RELATIONSHIP_TYPES, shapeCompatibilityView, shareCompatibilityV4, type RelationshipType } from '../../../lib/shared';
 import { eq, and, desc, sql, count } from 'drizzle-orm';
-import { buildCompatibilityPrompt } from '../../lib/prompts';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
 import { cache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
-import { readerGender } from '../../lib/compatibility-generation';
-import { mapStrings, tightenNameSpacing } from '../../lib/compatibility-text';
+import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4, readerGender } from '../../lib/compatibility-generation';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
@@ -35,6 +32,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
 
   // Calculate compatibility between two people
   .post('/compatibility', async ({ body, set, request }) => {
+    const requestStartedAt = Date.now();
     const session = await validateSessionFromRequest(request);
     if (!session) {
       set.status = 401;
@@ -160,58 +158,31 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         'X-DailyLimit-Remaining': dailyResult.remaining.toString(),
       };
 
-      // Calculate charts for both people
-      const userBaziChart = calculateBazi(
-        userProfile.birthDate,
-        userProfile.birthHour || undefined,
-        userProfile.gender as 'male' | 'female'
-      );
-      const userThaiAstrology = calculateThaiAstrology(userProfile.birthDate);
-
-      const partnerBaziChart = calculateBazi(
-        partnerBirthDateObj,
-        undefined,
-        'female' // default, not critical for compatibility
-      );
-      const partnerThaiAstrology = calculateThaiAstrology(partnerBirthDateObj);
-
-      // Calculate compatibility score
-      const compatibilityScore = calculateCompatibility(userBaziChart, partnerBaziChart);
-
-      // Generate LLM reading with relationship-type-aware prompt
-      const tokenLimit = TOKEN_LIMITS[relationshipType] || 1000;
-      const prompt = buildCompatibilityPrompt(
-        {
-          name: 'เจ้า',
-          gender: readerGender(userProfile.gender),
+      // Content v4: computed scores, archetype and calendar, then the report
+      // written by the model within the live budget (one repair per call and a
+      // deadline, so the synchronous response fits the socket and client
+      // timeouts; see docs/compatibility-response-fix.md, "v4 live budget").
+      const generation = await generateCompatibilityV4({
+        reader: {
           birthDate: userProfile.birthDate,
-          baziChart: userBaziChart,
-          thaiAstrology: userThaiAstrology,
-          mbtiType: userProfile.mbtiType,
+          birthHour: userProfile.birthHour ?? undefined,
+          gender: readerGender(userProfile.gender),
+          mbtiType: normalizeMbtiType(userProfile.mbtiType),
         },
-        {
-          name: partnerName,
-          birthDate: partnerBirthDateObj,
-          baziChart: partnerBaziChart,
-          thaiAstrology: partnerThaiAstrology,
-          mbtiType: partnerMbtiType,
-        },
+        partner: { name: partnerName, birthDate: partnerBirthDateObj, mbtiType: normalizeMbtiType(partnerMbtiType) },
         relationshipType,
-        {
-          score: compatibilityScore.score,
-          scoreExplanation: compatibilityScore.overallAnalysis,
-          strengths: compatibilityScore.strengths,
-          challenges: compatibilityScore.challenges,
-        },
-      );
-
-      const generatedContent = await generateStructuredCompatibilityReading(prompt, tokenLimit);
-      const structuredContent = CompatibilityStructuredContentSchema.parse({
-        contentVersion: 2,
-        scoreExplanation: compatibilityScore.overallAnalysis,
-        ...mapStrings(generatedContent, (text) => tightenNameSpacing(text, partnerName)),
+        maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
+        deadlineAt: requestStartedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
       });
-      const reading = JSON.stringify(structuredContent);
+      if (generation.qualityFlags.length) {
+        console.warn('[compatibility v4] quality flags', { flags: generation.qualityFlags });
+      }
+      const { content, charts } = generation;
+      const userBaziChart = charts.readerBazi;
+      const partnerBaziChart = charts.partnerBazi;
+      const compatibilityScore = charts.score;
+      const structuredContent = shapeCompatibilityView(content, 'full');
+      const reading = JSON.stringify(content);
       const shareToken = Math.random().toString(36).substring(2, 15);
 
       // Save to DB
@@ -245,7 +216,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         relationshipType: saved.relationshipType,
         score: saved.score,
         analysis: saved.analysis,
-        contentVersion: 2,
+        contentVersion: 4,
         structuredContent,
         strengths: compatibilityScore.strengths,
         challenges: compatibilityScore.challenges,
@@ -307,7 +278,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       }
       console.error('Compatibility error:', error);
       set.status = 500;
-      return { error: 'Failed to calculate compatibility' };
+      return { error: 'ตอนนี้เขียนดวงคู่ไม่สำเร็จ ลองอีกครั้งนะ' };
     }
   }, {
     body: t.Object({
@@ -501,6 +472,23 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       if (!result) {
         set.status = 404;
         return { error: 'ไม่พบผลดวงที่ต้องการ' };
+      }
+
+      // A v4 share link shows the free fields only: the stored report is the
+      // paid text, so neither `analysis` nor the full content leaves here.
+      // v2 rows keep today's response (their text was never paid).
+      const content = parseCompatibilityContent(result.analysis);
+      if (content?.contentVersion === 4) {
+        return {
+          partnerName: result.partnerName,
+          relationshipType: result.relationshipType,
+          score: result.score,
+          contentVersion: 4,
+          structuredContent: shareCompatibilityV4(content),
+          userElement: result.userElement,
+          partnerElement: result.partnerElement,
+          createdAt: result.createdAt.toISOString(),
+        };
       }
 
       // Return sanitized result (no profileAId for privacy)

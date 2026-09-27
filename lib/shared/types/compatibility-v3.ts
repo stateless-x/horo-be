@@ -176,6 +176,8 @@ export function shapeCompatibilityView(
       generatedOn: content.generatedOn,
       archetype: content.archetype,
       cover: content.cover,
+      people: content.people,
+      readingMinutes: content.readingMinutes,
       dimensions: content.dimensions.map(({ key, label, score }) => ({ key, label, score })),
     };
   }

@@ -1,6 +1,8 @@
 import {
   bestMonth,
   calculateBazi,
+  HEAVENLY_STEMS,
+  spousePalace,
   calculateThaiAstrology,
   calculateCompatibility,
   calculateDimensions,
@@ -61,12 +63,10 @@ import {
 /**
  * Compatibility generation from birth data alone: deterministic charts and
  * score, the prompt, and the model call. No database, cache or rate limit, so
- * the v3 prototype and the dev generator tool can run it statelessly.
- *
- * The production POST route still does its own v2 calculation inline and is
- * expected to switch to this function when v3 ships; until then the v2 path
- * here mirrors the route exactly (reader named 'เจ้า', partner charted with no
- * hour and gender 'female', TOKEN_LIMITS per relationship type).
+ * the live route, the dev generator tool and the prototype harness all call
+ * it. The live POST route generates v4 (generateCompatibilityV4 with
+ * COMPATIBILITY_V4_LIVE_BUDGET); the v2 and v3 paths remain for the dev tools
+ * (reader named 'เจ้า', partner charted with no hour and gender 'female').
  */
 
 export interface CompatibilityReaderInput {
@@ -358,9 +358,16 @@ export interface CompatibilityV4Generation {
  * consistent: the cover's hints and every chapter draw on the same list.
  */
 export async function generateCompatibilityV4(
-  input: GenerateCompatibilityInput & { now?: Date },
+  input: GenerateCompatibilityInput & {
+    now?: Date;
+    /** Repair turns per call for rule failures; the live route passes 1. Default 2. */
+    maxRepairs?: number;
+    /** Epoch ms by which every model call must have finished (the live route's budget). */
+    deadlineAt?: number;
+  },
 ): Promise<CompatibilityV4Generation> {
   const now = input.now ?? new Date();
+  const budget = { maxRepairs: input.maxRepairs, deadlineAt: input.deadlineAt };
   const calcStart = performance.now();
   const charts = calculateCompatibilityCharts(input.reader, input.partner);
   const inputs = pairInputs(charts.readerBazi, charts.partnerBazi, input.reader.mbtiType, input.partner.mbtiType);
@@ -385,6 +392,9 @@ export async function generateCompatibilityV4(
   const llmStart = performance.now();
   const plan = await generateCompatibilityV4Plan(planPrompt, {
     onModelCall: input.onModelCall,
+    ...budget,
+    // The plan is short (3 to 10 s measured); cap it so the sections keep most of the budget.
+    deadlineAt: input.deadlineAt === undefined ? undefined : Math.min(input.deadlineAt, Date.now() + PLAN_BUDGET_MS),
     pairCheck: (content, ctx) => {
       const unavailable = new Set<string>([
         ...(input.reader.mbtiType ? [] : ['readerMbti']),
@@ -467,7 +477,7 @@ export async function generateCompatibilityV4(
   const sectionPrompts = V4_SPLIT.map((sections) => build(sections, plan.data.insights));
   const parts = await Promise.all(
     V4_SPLIT.map((sections, i) =>
-      generateCompatibilityV4Sections(sectionPrompts[i], sections, { onModelCall: input.onModelCall, pairCheck, softCheck }),
+      generateCompatibilityV4Sections(sectionPrompts[i], sections, { onModelCall: input.onModelCall, pairCheck, softCheck, ...budget }),
     ),
   );
   const llmEnd = performance.now();
@@ -480,6 +490,12 @@ export async function generateCompatibilityV4(
         contentVersion: 4,
         generatedOn: bangkokDate(now),
         archetype: facts.archetype,
+        people: {
+          reader: personFacts(charts.readerBazi, input.reader.mbtiType),
+          partner: personFacts(charts.partnerBazi, input.partner.mbtiType),
+        },
+        palace: { reader: palaceFacts(charts.readerBazi), partner: palaceFacts(charts.partnerBazi) },
+        readingMinutes: readingMinutes(sections),
         dimensions: facts.dimensions,
         cover: sections.cover,
         overview: sections.overview,
@@ -509,6 +525,43 @@ export async function generateCompatibilityV4(
       ...parts.flatMap((part) => part.softIssues),
     ],
   };
+}
+
+const PLAN_BUDGET_MS = 75_000;
+
+/**
+ * The live route's budget (docs/compatibility-response-fix.md, "v4 live
+ * budget"): one repair per call, and every model call finished within
+ * llmMs of the request starting, which keeps the synchronous response under
+ * 240 s against the 255 s server idle and 270 s client timeouts.
+ */
+export const COMPATIBILITY_V4_LIVE_BUDGET = { maxRepairs: 1, llmMs: 220_000 } as const;
+
+function personFacts(chart: CompatibilityCharts['readerBazi'], mbti: MbtiType | null | undefined) {
+  const stem = HEAVENLY_STEMS.find((s) => s.enumKey === chart.dayMaster);
+  if (!stem) throw new Error(`Unknown day master ${chart.dayMaster}`);
+  return { element: chart.element, yinYang: stem.yinYang, mbti: mbti ?? null };
+}
+
+function palaceFacts(chart: CompatibilityCharts['readerBazi']) {
+  const { naksat, animal, hidden } = spousePalace(chart);
+  return { naksat, animal, hidden };
+}
+
+/** Thai reads at about 800 graphemes a minute; each part counts at least a minute, as the contents list shows it. */
+const GRAPHEMES_PER_MINUTE = 800;
+const graphemes = new Intl.Segmenter('th', { granularity: 'grapheme' });
+function readingMinutes(sections: V4Sections): number {
+  const parts = [
+    stringLeaves(sections.overview),
+    ...V4_CHAPTER_KEYS.map((key) => stringLeaves(sections[key])),
+    stringLeaves(sections.calendar),
+    stringLeaves(sections.plan),
+  ];
+  return parts.reduce((sum, leaves) => {
+    const count = [...graphemes.segment(leaves.map(([, text]) => text).join('').replace(/\s+/g, ''))].length;
+    return sum + Math.max(1, Math.round(count / GRAPHEMES_PER_MINUTE));
+  }, 0);
 }
 
 function bangkokDate(now: Date): string {
