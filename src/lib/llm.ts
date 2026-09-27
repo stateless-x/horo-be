@@ -485,13 +485,17 @@ export interface V4PartOptions<T> {
 }
 
 /**
- * How the report's sections are split across parallel calls, after the
- * insight plan. Measured on the five fixtures (see the report samples): three
- * calls of about 1,500 to 1,900 output tokens each finish together in about
- * the time one 2,300-token half took.
+ * How the report's sections are split across calls, after the insight plan.
+ * The cover (verdict and locked hints) is the free teaser, its own small call,
+ * so locked mode can write it alone at check time. The detail sections are
+ * three calls in parallel: measured on the five fixtures (see the report
+ * samples), calls of about 1,500 to 1,900 output tokens each finish together
+ * in about the time one 2,300-token half took. Unlocked, the cover call runs
+ * alongside the three.
  */
-export const V4_SPLIT: ReadonlyArray<readonly V4SectionKey[]> = [
-  ['cover', 'partner', 'you', 'plan'],
+export const V4_TEASER_SECTIONS: readonly V4SectionKey[] = ['cover'];
+export const V4_DETAIL_SPLIT: ReadonlyArray<readonly V4SectionKey[]> = [
+  ['partner', 'you', 'plan'],
   ['communication', 'friction'],
   ['overview', 'attraction', 'future', 'calendar'],
 ];

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CompatibilityV4Content, CompatibilityV4Shaped } from './compatibility-v4';
+import type { CompatibilityV4Content, CompatibilityV4Shaped, CompatibilityV4Stored, V4TeaserPart } from './compatibility-v4';
 
 /**
  * Compatibility reading v3: one generation, two views.
@@ -158,32 +158,55 @@ export type CompatibilityV3Shaped = Omit<CompatibilityV3Content, 'detail'> & {
 };
 
 /**
+ * Reading time shown on a locked v4 report, whose detail is not written yet.
+ * An estimate: six written reports measured 9 to 12 minutes, median 11
+ * (horo-be docs/compatibility-response-fix.md, "Locked mode"). Once unlocked, the
+ * report's own computed minutes replace it.
+ */
+export const V4_LOCKED_READING_MINUTES = 11;
+
+/**
  * The one place that decides what a view contains, for v3 and v4. The server
  * must call this before responding, so a teaser response never carries paid
  * text. Each teaser is an allowlist, not a spread-and-delete: a field added to
  * the content later stays out of the teaser until someone decides it belongs.
+ * A v4 report is either the full content (the dev tools, and rows written
+ * before locked mode) or the stored two-part form; a locked stored report has
+ * no full view.
  */
 export function shapeCompatibilityView(content: CompatibilityV3Content, view: CompatibilityView): CompatibilityV3Shaped;
-export function shapeCompatibilityView(content: CompatibilityV4Content, view: CompatibilityView): CompatibilityV4Shaped;
 export function shapeCompatibilityView(
-  content: CompatibilityV3Content | CompatibilityV4Content,
+  content: CompatibilityV4Content | CompatibilityV4Stored,
+  view: CompatibilityView,
+): CompatibilityV4Shaped;
+export function shapeCompatibilityView(
+  content: CompatibilityV3Content | CompatibilityV4Content | CompatibilityV4Stored,
   view: CompatibilityView,
 ): CompatibilityV3Shaped | CompatibilityV4Shaped {
-  if (view === 'full') return content;
-  if (content.contentVersion === 4) {
-    return {
-      contentVersion: content.contentVersion,
-      generatedOn: content.generatedOn,
-      archetype: content.archetype,
-      cover: content.cover,
-      people: content.people,
-      readingMinutes: content.readingMinutes,
-      dimensions: content.dimensions.map(({ key, label, score }) => ({ key, label, score })),
-    };
+  if (content.contentVersion === 4 && 'inputs' in content) {
+    if (view === 'teaser') {
+      return v4Teaser(content.teaser, content.detail?.readingMinutes ?? V4_LOCKED_READING_MINUTES);
+    }
+    if (!content.detail) throw new Error('A locked v4 report has no full view');
+    return { contentVersion: 4, ...content.teaser, ...content.detail, insights: content.plan.insights };
   }
+  if (view === 'full') return content;
+  if (content.contentVersion === 4) return v4Teaser(content, content.readingMinutes);
   return {
     contentVersion: content.contentVersion,
     scoreExplanation: content.scoreExplanation,
     teaser: content.teaser,
+  };
+}
+
+function v4Teaser(teaser: V4TeaserPart, readingMinutes: number): CompatibilityV4Shaped {
+  return {
+    contentVersion: 4,
+    generatedOn: teaser.generatedOn,
+    archetype: teaser.archetype,
+    cover: teaser.cover,
+    people: teaser.people,
+    readingMinutes,
+    dimensions: teaser.dimensions.map(({ key, label, score }) => ({ key, label, score })),
   };
 }

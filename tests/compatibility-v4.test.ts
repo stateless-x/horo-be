@@ -1,15 +1,25 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
   COMPATIBILITY_DEV_FIXTURES,
+  type CompatibilityV4Content,
+  type CompatibilityV4Stored,
   shapeCompatibilityView,
   shareCompatibilityV4,
   V4InsightPlanSchema,
   type MbtiType,
   type V4SectionKey,
 } from '../lib/shared';
-import { ELEMENT_CONTROLLING, ELEMENT_PRODUCING } from '../lib/astrology';
+import { bestMonth, ELEMENT_CONTROLLING, ELEMENT_PRODUCING, relationshipCalendar } from '../lib/astrology';
+import { config } from '../src/config';
 import { parseCompatibilityContent } from '../src/lib/compatibility-content';
-import { generateCompatibilityV4 } from '../src/lib/compatibility-generation';
+import {
+  calculateCompatibilityCharts,
+  generateCompatibilityV4,
+  generateCompatibilityV4Detail,
+  generateCompatibilityV4Stored,
+} from '../src/lib/compatibility-generation';
+import { GenerationSingleFlight } from '../src/lib/generation-singleflight';
+import { historyItem, readingResponse, shareResponse, unlockReading, type CompatibilityRow } from '../src/systems/compatibility/reading';
 import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 import { ELEMENT_IMAGE } from '../src/lib/prompts';
 
@@ -101,7 +111,7 @@ describe('generateCompatibilityV4', () => {
     const result = await generateCompatibilityV4({ ...input, onModelCall: () => calls++ });
     const { content } = result;
 
-    expect(calls).toBe(4); // the plan, then three section calls
+    expect(calls).toBe(5); // the plan, then the cover and three detail calls
     expect(content.contentVersion).toBe(4);
     expect(content.generatedOn).toBe('2026-09-27');
     expect(content.dimensions.map((d) => d.key)).toEqual(['chemistry', 'communication', 'trust', 'rhythm']);
@@ -223,7 +233,7 @@ describe('v4 headline rules', () => {
     mockModel(() => sections({ attraction: chapter('ช่วยกันเขียงลำดับ นักษัตรวันเกิดของทั้งสองคนประสานกัน ') }));
     let calls = 0;
     const { content } = await generateCompatibilityV4({ ...input, onModelCall: () => calls++ });
-    expect(calls).toBe(4);
+    expect(calls).toBe(5);
     expect(content.chapters[0].detail).toContain('ช่วยกันเรียงลำดับ');
   });
 
@@ -332,3 +342,243 @@ describe('shapeCompatibilityView for v4', () => {
     expect(shapeCompatibilityView(content, 'full')).toEqual(content);
   });
 });
+
+// ---------------------------------------------------------------- locked mode
+
+/** The mock model's replies for a teaser written on `now`: its calendar months and next-step month. */
+function sectionsFor(now: Date) {
+  const charts = calculateCompatibilityCharts(input.reader, input.partner);
+  const calendar = relationshipCalendar(charts.readerBazi, charts.partnerBazi, now);
+  const future = sections().future as Record<string, unknown>;
+  return sections({
+    calendar: calendar.map(({ month }) => ({ month, text: prose(8) })),
+    future: { ...future, nextStep: { month: bestMonth(calendar).month, step: prose(10) } },
+  });
+}
+
+/** Counts every model call, whatever asks for it. */
+function countingModel(source: () => Record<V4SectionKey, unknown> = () => sections()) {
+  const counter = { calls: 0 };
+  mockModel(source);
+  const mocked = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    counter.calls += 1;
+    return mocked(url, init);
+  }) as unknown as typeof fetch;
+  return counter;
+}
+
+const PROFILE_ID = 'profile-1';
+function row(analysis: string): CompatibilityRow {
+  return {
+    id: 'row-1',
+    profileAId: PROFILE_ID,
+    partnerName: name,
+    partnerBirthDate: fixture.partner.birthDate.slice(0, 10),
+    relationshipType: fixture.relationshipType,
+    score: 61,
+    elementHarmony: 60,
+    branchHarmony: 62,
+    analysis,
+    strengths: '[]',
+    challenges: '[]',
+    userElement: 'metal',
+    userDayMaster: 'geng',
+    partnerElement: 'fire',
+    partnerDayMaster: 'bing',
+    shareToken: 'share-1',
+    createdAt: new Date('2026-09-27T05:00:00Z'),
+  };
+}
+
+function memoryStore(initial: CompatibilityRow) {
+  const state = { row: initial, saves: 0 };
+  return {
+    state,
+    store: {
+      load: async (id: string) => (id === state.row.id ? state.row : null),
+      saveAnalysis: async (_id: string, analysis: string) => {
+        state.saves += 1;
+        state.row = { ...state.row, analysis };
+        return state.row;
+      },
+    },
+  };
+}
+
+/** Every paid string of a full report, and the input snapshot, none of which a locked response may carry. */
+function paidStrings(content: CompatibilityV4Content, stored: CompatibilityV4Stored): string[] {
+  return [
+    content.overview.story,
+    ...Object.values(content.overview.dimensionLines),
+    ...content.chapters.flatMap((c) => [c.summary, c.pullQuote, c.detail, c.move]),
+    ...content.calendar.map((m) => m.text),
+    ...content.plan.map((p) => p.action),
+    ...stored.plan.insights.map((i) => i.text),
+    stored.inputs.reader.birthDate,
+    '"palace"',
+    '"insights"',
+    '"inputs"',
+  ];
+}
+
+const unlockArgs = (store: ReturnType<typeof memoryStore>['store'], flight = new GenerationSingleFlight(null)) => ({
+  userId: 'user-1',
+  profileId: PROFILE_ID,
+  id: 'row-1',
+  requestStartedAt: Date.now(),
+  store,
+  flight,
+});
+
+describe('locked mode (teaser-first)', () => {
+  const REAL_COMPAT = { ...config.compat };
+  afterEach(() => {
+    config.compat = { ...REAL_COMPAT };
+  });
+
+  test('the teaser stage writes the plan and the cover only, and stores no detail', async () => {
+    const counter = countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    expect(counter.calls).toBe(2); // the plan, then the cover
+    expect(stored.detail).toBeNull();
+    expect(stored.teaser.cover.lockedHints).toHaveLength(3);
+    expect(stored.inputs.partner.mbti).toBe(fixture.partner.mbti);
+    const json = JSON.stringify(stored);
+    for (const key of ['"overview"', '"chapters"', '"calendar"', '"palace"', '"readingMinutes"']) expect(json).not.toContain(key);
+  });
+
+  test('teaser now and detail on unlock add up to the report written in one go (flag off)', async () => {
+    countingModel();
+    const oneGo = (await generateCompatibilityV4(input)).content;
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    const counter = countingModel();
+    const { detail } = await generateCompatibilityV4Detail(stored, { partner: { name }, relationshipType: fixture.relationshipType });
+    expect(counter.calls).toBe(3); // the three detail calls, no plan and no cover
+    const { stored: full } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+    expect(full.detail).not.toBeNull();
+    expect(parseCompatibilityContent(JSON.stringify({ ...stored, detail }))).toEqual({ ...stored, detail });
+    expect({ contentVersion: 4, ...stored.teaser, ...detail, insights: stored.plan.insights }).toEqual(oneGo);
+  });
+
+  test('the detail counts its months from the day the teaser was written, not from today', async () => {
+    const may = new Date('2026-05-10T05:00:00Z');
+    mockModel(() => sectionsFor(may));
+    const { stored } = await generateCompatibilityV4Stored({ ...input, now: may, withDetail: false });
+    expect(stored.teaser.generatedOn).toBe('2026-05-10');
+    const { detail } = await generateCompatibilityV4Detail(stored, { partner: { name }, relationshipType: fixture.relationshipType });
+    expect(detail.calendar.map((m) => m.month)).toEqual(['2026-06', '2026-07', '2026-08']);
+  });
+
+  test('a locked row answers with the teaser and no paid text, on every route', async () => {
+    countingModel();
+    const { stored: full } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+    const locked: CompatibilityV4Stored = { ...full, detail: null };
+    const content = fullContent(full);
+    const lockedRow = row(JSON.stringify(locked));
+
+    const reading = readingResponse(lockedRow);
+    expect(reading.locked).toBe(true);
+    expect('analysis' in reading).toBe(false);
+    expect(Object.keys(reading.structuredContent ?? {}).sort()).toEqual(['archetype', 'contentVersion', 'cover', 'dimensions', 'generatedOn', 'people', 'readingMinutes']);
+    const responses = { reading, share: shareResponse(lockedRow), history: historyItem(lockedRow) };
+    for (const [route, response] of Object.entries(responses)) {
+      const json = JSON.stringify(response);
+      for (const paid of paidStrings(content, full)) {
+        if (json.includes(paid)) throw new Error(`${route} response carries paid text: ${paid.slice(0, 40)}`);
+      }
+    }
+    for (const hint of full.teaser.cover.lockedHints) expect(JSON.stringify(responses.share)).not.toContain(hint.text);
+  });
+
+  test('an unlocked row answers with the full report and still no stored JSON', async () => {
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+    const reading = readingResponse(row(JSON.stringify(stored)));
+    expect(reading.locked).toBe(false);
+    expect(reading.structuredContent).toEqual(fullContent(stored));
+    const json = JSON.stringify(reading);
+    expect('analysis' in reading).toBe(false);
+    expect(json).not.toContain('"inputs"');
+    expect(json).not.toContain(stored.inputs.reader.birthDate);
+  });
+
+  test('unlock is owner-only and checks nothing else for a stranger', async () => {
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    const { store, state } = memoryStore({ ...row(JSON.stringify(stored)), profileAId: 'someone-else' });
+    const counter = countingModel();
+    const result = await unlockReading(unlockArgs(store));
+    expect(result.status).toBe(404);
+    expect(JSON.stringify(result.body)).not.toContain(stored.teaser.cover.verdict);
+    expect(counter.calls).toBe(0);
+    expect(state.saves).toBe(0);
+  });
+
+  test('with locking on and no credit, unlock is refused before any model call', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    const { store, state } = memoryStore(row(JSON.stringify(stored)));
+    const counter = countingModel();
+    const result = await unlockReading(unlockArgs(store));
+    expect(result.status).toBe(402);
+    expect(counter.calls).toBe(0);
+    expect(state.saves).toBe(0);
+  });
+
+  test('unlock writes the detail once and is idempotent after', async () => {
+    config.compat = { lockEnabled: true, unlockFree: true };
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    const { store, state } = memoryStore(row(JSON.stringify(stored)));
+
+    const counter = countingModel();
+    const first = await unlockReading(unlockArgs(store));
+    expect(first.status).toBe(200);
+    expect(counter.calls).toBe(3);
+    expect(state.saves).toBe(1);
+    if (first.status !== 200) throw new Error('unreachable');
+    expect(first.body.locked).toBe(false);
+    expect(first.body.structuredContent).toHaveProperty('overview');
+
+    const second = await unlockReading(unlockArgs(store));
+    expect(counter.calls).toBe(3);
+    expect(state.saves).toBe(1);
+    expect(second).toEqual(first);
+  });
+
+  test('two concurrent unlocks write the detail once', async () => {
+    config.compat = { lockEnabled: true, unlockFree: true };
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+    const { store, state } = memoryStore(row(JSON.stringify(stored)));
+    const flight = new GenerationSingleFlight(null);
+
+    const counter = countingModel();
+    const [a, b] = await Promise.all([unlockReading(unlockArgs(store, flight)), unlockReading(unlockArgs(store, flight))]);
+    expect(counter.calls).toBe(3);
+    expect(state.saves).toBe(1);
+    expect(a.status).toBe(200);
+    expect(b).toEqual(a);
+  });
+
+  test('a row written before locked mode (full content, flat) is already unlocked', async () => {
+    countingModel();
+    const { content } = await generateCompatibilityV4(input);
+    const { store, state } = memoryStore(row(JSON.stringify(content)));
+    const counter = countingModel();
+    const result = await unlockReading(unlockArgs(store));
+    expect(result.status).toBe(200);
+    if (result.status !== 200) throw new Error('unreachable');
+    expect(result.body.locked).toBe(false);
+    expect(result.body.structuredContent).toEqual(content);
+    expect(counter.calls).toBe(0);
+    expect(state.saves).toBe(0);
+  });
+});
+
+function fullContent(stored: CompatibilityV4Stored): CompatibilityV4Content {
+  if (!stored.detail) throw new Error('needs the detail');
+  return { contentVersion: 4, ...stored.teaser, ...stored.detail, insights: stored.plan.insights };
+}

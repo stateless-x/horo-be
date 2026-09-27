@@ -10,6 +10,7 @@ import {
   pairInputs,
   relationshipCalendar,
   selectArchetype,
+  normalizeMbtiType,
 } from '../../lib/astrology';
 import { z } from 'zod';
 import {
@@ -21,7 +22,13 @@ import {
   type CompatibilityV3Content,
   type CompatibilityV4Content,
   CompatibilityV4ContentSchema,
+  CompatibilityV4StoredSchema,
+  type CompatibilityV4Stored,
   duplicateInsights,
+  shapeCompatibilityView,
+  type V4DetailPart,
+  V4DetailPartSchema,
+  type V4TeaserPart,
   type Element,
   type Gender,
   V4AllSectionsSchema,
@@ -40,7 +47,8 @@ import {
   generateStructuredCompatibilityReadingV3,
   generateCompatibilityV4Plan,
   generateCompatibilityV4Sections,
-  V4_SPLIT,
+  V4_DETAIL_SPLIT,
+  V4_TEASER_SECTIONS,
   type OnModelCall,
 } from './llm';
 import {
@@ -350,25 +358,22 @@ export interface CompatibilityV4Generation {
   qualityFlags: string[];
 }
 
+type V4Input = GenerateCompatibilityInput & {
+  now?: Date;
+  /** Repair turns per call for rule failures; the live route passes 1. Default 2. */
+  maxRepairs?: number;
+  /** Epoch ms by which every model call must have finished (the live route's budget). */
+  deadlineAt?: number;
+};
+
 /**
- * Compatibility report v4. The facts (dimension scores, archetype, month
- * labels) are computed first. Then one short call plans 6 to 8 distinct
- * insights, and the section calls in V4_SPLIT write the report in parallel
- * from the same facts and insights. The insight plan is what keeps the parts
- * consistent: the cover's hints and every chapter draw on the same list.
+ * What the plan call and every section call share: the computed facts (dimension
+ * scores, archetype, month labels), the prompt builder, and the pair and quality
+ * checks. All deterministic from the inputs and `now`.
  */
-export async function generateCompatibilityV4(
-  input: GenerateCompatibilityInput & {
-    now?: Date;
-    /** Repair turns per call for rule failures; the live route passes 1. Default 2. */
-    maxRepairs?: number;
-    /** Epoch ms by which every model call must have finished (the live route's budget). */
-    deadlineAt?: number;
-  },
-): Promise<CompatibilityV4Generation> {
+function v4Context(input: V4Input) {
   const now = input.now ?? new Date();
   const budget = { maxRepairs: input.maxRepairs, deadlineAt: input.deadlineAt };
-  const calcStart = performance.now();
   const charts = calculateCompatibilityCharts(input.reader, input.partner);
   const inputs = pairInputs(charts.readerBazi, charts.partnerBazi, input.reader.mbtiType, input.partner.mbtiType);
   const calendar = relationshipCalendar(charts.readerBazi, charts.partnerBazi, now);
@@ -387,29 +392,6 @@ export async function generateCompatibilityV4(
   const pairElements: Element[] = [charts.readerBazi.element, charts.partnerBazi.element];
   const anchorsOnRelations = inputs.dayRelation !== 'neutral' || inputs.yearRelation !== 'neutral';
   const gender = input.reader.gender;
-
-  const planPrompt = build('plan');
-  const llmStart = performance.now();
-  const plan = await generateCompatibilityV4Plan(planPrompt, {
-    onModelCall: input.onModelCall,
-    ...budget,
-    // The plan is short (3 to 10 s measured); cap it so the sections keep most of the budget.
-    deadlineAt: input.deadlineAt === undefined ? undefined : Math.min(input.deadlineAt, Date.now() + PLAN_BUDGET_MS),
-    pairCheck: (content, ctx) => {
-      const unavailable = new Set<string>([
-        ...(input.reader.mbtiType ? [] : ['readerMbti']),
-        ...(input.partner.mbtiType ? [] : ['partnerMbti']),
-        ...(inputs.stemCombine ? [] : ['stemCombine']),
-      ]);
-      content.insights.forEach((insight, i) => {
-        const bad = insight.basis.filter((b) => unavailable.has(b));
-        if (bad.length) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['insights', i, 'basis'], message: `${bad.join(', ')} is not in this pair's data` });
-        }
-      });
-    },
-  });
-  const planEnd = performance.now();
 
   const toIssues = (issues: Issue[], ctx: z.RefinementCtx) => {
     for (const [path, message] of issues) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message });
@@ -474,43 +456,118 @@ export async function generateCompatibilityV4(
     return issues;
   };
 
-  const sectionPrompts = V4_SPLIT.map((sections) => build(sections, plan.data.insights));
-  const parts = await Promise.all(
-    V4_SPLIT.map((sections, i) =>
-      generateCompatibilityV4Sections(sectionPrompts[i], sections, { onModelCall: input.onModelCall, pairCheck, softCheck, ...budget }),
-    ),
-  );
+  /** The section calls for `split`, in parallel, from one insight plan. */
+  const writeSections = async (split: ReadonlyArray<readonly V4SectionKey[]>, insights: V4InsightPlan['insights']) => {
+    const prompts = split.map((sections) => build(sections, insights));
+    const parts = await Promise.all(
+      split.map((sections, i) =>
+        generateCompatibilityV4Sections(prompts[i], sections, { onModelCall: input.onModelCall, pairCheck, softCheck, ...budget }),
+      ),
+    );
+    return {
+      prompts,
+      sections: Object.assign({}, ...parts.map((part) => part.data)) as Partial<V4Sections>,
+      softIssues: parts.flatMap((part) => part.softIssues),
+    };
+  };
+
+  /** Model text with the known typos fixed and the partner's name spaced (every stored string goes through it). */
+  const polish = <T>(value: T): T => mapStrings(value, (text) => fixKnownTypos(tightenNameSpacing(text, partnerName)));
+
+  const teaserPart = (sections: Partial<V4Sections>): V4TeaserPart =>
+    polish({
+      generatedOn: bangkokDate(now),
+      archetype: facts.archetype,
+      people: {
+        reader: personFacts(charts.readerBazi, input.reader.mbtiType),
+        partner: personFacts(charts.partnerBazi, input.partner.mbtiType),
+      },
+      dimensions: facts.dimensions,
+      cover: V4AllSectionsSchema.pick({ cover: true }).parse(sections).cover,
+    });
+
+  const detailPart = (written: Partial<V4Sections>): V4DetailPart => {
+    const sections = V4AllSectionsSchema.omit({ cover: true }).parse(written);
+    const titles = CHAPTER_TITLES(partnerName, input.relationshipType);
+    return polish({
+      palace: { reader: palaceFacts(charts.readerBazi), partner: palaceFacts(charts.partnerBazi) },
+      readingMinutes: readingMinutes(sections),
+      overview: sections.overview,
+      chapters: V4_CHAPTER_KEYS.map((key) => ({ key, title: titles[key], ...sections[key] })),
+      calendar: calendar.map((month, i) => ({ month: month.month, label: month.label, text: sections.calendar[i].text })),
+      plan: sections.plan,
+    });
+  };
+
+  return { charts, inputs, build, budget, writeSections, polish, teaserPart, detailPart };
+}
+
+export interface CompatibilityV4StoredGeneration {
+  stored: CompatibilityV4Stored;
+  charts: CompatibilityCharts;
+  prompt: string;
+  timings: { calcMs: number; llmMs: number; planMs: number; partsMs: number };
+  qualityFlags: string[];
+}
+
+/**
+ * Compatibility report v4 in its stored two-part form. The facts are computed
+ * first. Then one short call plans 6 to 8 distinct insights, and the section
+ * calls write from the same facts and insights: the cover (the free teaser)
+ * alone, or with the three detail calls in parallel when `withDetail`. The
+ * insight plan is what keeps the parts consistent, including a detail written
+ * later on unlock (generateCompatibilityV4Detail): the cover's hints and every
+ * chapter draw on the same list.
+ */
+export async function generateCompatibilityV4Stored(input: V4Input & { withDetail: boolean }): Promise<CompatibilityV4StoredGeneration> {
+  const calcStart = performance.now();
+  const ctx = v4Context(input);
+  const planPrompt = ctx.build('plan');
+  const llmStart = performance.now();
+  const plan = await generateCompatibilityV4Plan(planPrompt, {
+    onModelCall: input.onModelCall,
+    ...ctx.budget,
+    // The plan is short (3 to 10 s measured); cap it so the sections keep most of the budget.
+    deadlineAt: input.deadlineAt === undefined ? undefined : Math.min(input.deadlineAt, Date.now() + PLAN_BUDGET_MS),
+    pairCheck: (content, refine) => {
+      const unavailable = new Set<string>([
+        ...(input.reader.mbtiType ? [] : ['readerMbti']),
+        ...(input.partner.mbtiType ? [] : ['partnerMbti']),
+        ...(ctx.inputs.stemCombine ? [] : ['stemCombine']),
+      ]);
+      content.insights.forEach((insight, i) => {
+        const bad = insight.basis.filter((b) => unavailable.has(b));
+        if (bad.length) {
+          refine.addIssue({ code: z.ZodIssueCode.custom, path: ['insights', i, 'basis'], message: `${bad.join(', ')} is not in this pair's data` });
+        }
+      });
+    },
+  });
+  const planEnd = performance.now();
+
+  const written = await ctx.writeSections(input.withDetail ? [V4_TEASER_SECTIONS, ...V4_DETAIL_SPLIT] : [V4_TEASER_SECTIONS], plan.data.insights);
   const llmEnd = performance.now();
 
-  const sections = V4AllSectionsSchema.parse(Object.assign({}, ...parts.map((part) => part.data)));
-  const titles = CHAPTER_TITLES(partnerName, input.relationshipType);
-  const content = CompatibilityV4ContentSchema.parse(
-    mapStrings(
-      {
-        contentVersion: 4,
-        generatedOn: bangkokDate(now),
-        archetype: facts.archetype,
-        people: {
-          reader: personFacts(charts.readerBazi, input.reader.mbtiType),
-          partner: personFacts(charts.partnerBazi, input.partner.mbtiType),
-        },
-        palace: { reader: palaceFacts(charts.readerBazi), partner: palaceFacts(charts.partnerBazi) },
-        readingMinutes: readingMinutes(sections),
-        dimensions: facts.dimensions,
-        cover: sections.cover,
-        overview: sections.overview,
-        chapters: V4_CHAPTER_KEYS.map((key) => ({ key, title: titles[key], ...sections[key] })),
-        calendar: calendar.map((month, i) => ({ month: month.month, label: month.label, text: sections.calendar[i].text })),
-        plan: sections.plan,
-        insights: plan.data.insights,
+  const stored = CompatibilityV4StoredSchema.parse({
+    contentVersion: 4,
+    plan: ctx.polish(plan.data),
+    inputs: {
+      reader: {
+        birthDate: input.reader.birthDate.toISOString(),
+        birthHour: input.reader.birthHour ?? null,
+        gender: input.reader.gender,
+        mbti: input.reader.mbtiType,
       },
-      (text) => fixKnownTypos(tightenNameSpacing(text, partnerName)),
-    ),
-  );
+      partner: { birthDate: input.partner.birthDate.toISOString(), mbti: input.partner.mbtiType },
+    },
+    teaser: ctx.teaserPart(written.sections),
+    detail: input.withDetail ? ctx.detailPart(written.sections) : null,
+    ...(input.withDetail ? { detailGeneratedAt: new Date().toISOString() } : {}),
+  });
   return {
-    content,
-    charts,
-    prompt: [planPrompt, ...sectionPrompts].join('\n\n==========\n\n'),
+    stored,
+    charts: ctx.charts,
+    prompt: [planPrompt, ...written.prompts].join('\n\n==========\n\n'),
     timings: {
       calcMs: Math.round(llmStart - calcStart),
       llmMs: Math.round(llmEnd - llmStart),
@@ -522,8 +579,47 @@ export async function generateCompatibilityV4(
       ...(plan.data.insights.some((i) => i.chapter === 'attraction' && i.basis.includes('dayBranch'))
         ? []
         : ['insights: no attraction insight rests on the spouse palace (dayBranch)']),
-      ...parts.flatMap((part) => part.softIssues),
+      ...written.softIssues,
     ],
+  };
+}
+
+/** The full v4 report in one go (the dev tools and the harness): generateCompatibilityV4Stored with the detail, assembled. */
+export async function generateCompatibilityV4(input: V4Input): Promise<CompatibilityV4Generation> {
+  const { stored, ...generation } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+  return { ...generation, content: CompatibilityV4ContentSchema.parse(shapeCompatibilityView(stored, 'full')) };
+}
+
+/**
+ * The paid detail of a locked report, written on unlock from the stored insight
+ * plan. `now` is the day the teaser was written, so the calendar months and the
+ * week plan match what the plan's month insights refer to.
+ */
+export async function generateCompatibilityV4Detail(
+  stored: CompatibilityV4Stored,
+  input: Omit<V4Input, 'now' | 'reader' | 'partner'> & { partner: Pick<CompatibilityPartnerInput, 'name'> },
+): Promise<{ detail: V4DetailPart; qualityFlags: string[]; timings: { llmMs: number } }> {
+  const ctx = v4Context({
+    ...input,
+    now: new Date(`${stored.teaser.generatedOn}T12:00:00+07:00`),
+    reader: {
+      birthDate: new Date(stored.inputs.reader.birthDate),
+      birthHour: stored.inputs.reader.birthHour ?? undefined,
+      gender: stored.inputs.reader.gender,
+      mbtiType: normalizeMbtiType(stored.inputs.reader.mbti),
+    },
+    partner: {
+      name: input.partner.name,
+      birthDate: new Date(stored.inputs.partner.birthDate),
+      mbtiType: normalizeMbtiType(stored.inputs.partner.mbti),
+    },
+  });
+  const llmStart = performance.now();
+  const written = await ctx.writeSections(V4_DETAIL_SPLIT, stored.plan.insights);
+  return {
+    detail: V4DetailPartSchema.parse(ctx.detailPart(written.sections)),
+    qualityFlags: written.softIssues,
+    timings: { llmMs: Math.round(performance.now() - llmStart) },
   };
 }
 
@@ -551,7 +647,7 @@ function palaceFacts(chart: CompatibilityCharts['readerBazi']) {
 /** Thai reads at about 800 graphemes a minute; each part counts at least a minute, as the contents list shows it. */
 const GRAPHEMES_PER_MINUTE = 800;
 const graphemes = new Intl.Segmenter('th', { granularity: 'grapheme' });
-function readingMinutes(sections: V4Sections): number {
+function readingMinutes(sections: Omit<V4Sections, 'cover'>): number {
   const parts = [
     stringLeaves(sections.overview),
     ...V4_CHAPTER_KEYS.map((key) => stringLeaves(sections[key])),

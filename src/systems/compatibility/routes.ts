@@ -2,27 +2,22 @@ import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
 import { normalizeMbtiType } from '../../../lib/astrology';
 import { compatibility } from '../../../lib/db';
-import { MBTI_TYPES, RELATIONSHIP_TYPES, shapeCompatibilityView, shareCompatibilityV4, type RelationshipType } from '../../../lib/shared';
+import { MBTI_TYPES, RELATIONSHIP_TYPES, type RelationshipType } from '../../../lib/shared';
 import { eq, and, desc, sql, count } from 'drizzle-orm';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
-import { cache } from '../../lib/redis';
+import { cache, invalidateCache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
-import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
-import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4, readerGender } from '../../lib/compatibility-generation';
+import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Stored, readerGender } from '../../lib/compatibility-generation';
+import { config } from '../../config';
+import { historyItem, readingResponse, shareResponse, unlockReading } from './reading';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
 }
 
-function getContentFields(analysis: string) {
-  const structuredContent = parseCompatibilityContent(analysis);
-  return {
-    contentVersion: structuredContent?.contentVersion ?? 1,
-    structuredContent,
-  };
-}
+const compatCacheKey = (userId: string, id: string) => `compat:${userId}:${id}`;
 
 /**
  * Compatibility system: relationship-type-aware compatibility readings
@@ -82,25 +77,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
 
       if (existing) {
         // Return cached result without consuming rate limit
-        return {
-          id: existing.id,
-          profileAId: existing.profileAId,
-          partnerName: existing.partnerName,
-          partnerBirthDate: existing.partnerBirthDate,
-          relationshipType: existing.relationshipType,
-          score: existing.score,
-          analysis: existing.analysis,
-          ...getContentFields(existing.analysis),
-          strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
-          challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
-          userElement: existing.userElement,
-          userDayMaster: existing.userDayMaster,
-          partnerElement: existing.partnerElement,
-          partnerDayMaster: existing.partnerDayMaster,
-          shareToken: existing.shareToken,
-          cached: true,
-          createdAt: existing.createdAt.toISOString(),
-        };
+        return { ...readingResponse(existing), cached: true };
       }
 
       const flight = await generationSingleFlight.run({
@@ -162,7 +139,8 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       // written by the model within the live budget (one repair per call and a
       // deadline, so the synchronous response fits the socket and client
       // timeouts; see docs/compatibility-response-fix.md, "v4 live budget").
-      const generation = await generateCompatibilityV4({
+      // Locked mode writes only the free teaser; the detail is written on unlock.
+      const generation = await generateCompatibilityV4Stored({
         reader: {
           birthDate: userProfile.birthDate,
           birthHour: userProfile.birthHour ?? undefined,
@@ -171,18 +149,19 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         },
         partner: { name: partnerName, birthDate: partnerBirthDateObj, mbtiType: normalizeMbtiType(partnerMbtiType) },
         relationshipType,
+        withDetail: !config.compat.lockEnabled,
         maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
         deadlineAt: requestStartedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
       });
       if (generation.qualityFlags.length) {
         console.warn('[compatibility v4] quality flags', { flags: generation.qualityFlags });
       }
-      const { content, charts } = generation;
+      console.log('[compatibility v4] generated', { withDetail: !config.compat.lockEnabled, timings: generation.timings });
+      const { stored, charts } = generation;
       const userBaziChart = charts.readerBazi;
       const partnerBaziChart = charts.partnerBazi;
       const compatibilityScore = charts.score;
-      const structuredContent = shapeCompatibilityView(content, 'full');
-      const reading = JSON.stringify(content);
+      const reading = JSON.stringify(stored);
       const shareToken = Math.random().toString(36).substring(2, 15);
 
       // Save to DB
@@ -205,29 +184,9 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       }).returning();
 
       // Cache the result
-      const resultKey = `compat:${userId}:${saved.id}`;
-      await cache(resultKey, 86400, async () => saved);
+      await cache(compatCacheKey(userId, saved.id), 86400, async () => saved);
 
-      return {
-        id: saved.id,
-        profileAId: saved.profileAId,
-        partnerName: saved.partnerName,
-        partnerBirthDate: saved.partnerBirthDate,
-        relationshipType: saved.relationshipType,
-        score: saved.score,
-        analysis: saved.analysis,
-        contentVersion: 4,
-        structuredContent,
-        strengths: compatibilityScore.strengths,
-        challenges: compatibilityScore.challenges,
-        userElement: saved.userElement,
-        userDayMaster: saved.userDayMaster,
-        partnerElement: saved.partnerElement,
-        partnerDayMaster: saved.partnerDayMaster,
-        shareToken: saved.shareToken,
-        cached: false,
-        createdAt: saved.createdAt.toISOString(),
-      };
+      return { ...readingResponse(saved), cached: false };
         },
       });
 
@@ -254,25 +213,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
             )
             .limit(1);
           if (existing) {
-            return {
-              id: existing.id,
-              profileAId: existing.profileAId,
-              partnerName: existing.partnerName,
-              partnerBirthDate: existing.partnerBirthDate,
-              relationshipType: existing.relationshipType,
-              score: existing.score,
-              analysis: existing.analysis,
-              ...getContentFields(existing.analysis),
-              strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
-              challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
-              userElement: existing.userElement,
-              userDayMaster: existing.userDayMaster,
-              partnerElement: existing.partnerElement,
-              partnerDayMaster: existing.partnerDayMaster,
-              shareToken: existing.shareToken,
-              cached: true,
-              createdAt: existing.createdAt.toISOString(),
-            };
+            return { ...readingResponse(existing), cached: true };
           }
         }
       }
@@ -374,16 +315,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       }
 
       return {
-        data: data.map(item => ({
-          id: item.id,
-          partnerName: item.partnerName,
-          partnerBirthDate: item.partnerBirthDate,
-          relationshipType: item.relationshipType,
-          score: item.score,
-          userElement: item.userElement,
-          partnerElement: item.partnerElement,
-          createdAt: item.createdAt.toISOString(),
-        })),
+        data: data.map(historyItem),
         nextCursor,
         total,
       };
@@ -412,7 +344,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const readingId = params.id;
 
       // Try Redis cache first
-      const cached = await cache(`compat:${session.userId}:${readingId}`, 86400, async () => {
+      const cached = await cache(compatCacheKey(session.userId, readingId), 86400, async () => {
         const [record] = await db
           .select()
           .from(compatibility)
@@ -431,30 +363,54 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'Compatibility reading not found' };
       }
 
-      return {
-        id: cached.id,
-        profileAId: cached.profileAId,
-        partnerName: cached.partnerName,
-        partnerBirthDate: cached.partnerBirthDate,
-        relationshipType: cached.relationshipType,
-        score: cached.score,
-        elementHarmony: cached.elementHarmony,
-        branchHarmony: cached.branchHarmony,
-        analysis: cached.analysis,
-        ...getContentFields(cached.analysis),
-        strengths: cached.strengths ? JSON.parse(cached.strengths) : [],
-        challenges: cached.challenges ? JSON.parse(cached.challenges) : [],
-        userElement: cached.userElement,
-        userDayMaster: cached.userDayMaster,
-        partnerElement: cached.partnerElement,
-        partnerDayMaster: cached.partnerDayMaster,
-        shareToken: cached.shareToken,
-        createdAt: cached.createdAt.toISOString(),
-      };
+      return readingResponse(cached);
     } catch (error) {
       console.error('Compatibility detail error:', error);
       set.status = 500;
       return { error: 'Failed to fetch compatibility reading' };
+    }
+  })
+
+  // Unlock a locked v4 report: write its detail and patch it into the row (owner only, idempotent)
+  .post('/compatibility/:id/unlock', async ({ params, set, request }) => {
+    const requestStartedAt = Date.now();
+    const session = await validateSessionFromRequest(request);
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const userProfile = await getCachedProfile(session.userId);
+      if (!userProfile) {
+        set.status = 404;
+        return { error: 'User profile not found' };
+      }
+
+      const result = await unlockReading({
+        userId: session.userId,
+        profileId: userProfile.id,
+        id: params.id,
+        requestStartedAt,
+        flight: generationSingleFlight,
+        store: {
+          load: async (id) => {
+            const [row] = await db.select().from(compatibility).where(eq(compatibility.id, id)).limit(1);
+            return row ?? null;
+          },
+          saveAnalysis: async (id, analysis) => {
+            const [row] = await db.update(compatibility).set({ analysis }).where(eq(compatibility.id, id)).returning();
+            await invalidateCache(compatCacheKey(session.userId, id));
+            return row;
+          },
+        },
+      });
+      set.status = result.status;
+      return result.body;
+    } catch (error) {
+      console.error('Compatibility unlock error:', error);
+      set.status = 500;
+      return { error: 'ตอนนี้เขียนฉบับเต็มไม่สำเร็จ ลองอีกครั้งนะ' };
     }
   })
 
@@ -474,38 +430,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'ไม่พบผลดวงที่ต้องการ' };
       }
 
-      // A v4 share link shows the free fields only: the stored report is the
-      // paid text, so neither `analysis` nor the full content leaves here.
-      // v2 rows keep today's response (their text was never paid).
-      const content = parseCompatibilityContent(result.analysis);
-      if (content?.contentVersion === 4) {
-        return {
-          partnerName: result.partnerName,
-          relationshipType: result.relationshipType,
-          score: result.score,
-          contentVersion: 4,
-          structuredContent: shareCompatibilityV4(content),
-          userElement: result.userElement,
-          partnerElement: result.partnerElement,
-          createdAt: result.createdAt.toISOString(),
-        };
-      }
-
-      // Return sanitized result (no profileAId for privacy)
-      return {
-        partnerName: result.partnerName,
-        relationshipType: result.relationshipType,
-        score: result.score,
-        analysis: result.analysis,
-        ...getContentFields(result.analysis),
-        strengths: result.strengths ? JSON.parse(result.strengths) : [],
-        challenges: result.challenges ? JSON.parse(result.challenges) : [],
-        userElement: result.userElement,
-        partnerElement: result.partnerElement,
-        userDayMaster: result.userDayMaster,
-        partnerDayMaster: result.partnerDayMaster,
-        createdAt: result.createdAt.toISOString(),
-      };
+      return shareResponse(result);
     } catch (error) {
       console.error('Compatibility share error:', error);
       set.status = 500;

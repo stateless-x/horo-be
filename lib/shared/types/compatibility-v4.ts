@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { thaiProse } from './compatibility-v3';
+import { GenderSchema } from './user';
 
 /**
  * Compatibility report (content v4): overview, then parts, then detail.
@@ -102,7 +103,7 @@ export function duplicateInsights(insights: V4InsightPlan['insights']): string[]
 
 /**
  * One schema per report section. A generation call asks for a set of
- * sections (see V4_SPLIT in horo-be src/lib/llm.ts); the stored content is
+ * sections (see V4_DETAIL_SPLIT in horo-be src/lib/llm.ts); the stored content is
  * assembled from all of them.
  */
 export const V4SectionSchemas = {
@@ -253,7 +254,8 @@ export type CompatibilityV4Share = Pick<CompatibilityV4Content, 'contentVersion'
   dimensions: Array<Pick<V4Dimension, 'key' | 'label' | 'score'>>;
 };
 
-export function shareCompatibilityV4(content: CompatibilityV4Content): CompatibilityV4Share {
+/** Takes the full content or a stored teaser: both carry the free fields. */
+export function shareCompatibilityV4(content: Pick<CompatibilityV4Content, 'archetype' | 'people' | 'cover' | 'dimensions'>): CompatibilityV4Share {
   return {
     contentVersion: 4,
     archetype: content.archetype,
@@ -263,3 +265,58 @@ export function shareCompatibilityV4(content: CompatibilityV4Content): Compatibi
   };
 }
 export type CompatibilityV4Shaped = CompatibilityV4Content | CompatibilityV4Teaser;
+
+// ---------------------------------------------------------------- teaser-first storage
+
+/**
+ * Locked mode stores the report in two parts (horo-be docs/compatibility-response-fix.md,
+ * "Locked mode"). The teaser is written at check time; the detail is written on unlock
+ * and patched into the same row. Together with the insight plan they are exactly
+ * CompatibilityV4Content.
+ */
+export const V4TeaserPartSchema = CompatibilityV4ContentSchema.pick({
+  generatedOn: true,
+  archetype: true,
+  people: true,
+  dimensions: true,
+  cover: true,
+});
+export type V4TeaserPart = z.infer<typeof V4TeaserPartSchema>;
+
+export const V4DetailPartSchema = CompatibilityV4ContentSchema.pick({
+  palace: true,
+  readingMinutes: true,
+  overview: true,
+  chapters: true,
+  calendar: true,
+  plan: true,
+});
+export type V4DetailPart = z.infer<typeof V4DetailPartSchema>;
+
+/**
+ * Both people's inputs when the teaser was written. The reader's profile can be
+ * edited later, and the detail must be written for the same charts the teaser shows.
+ */
+export const V4InputsSnapshotSchema = z.object({
+  reader: z.object({
+    birthDate: z.string().datetime(),
+    birthHour: z.number().int().min(0).max(23).nullable(),
+    gender: GenderSchema.nullable(),
+    mbti: z.string().nullable(),
+  }),
+  partner: z.object({ birthDate: z.string().datetime(), mbti: z.string().nullable() }),
+});
+export type V4InputsSnapshot = z.infer<typeof V4InputsSnapshotSchema>;
+
+/** The stored `analysis` JSON for a v4 report written since locked mode. Never sent to a client. */
+export const CompatibilityV4StoredSchema = z.object({
+  contentVersion: z.literal(4),
+  /** The insight plan both parts are written from. */
+  plan: V4InsightPlanSchema,
+  inputs: V4InputsSnapshotSchema,
+  teaser: V4TeaserPartSchema,
+  /** null until unlocked. */
+  detail: V4DetailPartSchema.nullable(),
+  detailGeneratedAt: z.string().datetime().optional(),
+});
+export type CompatibilityV4Stored = z.infer<typeof CompatibilityV4StoredSchema>;
