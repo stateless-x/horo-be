@@ -197,15 +197,10 @@ export const analyticsRoutes = new Elysia({ prefix: '/api/analytics' })
             t.Literal('fortune_today'),
           ]),
         }),
-        t.Object({
-          event: t.Literal('affiliate_link_opened'),
-          surface: t.Union([t.Literal('today'), t.Literal('fortune')]),
-          placement: t.Union([
-            t.Literal('donation_modal_close'),
-            t.Literal('fortune_compatibility_cta'),
-          ]),
-          affiliateLinkId: t.String({ minLength: 1, maxLength: 20, pattern: '^[A-Za-z0-9]+$' }),
-        }),
+        // No affiliate_link_opened member while AFFILIATE_PLACEMENTS is empty
+        // (T2 removed both forced openers; T12 adds the next placement back
+        // here). A stale cached bundle that still posts a retired placement
+        // gets a 422, which the client only console.warns and never retries.
         t.Object({
           event: t.Literal('relationship_selected'),
           relationshipType: t.Union([
