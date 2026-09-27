@@ -72,6 +72,9 @@ describe('mapStrings', () => {
 describe('v4 prose checks', () => {
   test('idioms around element words are not elements', () => {
     expect(foreignElementWords('ช่วงนี้คุณหมดไฟกับงาน แต่เป็นคนติดดิน และเป็นเด็กไฟแรง', ['water'])).toEqual([]);
+    // From the v4 samples: everyday words, not elements.
+    expect(foreignElementWords('คุณมีไฟในการเข้าหาคน อยากคุยจริงหรือแค่ตามน้ำ', ['earth', 'metal'])).toEqual([]);
+    expect(foreignElementWords('แม่พร้อมของว่างหรือผลไม้หนึ่งจาน', ['fire', 'earth'])).toEqual([]);
   });
 
   test('gendered words must match the reader; คะแนน is not คะ', () => {

@@ -25,10 +25,16 @@ const NOT_AN_ELEMENT_BEFORE: Record<string, readonly string[]> = {
   ไม้: ['บรรทัด'],
 };
 
-/** Idioms where the word before makes it not an element: หมดไฟ (burnt out), ติดดิน (down to earth). */
+/**
+ * Words before that make it not an element: หมดไฟ (burnt out), มีไฟ (keen),
+ * ติดดิน (down to earth), ตามน้ำ (go with the flow), ผลไม้ (fruit). The last
+ * three came up as false flags in the v4 samples.
+ */
 const NOT_AN_ELEMENT_AFTER: Record<string, readonly string[]> = {
-  ไฟ: ['หมด'],
+  ไฟ: ['หมด', 'มี'],
   ดิน: ['ติด'],
+  น้ำ: ['ตาม'],
+  ไม้: ['ผล'],
 };
 
 const thaiWords = new Intl.Segmenter('th', { granularity: 'word' });
