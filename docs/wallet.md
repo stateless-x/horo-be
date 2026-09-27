@@ -73,7 +73,7 @@ Partial unique indexes back the idempotency, independent of the lock:
 `assertCanUnlock(userId, rowId)`:
 1. Lock off, or `COMPAT_UNLOCK_FREE=1` (dev): ok, with no wallet access.
 2. Otherwise `ensureWelcome`, then `spend(userId, 'compat_unlock', rowId)`.
-3. `InsufficientBalance` becomes `{ ok: false, code: 'insufficient_balance', balance, price }`. Any other error is
+3. `InsufficientBalance` becomes `{ ok: false, body: { error: INSUFFICIENT_BALANCE, balance, price } }`, which the unlock route sends as the 402 body. Any other error is
    thrown.
 
 The unlock route charges **before** it generates the detail (`src/systems/compatibility/reading.ts`). A failed

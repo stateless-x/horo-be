@@ -110,11 +110,18 @@ Locked mode writes only the free teaser when the user checks a pair, and writes 
 |---|---|---|
 | `POST /api/fortune/compatibility` | plan, then cover ∥ 3 detail calls; stores the detail | plan, then cover; stores `detail: null` |
 | Response | `locked: false`, full report | `locked: true`, teaser view |
-| `POST /compatibility/:id/unlock` | free (`assertCanUnlock` is ok) | ok only with `COMPAT_UNLOCK_FREE=1` (dev); otherwise 402 `NO_CREDIT` |
+| `POST /compatibility/:id/unlock` | free (`assertCanUnlock` is ok) | spends 49 มู once per row; 402 `{ error: 'insufficient_balance', balance, price }` below that; free with `COMPAT_UNLOCK_FREE=1` (dev) |
 
 The flags are read once at startup (`config.compat` in `src/config.ts`), and only the exact value `1` turns them on.
 
-**Not shippable yet.** With the lock on and no `COMPAT_UNLOCK_FREE`, every unlock returns 402, but the door still says "ใช้ 1 เครดิตปลดล็อก (มี 1 เครดิต)". The credit ledger (monetization T4) must replace the body of `assertCanUnlock` in `src/lib/entitlements.ts` first. Its spend must commit in the same transaction as the detail patch, never before it, so a failed generation costs no credit.
+**Paid in มู (2026-09-27).** With the lock on, `assertCanUnlock` in `src/lib/entitlements.ts` pays for the unlock from the มู wallet (`docs/wallet.md`):
+- The first wallet touch grants the 49 มู welcome gift.
+- The unlock then spends `compat_unlock` (49 มู) once per row.
+- The door reads the balance: "ใช้ 49 มู ปลดล็อก (มี 49 มู)". On a 402 it turns into "เติมมู".
+
+The spend commits **before** the detail is generated. A failed generation is not refunded, but the spend is keyed to the row, so the retry charges nothing. The long-term fix is to insert the spend in the same transaction as the detail patch.
+
+Payment (T5) is not built, so a balance can't be topped up yet. Don't turn the lock on in production before T5.
 
 ### Stored shape
 
@@ -157,7 +164,7 @@ A locked teaser has no detail to count its reading time from. The door shows `V4
 1. Session, then profile.
 2. Load the row. 404 unless the session's profile owns it.
 3. If the row is not a locked v4 report, return it as it is. That makes the call idempotent: no model call and no entitlement check.
-4. Call `assertCanUnlock(userId, rowId)`. 402 if it refuses.
+4. Call `assertCanUnlock(userId, rowId)`, which spends 49 มู for this row, or nothing if this row was already paid for. If the balance is short, answer 402 with `InsufficientBalanceBody` (`lib/shared/types/wallet.ts`).
 5. Take the single-flight lock `generationKey('compatibility', 'unlock', rowId)`. A second tap, or a second process, waits for the first and gets the same result.
 6. Inside the lock, re-read the row, since another process may have finished. Then `generateCompatibilityV4Detail(stored, …)` runs the three detail calls from `stored.plan`.
    - `now` is the teaser's `generatedOn`, so the calendar months and the week plan match the plan's month insights.
@@ -194,7 +201,8 @@ Three unlocks on the local stack the same day took 16.5, 18.5 and 32.6 s end to 
   - teaser plus a later detail equals the report written in one go;
   - the detail's months follow `generatedOn`;
   - locked responses carry no paid string on the reading, share and history routes;
-  - unlock is owner-only, is refused without credit, is idempotent, and writes once under two concurrent taps;
+  - unlock is owner-only, answers 402 `insufficient_balance` at a balance of 0, is idempotent, and writes once under two concurrent taps;
+  - a row whose detail exists opens without touching the wallet (the wallet is stubbed; `tests/wallet.test.ts` covers the ledger itself);
   - partners called ดาว, ดาวใจ, น้ำ, ไฟ and ทอง pass without a repair, and a real jargon hint is still repaired or rejected.
-- To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`.
+- To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`. A relocked row that was already paid for unlocks again for free, because its spend exists.
 - To run locally, start the backend with `COMPAT_LOCK_ENABLED=1 COMPAT_UNLOCK_FREE=1`. Never set `COMPAT_UNLOCK_FREE` in production.
