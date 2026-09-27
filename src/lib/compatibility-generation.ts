@@ -25,6 +25,7 @@ import {
   CompatibilityV4StoredSchema,
   type CompatibilityV4Stored,
   duplicateInsights,
+  foreignTokenIn,
   shapeCompatibilityView,
   type V4DetailPart,
   V4DetailPartSchema,
@@ -66,11 +67,11 @@ import {
   escapeRegExp,
   fixKnownTypos,
   foreignElementWords,
-  foreignTextIn,
   guessesPartnerView,
   hintJargon,
   mapStrings,
-  maskName,
+  maskNames,
+  NAME_MARK,
   mixesPronouns,
   proseLeaves,
   stockLine,
@@ -202,13 +203,14 @@ export async function generateCompatibilityV2(
 }
 
 /**
- * Every prose field is Thai (MBTI codes aside), read with the partner's name
- * masked: a partner called Mind or A+ is not English in the text. The model
- * drops stray foreign words into long Thai output; one costs a repair.
+ * Every prose field is Thai (MBTI codes aside). `view` is the reading with the
+ * partner's name masked (maskNames), so a partner called Mind or A+ is not
+ * English. The model drops stray foreign words into long Thai output; one
+ * costs a repair.
  */
-export function foreignTextIssues(content: unknown, partnerName: string, ctx: z.RefinementCtx): void {
-  for (const [path, text] of proseLeaves(content)) {
-    const token = foreignTextIn(text, partnerName);
+export function foreignTextIssues(view: unknown, ctx: z.RefinementCtx): void {
+  for (const [path, text] of proseLeaves(view)) {
+    const token = foreignTokenIn(text);
     if (token) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message: `Non-Thai text in prose: "${token}"` });
   }
 }
@@ -227,9 +229,10 @@ function elementCheck(allowed: CompatibilityCharts['readerBazi']['element'][], p
     [['detail', 'dynamic'], (content) => content.detail.dynamic],
   ];
   return (content: Checked, ctx: z.RefinementCtx) => {
-    foreignTextIssues(content, partnerName, ctx);
+    const view = maskNames(content, partnerName);
+    foreignTextIssues(view, ctx);
     for (const [path, read] of fields) {
-      const text = read(content);
+      const text = read(view);
       const foreign = foreignElementWords(text, allowed);
       if (foreign.length > 0) {
         ctx.addIssue({
@@ -316,18 +319,11 @@ const HEADLINE = /^cover\.verdict$|^overview\.|^attraction\./;
 /**
  * Rules every prose field must pass: correct elements, nothing credited to a
  * planet, the reader's gender, and no silent-chart claim in the headline fields.
- * They read the text with the partner's name masked (maskName): a partner
- * called น้ำ is not the element water, and one called หนู is not a pronoun.
+ * `entries` come from the masked view (maskNames), like every rule's input.
  */
-function factIssues(
-  entries: Array<[string, string]>,
-  allowedFor: (path: string) => Element[],
-  gender: Gender | null,
-  partnerName: string,
-): Issue[] {
+function factIssues(entries: Array<[string, string]>, allowedFor: (path: string) => Element[], gender: Gender | null): Issue[] {
   const issues: Issue[] = [];
-  for (const [path, written] of entries) {
-    const text = maskName(written, partnerName);
+  for (const [path, text] of entries) {
     const silent = HEADLINE.test(path) ? chartSilence(text) : null;
     if (silent) issues.push([path, `"${silent}" says the chart is silent; lead with the pair's first signal instead`]);
     const foreign = foreignElementWords(text, allowedFor(path));
@@ -340,14 +336,18 @@ function factIssues(
   return issues;
 }
 
-/** Quality rules worth one repair: see generateValidatedCompatibilityJson's softCheck. */
+/**
+ * Quality rules worth one repair: see generateValidatedCompatibilityJson's
+ * softCheck. `entries` come from the masked view, where the partner is
+ * NAME_MARK; `partnerName` is only for the messages.
+ */
 function qualityIssues(entries: Array<[string, string]>, partnerName: string): string[] {
   const issues: string[] = [];
-  const personal = new RegExp(`${escapeRegExp(partnerName)}|${Object.values(DIMENSION_LABELS).join('|')}`);
+  const personal = new RegExp(`${escapeRegExp(NAME_MARK)}|${Object.values(DIMENSION_LABELS).join('|')}`);
   for (const [path, text] of entries) {
-    const inventory = birthDataInventory(maskName(text, partnerName));
+    const inventory = birthDataInventory(text);
     if (inventory) issues.push(`${path}: lists birth data in one breath ("${inventory.slice(0, 40)}"); mention one data point per sentence, only as a reason`);
-    const guess = guessesPartnerView(text, partnerName);
+    const guess = guessesPartnerView(text, NAME_MARK);
     if (guess) issues.push(`${path}: "${guess}" says how ${partnerName} reads you; describe what ${partnerName} tends to do or need instead`);
     const stock = stockLine(text);
     if (stock) issues.push(`${path}: "${stock}" is stock advice that fits anyone; make it specific to this pair`);
@@ -371,13 +371,14 @@ function qualityIssues(entries: Array<[string, string]>, partnerName: string): s
  * chart: one of their elements, or, when the palace or year relation is not
  * neutral, that relation. A behaviour from the insight plan can't be told
  * from a generic line by word overlap (tested on 20 sample verdicts), so it
- * does not count on its own.
+ * does not count on its own. `verdict` is from the masked view, where the
+ * partner is NAME_MARK; `partnerName` is only for the messages.
  */
 export function verdictIssues(verdict: string, partnerName: string, pairElements: Element[], anchorsOnRelations: boolean): string[] {
   const issues: string[] = [];
-  if (!verdict.includes(partnerName)) issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
+  if (!verdict.includes(NAME_MARK)) issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
   const anchored =
-    elementsNamed(maskName(verdict, partnerName)).some((element) => pairElements.includes(element)) || (anchorsOnRelations && RELATION_TERMS.test(verdict));
+    elementsNamed(verdict).some((element) => pairElements.includes(element)) || (anchorsOnRelations && RELATION_TERMS.test(verdict));
   if (!anchored) issues.push("cover.verdict: fits any pair; open with the pair's first signal as a concrete image");
   if (GENERIC_VERDICT.test(verdict)) issues.push('cover.verdict: a line that fits any pair or over-claims; say what is specific to this pair');
   return issues;
@@ -431,21 +432,23 @@ function v4Context(input: V4Input) {
     for (const [path, message] of issues) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message });
   };
   const monthElement = (path: string) => calendar[Number(path.split('.')[1])].monthElement;
+  // Every prose rule reads `view`, the reply with the partner's name masked
+  // once here (maskNames). Only the month keys are checked on the reply itself.
   const pairCheck = (content: Partial<V4Sections>, ctx: z.RefinementCtx) => {
-    foreignTextIssues(content, partnerName, ctx);
+    const view = maskNames(content, partnerName);
+    foreignTextIssues(view, ctx);
     toIssues(
       factIssues(
-        stringLeaves(content).filter(([path]) => !path.endsWith('.month')),
+        stringLeaves(view).filter(([path]) => !path.endsWith('.month')),
         (path) => (path.startsWith('calendar.') ? [...pairElements, monthElement(path)] : pairElements),
         gender,
-        partnerName,
       ).filter(([path, message]) => !message.startsWith(ELEMENT_ISSUE) || ELEMENT_CORE.test(path)),
       ctx,
     );
     // A locked hint sells a moment, not a spec. Checked here rather than in the
     // schema because a partner is often called ดาว, which is also the word for a planet.
-    content.cover?.lockedHints.forEach((hint, i) => {
-      const jargon = hintJargon(maskName(hint.text, partnerName));
+    view.cover?.lockedHints.forEach((hint, i) => {
+      const jargon = hintJargon(hint.text);
       if (jargon) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -462,8 +465,8 @@ function v4Context(input: V4Input) {
     if (content.future && content.future.nextStep.month !== facts.bestMonth.month) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['future', 'nextStep', 'month'], message: `must be ${facts.bestMonth.month}` });
     }
-    for (const dim of content.overview ? facts.dimensions : []) {
-      const line = content.overview!.dimensionLines[dim.key];
+    for (const dim of view.overview ? facts.dimensions : []) {
+      const line = view.overview!.dimensionLines[dim.key];
       const path = ['overview', 'dimensionLines', dim.key];
       if (!dim.basis.includes('mbti') && /MBTI|[IE][NS][TF][JP]/.test(line)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: 'mentions MBTI, but this score was not computed from MBTI' });
@@ -477,29 +480,29 @@ function v4Context(input: V4Input) {
     }
   };
   const softCheck = (content: Partial<V4Sections>) => {
-    const issues = qualityIssues(stringLeaves(content), partnerName);
+    const view = maskNames(content, partnerName);
+    const issues = qualityIssues(stringLeaves(view), partnerName);
     // Element slips outside the core fields: often a metaphor, worth a repair, not a failed reading.
     for (const [path, message] of factIssues(
-      stringLeaves(content).filter(([p]) => !p.endsWith('.month') && !ELEMENT_CORE.test(p)),
+      stringLeaves(view).filter(([p]) => !p.endsWith('.month') && !ELEMENT_CORE.test(p)),
       (p) => (p.startsWith('calendar.') ? [...pairElements, monthElement(p)] : pairElements),
       gender,
-      partnerName,
     )) {
       if (message.startsWith(ELEMENT_ISSUE)) issues.push(`${path}: ${message}`);
     }
-    if (content.cover) issues.push(...verdictIssues(content.cover.verdict, partnerName, pairElements, anchorsOnRelations));
-    content.calendar?.forEach((entry, i) => {
+    if (view.cover) issues.push(...verdictIssues(view.cover.verdict, partnerName, pairElements, anchorsOnRelations));
+    view.calendar?.forEach((entry, i) => {
       // Soft: a regex can't tell "เดือนดี" from "ยังไม่ใช่เดือนดี", and the label itself is shown from the computation.
       if (LABEL_CONTRADICTION[calendar[i].label]?.test(entry.text)) {
         issues.push(`calendar.${i}.text: reads against the computed label (${calendar[i].label}); explain that label`);
       }
     });
-    content.cover?.lockedHints.forEach((hint, i) => {
+    view.cover?.lockedHints.forEach((hint, i) => {
       if (HINT_GIVES_ANSWER.test(hint.text)) {
         issues.push(`cover.lockedHints.${i}.text: already says what to do ("ลอง..."); tease the moment, keep the answer for the chapter`);
       }
     });
-    if (content.attraction && !SPOUSE_PALACE.test(content.attraction.detail)) {
+    if (view.attraction && !SPOUSE_PALACE.test(view.attraction.detail)) {
       issues.push('attraction.detail: give the astrological reason with ตำแหน่งคู่ในดวง or นักษัตรวันเกิด');
     }
     return issues;
@@ -619,7 +622,7 @@ export async function generateCompatibilityV4Stored(input: V4Input & { withDetai
     // The plan is short (3 to 10 s measured); cap it so the sections keep most of the budget.
     deadlineAt: input.deadlineAt === undefined ? undefined : Math.min(input.deadlineAt, Date.now() + PLAN_BUDGET_MS),
     pairCheck: (content, refine) => {
-      foreignTextIssues(content, input.partner.name, refine);
+      foreignTextIssues(maskNames(content, input.partner.name), refine);
       const unavailable = new Set<string>([
         ...(input.reader.mbtiType ? [] : ['readerMbti']),
         ...(input.partner.mbtiType ? [] : ['partnerMbti']),

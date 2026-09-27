@@ -1,4 +1,4 @@
-import { foreignTokenIn, type Element } from '../../lib/shared';
+import type { Element } from '../../lib/shared';
 
 /**
  * Deterministic checks and clean-ups for generated compatibility prose,
@@ -81,8 +81,8 @@ export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]
 /** Thai planet names that follow ดาว: ดาวอังคาร is the planet even when the partner is called ดาว. */
 const PLANET_NAMES = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์', 'ราหู', 'เกตุ'];
 
-/** Stands in for the partner's name while the vocabulary checks run. */
-const NAME_MARK = '(ชื่อ)';
+/** Stands in for the partner's name while the checks run (maskNames). */
+export const NAME_MARK = '(ชื่อ)';
 
 /**
  * `text` with the partner's name replaced by a neutral mark, so the vocabulary
@@ -101,12 +101,14 @@ export function maskName(text: string, name: string): string {
 }
 
 /**
- * The first non-Thai token in model prose (foreignTokenIn: MBTI codes allowed),
- * read with the partner's name masked, so "Mind" or "A+" is a name, not a
- * stray English word. Every version's generation check calls it.
+ * A generated reading with the partner's name masked in every string, same
+ * shape. Each version's check masks once, at its entry, and every rule reads
+ * only the masked copy: a name is never jargon (ดาว), an element (น้ำ), a
+ * pronoun (หนู), English (Mind) or a number (มูหนึ่ง2242). Rules that need the
+ * name look for NAME_MARK.
  */
-export function foreignTextIn(text: string, partnerName: string): string | null {
-  return foreignTokenIn(maskName(text, partnerName));
+export function maskNames<T>(value: T, partnerName: string): T {
+  return mapStrings(value, (text) => maskName(text, partnerName));
 }
 
 /**

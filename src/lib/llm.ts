@@ -18,7 +18,7 @@ import {
 
 type CompatibilityV3Generated = z.infer<typeof CompatibilityV3GeneratedSchema>;
 import { CHART_BUDGET, DAILY_BUDGET } from "../../lib/shared/types/generation-budget";
-import { foreignTextIn } from "./compatibility-text";
+import { maskNames } from "./compatibility-text";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const MAX_TOKENS_CAP = 8192; // deepseek-chat hard limit
@@ -426,7 +426,8 @@ export async function generateStructuredCompatibilityReadingV3(
  * in them must still parse against, so the foreign-word rule lives here, on
  * generation only. v2 leaked "naturally" into Thai output in the samples.
  */
-function rejectForeignWords(content: GeneratedCompatibilityContent, ctx: z.RefinementCtx, partnerName: string | undefined) {
+function rejectForeignWords(written: GeneratedCompatibilityContent, ctx: z.RefinementCtx, partnerName: string | undefined) {
+  const content = partnerName === undefined ? written : maskNames(written, partnerName);
   const fields: Array<[string, string]> = [
     ['verdict', content.verdict],
     ['chemistry', content.chemistry],
@@ -437,7 +438,7 @@ function rejectForeignWords(content: GeneratedCompatibilityContent, ctx: z.Refin
     ['nextSteps.watchFor', content.nextSteps.watchFor],
   ];
   for (const [path, text] of fields) {
-    const token = partnerName === undefined ? foreignTokenIn(text) : foreignTextIn(text, partnerName);
+    const token = foreignTokenIn(text);
     if (token) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message: `Non-Thai text in prose: "${token}"` });
   }
 }

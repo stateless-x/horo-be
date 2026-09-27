@@ -298,8 +298,9 @@ describe('partner names that are ordinary words', () => {
     expect(stored.teaser.cover.verdict).toContain('(บีม');
   });
 
-  // Latin letters and symbols: the Thai-only rule reads the text with the name masked.
-  for (const partner of ['Mind', 'A+', 'น้อง*']) {
+  // Latin letters, symbols and digits: every rule reads the reply with the name masked once.
+  // มูหนึ่ง2242 failed the dimension lines' no-digits rule on every retry (local row 29cc29e2).
+  for (const partner of ['Mind', 'A+', 'น้อง*', 'มูหนึ่ง2242']) {
     test(`${partner}: cover and detail pass with no repair, and the stored row parses back`, async () => {
       mockModel(() => renamed(partner));
       let calls = 0;
