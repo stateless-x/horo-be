@@ -275,6 +275,22 @@ describe('partner names that are ordinary words', () => {
     });
   }
 
+  test('ดาว: a real jargon hint gets the repair, which names it', async () => {
+    const good = renamed('ดาว');
+    const cover = good.cover as { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };
+    const jargon = { ...cover, lockedHints: [{ ...cover.lockedHints[0], text: 'ทำไมธาตุดินของดาวถึงเงียบเมื่อแผนเปลี่ยน' }, ...cover.lockedHints.slice(1)] };
+    const coverCalls: string[][] = [];
+    mockModel((keys, messages) => {
+      if (!keys.includes('cover')) return good;
+      coverCalls.push(messages);
+      return coverCalls.length === 1 ? { ...good, cover: jargon } : good;
+    });
+    const { stored } = await generateCompatibilityV4Stored({ ...named('ดาว'), withDetail: false });
+    expect(coverCalls).toHaveLength(2);
+    expect(coverCalls[1].at(-1)).toContain('"ธาตุ" is an astrology or MBTI term');
+    expect(stored.teaser.cover.lockedHints[0].text).toBe(cover.lockedHints[0].text);
+  });
+
   test('ดาว: a planet in a hint is still jargon, and fails the reading if it stays', async () => {
     const cover = renamed('ดาว').cover as { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };
     const planet = { ...cover, lockedHints: [{ ...cover.lockedHints[0], text: 'ทำไมดาวอังคารทำให้ดาวเงียบเมื่อแผนเปลี่ยน' }, ...cover.lockedHints.slice(1)] };
