@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { INSUFFICIENT_BALANCE, type InsufficientBalanceBody } from '../../lib/shared/types/wallet';
 import { InsufficientBalance, wallet as appWallet, type Wallet } from './wallet';
 
 /**
@@ -6,9 +7,8 @@ import { InsufficientBalance, wallet as appWallet, type Wallet } from './wallet'
  * (docs/monetization-tickets.md T8), paid in มู (docs/wallet.md).
  */
 
-export type UnlockDecision =
-  | { ok: true }
-  | { ok: false; code: 'insufficient_balance'; balance: number; price: number };
+/** Refused: the 402 body the unlock route sends as is. */
+export type UnlockDecision = { ok: true } | { ok: false; body: InsufficientBalanceBody };
 
 /**
  * May this user unlock this compatibility report? Free while locked mode is
@@ -29,7 +29,7 @@ export async function assertCanUnlock(
     return { ok: true };
   } catch (error) {
     if (error instanceof InsufficientBalance) {
-      return { ok: false, code: 'insufficient_balance', balance: error.balance, price: error.price };
+      return { ok: false, body: { error: INSUFFICIENT_BALANCE, balance: error.balance, price: error.price } };
     }
     throw error;
   }

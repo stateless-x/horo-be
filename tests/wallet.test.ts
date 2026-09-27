@@ -62,7 +62,7 @@ describe('assertCanUnlock', () => {
         throw new InsufficientBalance(12, 49);
       }),
     );
-    expect(decision).toEqual({ ok: false, code: 'insufficient_balance', balance: 12, price: 49 });
+    expect(decision).toEqual({ ok: false, body: { error: 'insufficient_balance', balance: 12, price: 49 } });
   });
 
   test('any other wallet failure is thrown, not turned into a refusal', async () => {

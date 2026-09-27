@@ -3,6 +3,7 @@ import { RelationshipTypeSchema, shapeCompatibilityView, shareCompatibilityV4, t
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Detail } from '../../lib/compatibility-generation';
 import { assertCanUnlock } from '../../lib/entitlements';
+import type { InsufficientBalanceBody } from '../../../lib/shared/types/wallet';
 import { generationKey, type GenerationSingleFlight } from '../../lib/generation-singleflight';
 
 /**
@@ -104,7 +105,7 @@ export interface UnlockStore {
 
 export type UnlockResult =
   | { status: 200; body: ReturnType<typeof readingResponse> }
-  | { status: 402; body: { error: string; code: 'NO_CREDIT' } }
+  | { status: 402; body: InsufficientBalanceBody }
   | { status: 404; body: { error: string } };
 
 /**
@@ -133,7 +134,7 @@ export async function unlockReading(args: {
   if (!lockedStored(row.analysis)) return { status: 200, body: readingResponse(row) };
 
   const decision = await assertCanUnlock(userId, id);
-  if (!decision.ok) return { status: 402, body: { error: 'ต้องใช้เครดิตเพื่อเปิดฉบับเต็ม', code: decision.code } };
+  if (!decision.ok) return { status: 402, body: decision.body };
 
   const flight = await args.flight.run({
     operation: 'compatibility',

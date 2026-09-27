@@ -209,7 +209,7 @@ if (configErrors.length === 0) {
               : 'No rate limit found',
           };
         });
-      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*), /api/wallet/dev/grant, /api/debug/reset-rate-limit');
+      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*, relock/compatibility), /api/wallet/dev/grant, /api/debug/reset-rate-limit');
     }
 
     console.log('[STARTUP] Auth and routes loaded successfully');

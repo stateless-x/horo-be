@@ -78,9 +78,15 @@ export interface OrderStatusResponse {
   paidAt: string | null;
 }
 
+/**
+ * The error code of an HTTP 402 when a spend needs more มู than the balance
+ * holds. One name for the entitlement seam, the unlock route and the frontend.
+ */
+export const INSUFFICIENT_BALANCE = 'insufficient_balance';
+
 /** HTTP 402 body when a spend needs more มู than the balance holds. */
 export interface InsufficientBalanceBody {
-  error: 'insufficient_balance';
+  error: typeof INSUFFICIENT_BALANCE;
   balance: number;
   price: number;
 }
