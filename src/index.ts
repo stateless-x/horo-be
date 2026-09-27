@@ -117,26 +117,6 @@ if (configErrors.length === 0) {
     // The basePath is configured in auth.ts, so we mount at root and let Better Auth handle routing
     app = app
       .mount(auth.handler)
-      // Debug endpoint to test session validation
-      .get('/api/debug/session', async ({ request, set }) => {
-        const { validateSessionFromRequest } = await import('./lib/session');
-        const session = await validateSessionFromRequest(request);
-
-        if (!session) {
-          set.status = 401;
-          return {
-            authenticated: false,
-            message: 'No valid session found',
-            cookieHeader: request.headers.get('cookie')?.substring(0, 50) + '...' || 'No cookie header'
-          };
-        }
-
-        return {
-          authenticated: true,
-          userId: session.userId,
-          expiresAt: session.expiresAt,
-        };
-      })
       .use(systemsRoutes)
       .use(onboardingRoutes)
       .use(analyticsRoutes)
@@ -153,14 +133,34 @@ if (configErrors.length === 0) {
       console.log('[STARTUP] Resend webhook route mounted at /webhooks/resend');
     }
 
-    // Dev-only surfaces. The rate-limit reset used to be chained above with the
-    // always-mounted routes, so production exposed it and any signed-in user
-    // could clear their own LLM rate caps.
+    // Dev-only surfaces. The two debug routes used to be chained above with the
+    // always-mounted routes, so production exposed them: any signed-in user
+    // could clear their own LLM rate caps, and the session probe echoed cookie headers.
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');
       app = app
         .use(devModule.devRoutes)
         .use(walletModule.walletDevRoutes())
+        // Debug endpoint to test session validation
+        .get('/api/debug/session', async ({ request, set }) => {
+          const { validateSessionFromRequest } = await import('./lib/session');
+          const session = await validateSessionFromRequest(request);
+
+          if (!session) {
+            set.status = 401;
+            return {
+              authenticated: false,
+              message: 'No valid session found',
+              cookieHeader: request.headers.get('cookie')?.substring(0, 50) + '...' || 'No cookie header'
+            };
+          }
+
+          return {
+            authenticated: true,
+            userId: session.userId,
+            expiresAt: session.expiresAt,
+          };
+        })
         // Debug endpoint to reset rate limit (supports both Redis and in-memory)
         .post('/api/debug/reset-rate-limit', async ({ request, set }) => {
           const { validateSessionFromRequest } = await import('./lib/session');
@@ -209,7 +209,7 @@ if (configErrors.length === 0) {
               : 'No rate limit found',
           };
         });
-      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*, relock/compatibility), /api/wallet/dev/grant, /api/debug/reset-rate-limit');
+      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*, relock/compatibility), /api/wallet/dev/grant, /api/debug/session, /api/debug/reset-rate-limit');
     }
 
     console.log('[STARTUP] Auth and routes loaded successfully');
