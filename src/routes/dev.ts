@@ -20,11 +20,13 @@ import type { OnModelCall } from '../lib/llm';
 import { validateSessionFromRequest } from '../lib/session';
 import {
   DevRegenerateCompatibilitySchema,
+  DevRelockCompatibilitySchema,
   DevRequestError,
   isLocalDatabaseUrl,
   regenerateChart,
   regenerateCompatibility,
   regenerateDaily,
+  relockCompatibility,
 } from '../lib/dev-regenerate';
 import { generateTeaser } from '../systems/fortune/teaser';
 
@@ -246,6 +248,10 @@ export const devRoutes = new Elysia({ prefix: '/api/dev' })
     devWrite(DevRegenerateCompatibilitySchema, (input, { userId, startedAt }) =>
       regenerateCompatibility(userId, input, startedAt),
     ),
+  )
+  .post(
+    '/relock/compatibility',
+    devWrite(DevRelockCompatibilitySchema, (input, { userId }) => relockCompatibility(userId, input)),
   )
   .post('/regenerate/daily', devWrite(NoBodySchema, (_input, { userId, request }) => regenerateDaily(userId, request)))
   .post('/regenerate/chart', devWrite(NoBodySchema, (_input, { userId, request }) => regenerateChart(userId, request)));

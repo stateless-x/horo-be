@@ -9,13 +9,14 @@ import { parseCompatibilityContent } from './compatibility-content';
 import {
   COMPATIBILITY_V4_LIVE_BUDGET,
   generateCompatibilityV2,
-  generateCompatibilityV4,
+  generateCompatibilityV4Stored,
   readerGender,
 } from './compatibility-generation';
+import { config } from '../config';
 import { getCachedProfile } from '../systems/shared';
 import { normalizeMbtiType } from '../../lib/astrology';
 import { birthProfiles, chartNarratives, compatibility, dailyReadings } from '../../lib/db';
-import { RelationshipTypeSchema, type RelationshipType } from '../../lib/shared';
+import { CompatibilityV4StoredSchema, RelationshipTypeSchema, type RelationshipType } from '../../lib/shared';
 import { getTodayBangkokString } from '../../lib/shared/utils/date';
 
 /**
@@ -150,8 +151,9 @@ function storedPartnerMbti(analysis: string): string | null {
  * upserts it on (profile, partner birth date, relationship type), so an
  * existing row keeps its id and share token.
  *
- * "full" writes the whole report, detail included (a row the page shows
- * unlocked), with generateCompatibilityV4 and the live budget.
+ * "full" writes what the live route writes: generateCompatibilityV4Stored with
+ * the live budget, the detail included unless locked mode is on
+ * (config.compat.lockEnabled), so a locked row can be made from the panel.
  *
  * Partner MBTI is not a column: for an existing row it comes from a stored
  * v4 report and is unknown for a v2 row. A "new" target
@@ -189,11 +191,12 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
   };
   const { content, charts, qualityFlags } =
     input.kind === 'full'
-      ? await generateCompatibilityV4({
+      ? await generateCompatibilityV4Stored({
           ...generationInput,
+          withDetail: !config.compat.lockEnabled,
           maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
           deadlineAt: startedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
-        })
+        }).then(({ stored, ...generation }) => ({ ...generation, content: stored }))
       : { ...(await generateCompatibilityV2(generationInput)), qualityFlags: [] };
 
   const values = {
@@ -224,8 +227,46 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
     })
     .returning({ id: compatibility.id });
 
-  // GET /compatibility/:id caches the row for 24h under the user id.
-  await invalidateCache(`compat:${userId}:${saved.id}`);
+  await forgetCompatibilityRow(userId, saved.id);
 
-  return { id: saved.id, partnerName: partner.name, relationshipType, score: values.score, partnerMbti: partner.mbti, qualityFlags };
+  const locked = content.contentVersion === 4 && content.detail === null;
+  return { id: saved.id, partnerName: partner.name, relationshipType, score: values.score, partnerMbti: partner.mbti, locked, qualityFlags };
+}
+
+/**
+ * Drops what could serve a row's old content: the 24h `compat:` cache of
+ * GET /compatibility/:id, and the unlock's 60s single-flight replay, which
+ * would otherwise answer an unlock right after a rewrite with the old report
+ * and never write the new detail.
+ */
+async function forgetCompatibilityRow(userId: string, rowId: string): Promise<void> {
+  await invalidateCache(`compat:${userId}:${rowId}`, flightResultKey(generationKey('compatibility', 'unlock', rowId)));
+}
+
+export const DevRelockCompatibilitySchema = z.object({ id: z.string().uuid() });
+
+/**
+ * "ล็อกใหม่": sets a stored v4 row's detail back to null, so the lock and the
+ * unlock can be tried again without a new check. Only the two-part stored
+ * form can be locked; it keeps the plan and inputs the unlock writes from.
+ */
+export async function relockCompatibility(userId: string, input: z.infer<typeof DevRelockCompatibilitySchema>) {
+  const profile = await requireProfile(userId);
+  const [row] = await db
+    .select({ id: compatibility.id, analysis: compatibility.analysis })
+    .from(compatibility)
+    .where(and(eq(compatibility.id, input.id), eq(compatibility.profileAId, profile.id)))
+    .limit(1);
+  if (!row) throw new DevRequestError(404, 'ไม่พบดวงคู่นี้ในประวัติของผู้ใช้นี้');
+  const stored = CompatibilityV4StoredSchema.safeParse(JSON.parse(row.analysis));
+  if (!stored.success) {
+    throw new DevRequestError(409, 'แถวนี้ไม่ใช่ฉบับเต็มแบบสองส่วน (ไม่มี plan กับ inputs ให้ปลดล็อก) กดสร้างใหม่แบบฉบับเต็มก่อน');
+  }
+  const { detailGeneratedAt: _dropped, ...rest } = stored.data;
+  await db
+    .update(compatibility)
+    .set({ analysis: JSON.stringify({ ...rest, detail: null }) })
+    .where(eq(compatibility.id, row.id));
+  await forgetCompatibilityRow(userId, row.id);
+  return { id: row.id };
 }

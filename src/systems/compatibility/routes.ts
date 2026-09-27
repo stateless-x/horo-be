@@ -318,6 +318,9 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         data: data.map(historyItem),
         nextCursor,
         total,
+        // The page reads it before a new check, so the wait screen can say
+        // what the POST will write: the teaser alone (lock on) or the full report.
+        lockEnabled: config.compat.lockEnabled,
       };
     } catch (error) {
       console.error('Compatibility history error:', error);

@@ -14,7 +14,7 @@ import { GenerationSingleFlight, generationKey } from '../src/lib/generation-sin
  */
 const REAL_ENV = config.env;
 const REAL_DB_URL = config.database.url;
-const PATHS = ['/regenerate/compatibility', '/regenerate/daily', '/regenerate/chart'];
+const PATHS = ['/regenerate/compatibility', '/relock/compatibility', '/regenerate/daily', '/regenerate/chart'];
 const VALID_COMPAT = { kind: 'full', target: { type: 'row', id: '91d8920c-042b-4a05-802e-8050e388c70f' } };
 
 async function post(path: string, body: unknown, cookie?: string) {
