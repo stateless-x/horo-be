@@ -36,6 +36,7 @@ export const COMPATIBILITY_V3_TIMING_BASIS = [
   'p2Planet',
   'p2Element',
 ] as const;
+export type CompatibilityV3TimingBasis = (typeof COMPATIBILITY_V3_TIMING_BASIS)[number];
 
 /**
  * Anything that is not Thai script, a digit, whitespace or plain punctuation,
