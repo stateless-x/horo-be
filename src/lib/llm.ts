@@ -50,7 +50,7 @@ function clampMaxTokens(requested: number): number {
 }
 
 interface ChatMessage {
-  role: "system" | "user";
+  role: "system" | "user" | "assistant";
   content: string;
 }
 
@@ -210,10 +210,15 @@ async function generateValidatedCompatibilityJson<T>(
   schema: z.ZodType<T>,
   maxTokens: number,
   onModelCall?: OnModelCall,
-  /** Builds the repair message from the failed fields; the generic message is used when absent. */
+  /**
+   * When given, a schema failure is repaired as a follow-up turn: the model
+   * sees its own reply and this description of what failed, and corrects it.
+   * Without it (v2), the repair re-asks from scratch with a generic hint.
+   */
   describeInvalid?: (issues: z.ZodIssue[]) => string,
 ): Promise<T> {
   let effectivePrompt = prompt;
+  let repairTurn: ChatMessage[] = [];
   let validationRetryUsed = false;
   let transportFailures = 0;
 
@@ -225,6 +230,7 @@ async function generateValidatedCompatibilityJson<T>(
         [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: effectivePrompt },
+          ...repairTurn,
         ],
         {
           maxTokens,
@@ -247,9 +253,17 @@ async function generateValidatedCompatibilityJson<T>(
 
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       validationRetryUsed = true;
-      effectivePrompt = describeInvalid
-        ? `${effectivePrompt}\n\n${describeInvalid(result.error.issues)}`
-        : `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
+      if (describeInvalid) {
+        // Regenerating from scratch repeats the same slips (the prototype saw
+        // "Practical" come back twice) and a bare "fix these fields" can come
+        // back as only those fields, so the model edits its own reply instead.
+        repairTurn = [
+          { role: "assistant", content: text },
+          { role: "user", content: describeInvalid(result.error.issues) },
+        ];
+      } else {
+        effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
+      }
     } catch (error) {
       if (validationRetryUsed) throw error;
       validationRetryUsed = true;
@@ -305,13 +319,12 @@ Do not include the score, markdown, comments, or any text outside this JSON obje
 const COMPATIBILITY_V3_MAX_TOKENS = 3000;
 
 /**
- * Names each failed field, so the one repair call knows what to fix. The
- * prototype measured 15/15 final passes with a repair built this way; a stray
- * foreign token (about 1 first reply in 5) is the usual cause.
+ * Names each failed field for the one repair turn. A stray foreign token is
+ * the usual cause (about 1 first reply in 4 to 5 in measured runs).
  */
 function describeInvalidV3(issues: z.ZodIssue[]): string {
   const fields = issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
-  return `Your previous response failed validation: ${fields}. Fix those fields, keep every other field as it was, and return the complete JSON object. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
+  return `Your JSON above failed validation: ${fields}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
 }
 
 /** Generate compatibility v3: the free teaser and the full detail in one call. */

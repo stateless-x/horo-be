@@ -183,8 +183,11 @@ describe('generateCompatibilityV3', () => {
 
     expect(calls).toBe(2);
     expect(result.content.teaser.hook).toBe(generated.teaser.hook);
-    // The repair names the failed field and the offending token.
-    expect(bodies[1]).toContain('teaser.hook');
-    expect(bodies[1]).toContain('enquanto');
+    // The repair is a follow-up turn: the model's own reply, then what failed.
+    const repair = JSON.parse(bodies[1]) as { messages: Array<{ role: string; content: string }> };
+    expect(repair.messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(repair.messages[2].content).toContain('enquanto');
+    expect(repair.messages[3].content).toContain('teaser.hook');
+    expect(repair.messages[3].content).toContain('complete corrected JSON');
   });
 });
