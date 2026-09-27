@@ -12,6 +12,7 @@ import { generationKey, generationSingleFlight } from '../../lib/generation-sing
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Stored, readerGender } from '../../lib/compatibility-generation';
 import { config } from '../../config';
 import { historyItem, readingResponse, shareResponse, unlockReading } from './reading';
+import { refundChecksOnFailure } from './check-limit';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
@@ -135,58 +136,61 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         'X-DailyLimit-Remaining': dailyResult.remaining.toString(),
       };
 
-      // Content v4: computed scores, archetype and calendar, then the report
-      // written by the model within the live budget (one repair per call and a
-      // deadline, so the synchronous response fits the socket and client
-      // timeouts; see docs/compatibility-response-fix.md, "v4 live budget").
-      // Locked mode writes only the free teaser; the detail is written on unlock.
-      const generation = await generateCompatibilityV4Stored({
-        reader: {
-          birthDate: userProfile.birthDate,
-          birthHour: userProfile.birthHour ?? undefined,
-          gender: readerGender(userProfile.gender),
-          mbtiType: normalizeMbtiType(userProfile.mbtiType),
-        },
-        partner: { name: partnerName, birthDate: partnerBirthDateObj, mbtiType: normalizeMbtiType(partnerMbtiType) },
-        relationshipType,
-        withDetail: !config.compat.lockEnabled,
-        maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
-        deadlineAt: requestStartedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
+      // A check that fails after this point gives its hourly and daily counts back.
+      return refundChecksOnFailure(session.userId, async () => {
+        // Content v4: computed scores, archetype and calendar, then the report
+        // written by the model within the live budget (one repair per call and a
+        // deadline, so the synchronous response fits the socket and client
+        // timeouts; see docs/compatibility-response-fix.md, "v4 live budget").
+        // Locked mode writes only the free teaser; the detail is written on unlock.
+        const generation = await generateCompatibilityV4Stored({
+          reader: {
+            birthDate: userProfile.birthDate,
+            birthHour: userProfile.birthHour ?? undefined,
+            gender: readerGender(userProfile.gender),
+            mbtiType: normalizeMbtiType(userProfile.mbtiType),
+          },
+          partner: { name: partnerName, birthDate: partnerBirthDateObj, mbtiType: normalizeMbtiType(partnerMbtiType) },
+          relationshipType,
+          withDetail: !config.compat.lockEnabled,
+          maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
+          deadlineAt: requestStartedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
+        });
+        if (generation.qualityFlags.length) {
+          console.warn('[compatibility v4] quality flags', { flags: generation.qualityFlags });
+        }
+        console.log('[compatibility v4] generated', { withDetail: !config.compat.lockEnabled, timings: generation.timings });
+        const { stored, charts } = generation;
+        const userBaziChart = charts.readerBazi;
+        const partnerBaziChart = charts.partnerBazi;
+        const compatibilityScore = charts.score;
+        const reading = JSON.stringify(stored);
+        const shareToken = Math.random().toString(36).substring(2, 15);
+
+        // Save to DB
+        const [saved] = await db.insert(compatibility).values({
+          profileAId: userProfile.id,
+          partnerName,
+          partnerBirthDate: partnerBirthDateStr,
+          relationshipType,
+          score: compatibilityScore.score,
+          elementHarmony: compatibilityScore.elementHarmony,
+          branchHarmony: compatibilityScore.branchHarmony,
+          analysis: reading,
+          strengths: JSON.stringify(compatibilityScore.strengths),
+          challenges: JSON.stringify(compatibilityScore.challenges),
+          userElement: userBaziChart.element,
+          userDayMaster: userBaziChart.dayMaster,
+          partnerElement: partnerBaziChart.element,
+          partnerDayMaster: partnerBaziChart.dayMaster,
+          shareToken,
+        }).returning();
+
+        // Cache the result
+        await cache(compatCacheKey(userId, saved.id), 86400, async () => saved);
+
+        return { ...readingResponse(saved), cached: false };
       });
-      if (generation.qualityFlags.length) {
-        console.warn('[compatibility v4] quality flags', { flags: generation.qualityFlags });
-      }
-      console.log('[compatibility v4] generated', { withDetail: !config.compat.lockEnabled, timings: generation.timings });
-      const { stored, charts } = generation;
-      const userBaziChart = charts.readerBazi;
-      const partnerBaziChart = charts.partnerBazi;
-      const compatibilityScore = charts.score;
-      const reading = JSON.stringify(stored);
-      const shareToken = Math.random().toString(36).substring(2, 15);
-
-      // Save to DB
-      const [saved] = await db.insert(compatibility).values({
-        profileAId: userProfile.id,
-        partnerName,
-        partnerBirthDate: partnerBirthDateStr,
-        relationshipType,
-        score: compatibilityScore.score,
-        elementHarmony: compatibilityScore.elementHarmony,
-        branchHarmony: compatibilityScore.branchHarmony,
-        analysis: reading,
-        strengths: JSON.stringify(compatibilityScore.strengths),
-        challenges: JSON.stringify(compatibilityScore.challenges),
-        userElement: userBaziChart.element,
-        userDayMaster: userBaziChart.dayMaster,
-        partnerElement: partnerBaziChart.element,
-        partnerDayMaster: partnerBaziChart.dayMaster,
-        shareToken,
-      }).returning();
-
-      // Cache the result
-      await cache(compatCacheKey(userId, saved.id), 86400, async () => saved);
-
-      return { ...readingResponse(saved), cached: false };
         },
       });
 
