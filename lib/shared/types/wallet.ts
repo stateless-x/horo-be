@@ -44,8 +44,14 @@ export interface LedgerEntry {
   createdAt: string;
 }
 
-/** GET /api/wallet */
-export interface WalletResponse {
+/**
+ * GET /api/wallet. `enabled: false` while nothing is sellable (ดวงคู่ locked
+ * mode off): no balance, no welcome gift, and the frontend shows no wallet.
+ */
+export type WalletResponse = { enabled: false } | WalletState;
+
+export interface WalletState {
+  enabled: true;
   balance: number;
   cap: number;
   packs: WalletPack[];

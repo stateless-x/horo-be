@@ -66,7 +66,9 @@ export class OrderNotPaid extends Error {
   }
 }
 
-type Tx = Parameters<Parameters<DbClient['transaction']>[0]>[0];
+/** A transaction on the app database, e.g. the one that also writes what was bought. */
+export type WalletTx = Parameters<Parameters<DbClient['transaction']>[0]>[0];
+type Tx = WalletTx;
 type Reader = DbClient | Tx;
 
 async function sumBalance(reader: Reader, userId: string): Promise<number> {
@@ -107,32 +109,46 @@ export function createWallet(db: DbClient) {
   }
 
   /**
-   * Charges the product's price once per (user, product, refId). A repeat call
-   * for something already paid returns charged: false and costs nothing, so a
-   * retry after a failed generation is free.
+   * Read-only pre-check, no lock: may this balance pay `price` right now? A
+   * later spendWithin re-checks under the lock, so a race still can't overdraw.
    */
-  async function spend(userId: string, productId: SpendableProductId, refId: string) {
+  async function canAfford(userId: string, price: number) {
+    const current = await balance(userId);
+    return { ok: current >= price, balance: current, price };
+  }
+
+  /**
+   * Charges the product's price once per (user, product, refId) inside the
+   * caller's transaction, under the per-user advisory lock (held until that
+   * transaction ends). Commit the spend in the same transaction as the thing it
+   * buys, so a failed delivery rolls the charge back. A repeat call for
+   * something already paid returns charged: false and costs nothing.
+   */
+  async function spendWithin(tx: WalletTx, userId: string, productId: SpendableProductId, refId: string) {
     const price = PRODUCT_PRICES[productId];
-    return db.transaction(async (tx) => {
-      await lockUser(tx, userId);
-      const sameThing = and(
-        eq(walletLedger.userId, userId),
-        eq(walletLedger.productId, productId),
-        eq(walletLedger.refId, refId),
-      );
-      const prior = await tx
-        .select({ kind: walletLedger.kind })
-        .from(walletLedger)
-        .where(and(sameThing, sql`${walletLedger.kind} in ('spend', 'refund')`));
-      if (prior.some((row) => row.kind === 'refund')) throw new SpendRefunded(productId, refId);
+    await lockUser(tx, userId);
+    const sameThing = and(
+      eq(walletLedger.userId, userId),
+      eq(walletLedger.productId, productId),
+      eq(walletLedger.refId, refId),
+    );
+    const prior = await tx
+      .select({ kind: walletLedger.kind })
+      .from(walletLedger)
+      .where(and(sameThing, sql`${walletLedger.kind} in ('spend', 'refund')`));
+    if (prior.some((row) => row.kind === 'refund')) throw new SpendRefunded(productId, refId);
 
-      const current = await sumBalance(tx, userId);
-      if (prior.length > 0) return { charged: false as const, balance: current };
-      if (current < price) throw new InsufficientBalance(current, price);
+    const current = await sumBalance(tx, userId);
+    if (prior.length > 0) return { charged: false as const, balance: current };
+    if (current < price) throw new InsufficientBalance(current, price);
 
-      await tx.insert(walletLedger).values({ userId, delta: -price, kind: 'spend', productId, refId });
-      return { charged: true as const, balance: current - price };
-    });
+    await tx.insert(walletLedger).values({ userId, delta: -price, kind: 'spend', productId, refId });
+    return { charged: true as const, balance: current - price };
+  }
+
+  /** spendWithin in a transaction of its own. */
+  async function spend(userId: string, productId: SpendableProductId, refId: string) {
+    return db.transaction((tx) => spendWithin(tx, userId, productId, refId));
   }
 
   /**
@@ -252,7 +268,7 @@ export function createWallet(db: DbClient) {
     return rows.map(toEntry);
   }
 
-  return { balance, ensureWelcome, spend, refundSpend, createOrder, getOrder, creditOrder, adjust, ledger };
+  return { balance, ensureWelcome, canAfford, spendWithin, spend, refundSpend, createOrder, getOrder, creditOrder, adjust, ledger };
 }
 
 export type Wallet = ReturnType<typeof createWallet>;

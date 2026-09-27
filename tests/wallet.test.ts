@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { inArray, sql } from 'drizzle-orm';
 import { config } from '../src/config';
-import { assertCanUnlock } from '../src/lib/entitlements';
+import { assertCanUnlock, chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
 import { isLocalDatabaseUrl } from '../src/lib/dev-regenerate';
 import { BALANCE_CAP, PACKS, PRODUCT_PRICES, WELCOME_GIFT, packAmountSatang } from '../src/lib/pricing';
 import {
@@ -12,7 +12,7 @@ import {
   createWallet,
   type Wallet,
 } from '../src/lib/wallet';
-import { walletDevRoutes } from '../src/routes/wallet';
+import { walletDevRoutes, walletRoutes } from '../src/routes/wallet';
 import { createDbClient, orders, walletLedger, user, type DbClient } from '../lib/db';
 
 /**
@@ -45,13 +45,21 @@ describe('pricing', () => {
   });
 });
 
-describe('assertCanUnlock', () => {
+describe('unlock seam (entitlements)', () => {
   const REAL = config.compat;
   afterEach(() => {
     config.compat = REAL;
   });
 
-  const walletThat = (spend: Wallet['spend']) => ({ ensureWelcome: async () => {}, spend });
+  const walletThat = (spend: Wallet['spend']) => ({
+    ensureWelcome: async () => {},
+    spend,
+    spendWithin: ((_tx: unknown, ...args: Parameters<Wallet['spend']>) => spend(...args)) as Wallet['spendWithin'],
+    canAfford: async () => {
+      throw new Error('canAfford not expected');
+    },
+  });
+  const tx = {} as Parameters<Wallet['spendWithin']>[0];
 
   test('insufficient balance becomes the 402 shape with balance and price', async () => {
     config.compat = { lockEnabled: true, unlockFree: false };
@@ -81,6 +89,67 @@ describe('assertCanUnlock', () => {
     expect(await assertCanUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
     config.compat = { lockEnabled: true, unlockFree: true };
     expect(await assertCanUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
+    expect(await checkUnlock('u1', untouchable)).toEqual({ ok: true });
+    expect(await chargeUnlockWithin(tx, 'u1', 'row1', untouchable)).toEqual({ ok: true });
+  });
+
+  test('checkUnlock grants the welcome gift, then only reads the balance', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const calls: string[] = [];
+    const reader = (balance: number) => ({
+      ensureWelcome: async () => void calls.push('welcome'),
+      canAfford: async (_userId: string, price: number) => (calls.push('canAfford'), { ok: balance >= price, balance, price }),
+      spend: async () => {
+        throw new Error('checkUnlock must not spend');
+      },
+      spendWithin: async () => {
+        throw new Error('checkUnlock must not spend');
+      },
+    });
+    expect(await checkUnlock('u1', reader(49))).toEqual({ ok: true });
+    expect(await checkUnlock('u1', reader(10))).toEqual({ ok: false, body: { error: 'insufficient_balance', balance: 10, price: 49 } });
+    expect(calls).toEqual(['welcome', 'canAfford', 'welcome', 'canAfford']);
+  });
+
+  test('chargeUnlockWithin maps a short balance to the 402 body and throws anything else', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const short = walletThat(async () => {
+      throw new InsufficientBalance(0, 49);
+    });
+    expect(await chargeUnlockWithin(tx, 'u1', 'row1', short)).toEqual({
+      ok: false,
+      body: { error: 'insufficient_balance', balance: 0, price: 49 },
+    });
+    const broken = walletThat(async () => {
+      throw new Error('connection reset');
+    });
+    await expect(chargeUnlockWithin(tx, 'u1', 'row1', broken)).rejects.toThrow('connection reset');
+  });
+});
+
+describe('wallet routes while nothing is sellable', () => {
+  const REAL = config.compat;
+  afterEach(() => {
+    config.compat = REAL;
+  });
+
+  test('with locked mode off, GET /api/wallet says disabled before any session or database work', async () => {
+    config.compat = { lockEnabled: false, unlockFree: false };
+    const response = await walletRoutes().handle(new Request('http://localhost/api/wallet/'));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: false });
+  });
+
+  test('with locked mode off, checkout is not available', async () => {
+    config.compat = { lockEnabled: false, unlockFree: false };
+    const response = await walletRoutes().handle(
+      new Request('http://localhost/api/wallet/checkout', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ packId: 'p49' }),
+      }),
+    );
+    expect(response.status).toBe(404);
   });
 });
 
@@ -201,6 +270,30 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     expect(
       await rawInsertFails({ userId, delta: -49, kind: 'spend', productId: 'compat_unlock', refId: 'row-same' }),
     ).toBe('23505');
+  });
+
+  test('spendWithin rolls back with the caller\'s transaction, and commits with it', async () => {
+    const userId = await newUser();
+    await wallet.ensureWelcome(userId);
+    await expect(
+      db.transaction(async (tx) => {
+        const spent = await wallet.spendWithin(tx, userId, 'compat_unlock', 'row-tx');
+        expect(spent).toEqual({ charged: true, balance: 0 });
+        throw new Error('saving the detail failed');
+      }),
+    ).rejects.toThrow('saving the detail failed');
+    expect(await wallet.balance(userId)).toBe(49);
+    expect((await wallet.ledger(userId, 10)).map((row) => row.kind)).toEqual(['welcome']);
+
+    await db.transaction((tx) => wallet.spendWithin(tx, userId, 'compat_unlock', 'row-tx'));
+    expect(await wallet.balance(userId)).toBe(0);
+  });
+
+  test('canAfford reads the balance against a price', async () => {
+    const userId = await newUser();
+    expect(await wallet.canAfford(userId, 49)).toEqual({ ok: false, balance: 0, price: 49 });
+    await wallet.ensureWelcome(userId);
+    expect(await wallet.canAfford(userId, 49)).toEqual({ ok: true, balance: 49, price: 49 });
   });
 
   test('refundSpend restores the price once, and the refunded thing is never unlocked free', async () => {

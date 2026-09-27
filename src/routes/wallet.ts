@@ -32,6 +32,8 @@ async function startPayment(_order: Order): Promise<Pick<CheckoutResponse, 'paym
 export function walletRoutes(wallet: Wallet = appWallet) {
   return new Elysia({ prefix: '/api/wallet' })
     .get('/', async ({ request, set }) => {
+      // Nothing is sellable while ดวงคู่ locked mode is off: no wallet, no welcome gift.
+      if (!config.compat.lockEnabled) return { enabled: false } satisfies WalletResponse;
       const session = await validateSessionFromRequest(request);
       if (!session) {
         set.status = 401;
@@ -41,6 +43,7 @@ export function walletRoutes(wallet: Wallet = appWallet) {
       await wallet.ensureWelcome(session.userId);
       const [balance, ledger] = await Promise.all([wallet.balance(session.userId), wallet.ledger(session.userId, 20)]);
       return {
+        enabled: true,
         balance,
         cap: BALANCE_CAP,
         packs: Object.values(PACKS),
@@ -49,6 +52,10 @@ export function walletRoutes(wallet: Wallet = appWallet) {
       } satisfies WalletResponse;
     })
     .post('/checkout', async ({ request, body, set }) => {
+      if (!config.compat.lockEnabled) {
+        set.status = 404;
+        return { error: 'Wallet not enabled' };
+      }
       const session = await validateSessionFromRequest(request);
       if (!session) {
         set.status = 401;
