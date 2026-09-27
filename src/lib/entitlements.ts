@@ -15,7 +15,7 @@ export type UnlockDecision = { ok: true } | { ok: false; body: InsufficientBalan
  * off (nothing is sold; a row locked earlier opens free) or with
  * COMPAT_UNLOCK_FREE (dev). Otherwise the first wallet touch grants the welcome
  * gift, then one compat_unlock is spent for this row. The spend is keyed to the
- * row, so a retry after a failed generation charges nothing again.
+ * row, so a retry after a failed generation is never charged a second time.
  */
 export async function assertCanUnlock(
   userId: string,

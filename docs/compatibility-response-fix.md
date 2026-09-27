@@ -119,7 +119,7 @@ The flags are read once at startup (`config.compat` in `src/config.ts`), and onl
 - The unlock then spends `compat_unlock` (49 มู) once per row.
 - The door reads the balance: "ใช้ 49 มู ปลดล็อก (มี 49 มู)". On a 402 it turns into "เติมมู".
 
-The spend commits **before** the detail is generated. A failed generation is not refunded, but the spend is keyed to the row, so the retry charges nothing. The long-term fix is to insert the spend in the same transaction as the detail patch.
+The spend commits **before** the detail is generated. A failed generation is not refunded. The spend is keyed to the row, so a retry is never charged again. A failure that repeats on every attempt leaves the user paid with no report and needs a manual refund. The long-term fix is to insert the spend in the same transaction as the detail patch.
 
 Payment (T5) is not built, so a balance can't be topped up yet. Don't turn the lock on in production before T5.
 

@@ -77,7 +77,10 @@ Partial unique indexes back the idempotency, independent of the lock:
    thrown.
 
 The unlock route charges **before** it generates the detail (`src/systems/compatibility/reading.ts`). A failed
-generation does not refund. The spend is keyed to the row, so the retry is free and no credit is lost. The long-term
+generation does not refund. The spend is keyed to the row, so a retry is never charged a second time. That covers a
+transient failure. A failure that repeats on every attempt leaves the user paid with no report. Example: a partner
+name with digits ("มูหนึ่ง2242") failed the detail's number check on every retry, 2026-09-27. That case needs a manual
+`refundSpend` (T13). The long-term
 fix is to insert the spend in the same transaction as the detail patch, after generation.
 
 ## Routes
