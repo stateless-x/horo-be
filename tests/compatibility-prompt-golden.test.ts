@@ -6,9 +6,11 @@ import { buildCompatibilityPrompt } from '../src/lib/prompts';
 /**
  * Locks the production v2 compatibility prompt byte for byte.
  *
- * compatibility.md was split into shared pieces so v3 can reuse the data block
- * and the rules without a forked copy. This snapshot was recorded from the
- * unsplit template; if it changes, the v2 prompt that production sends changed.
+ * First recorded from the unsplit compatibility.md to prove the split into
+ * shared pieces changed nothing. Re-recorded on purpose once, when the shared
+ * data block switched to Thai-only names (no "ding", "fire", "tuesday"), kept
+ * Bazi and Thai astrology apart, and gained the reader's gender line. If it
+ * changes again, the v2 prompt that production sends changed.
  * Each fixture must contain exactly two dates, so the mask cannot hide a
  * template change.
  */
@@ -23,6 +25,7 @@ describe('v2 compatibility prompt', () => {
       const prompt = buildCompatibilityPrompt(
         {
           name: 'เจ้า',
+          gender: fixture.reader.gender,
           birthDate: readerDate,
           baziChart: readerBazi,
           thaiAstrology: calculateThaiAstrology(readerDate),

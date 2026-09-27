@@ -70,14 +70,31 @@ const thaiProse = (min: number, max: number) =>
       }
     });
 
+/**
+ * The sections a locked hint may sell. Hints must name a moment the reader
+ * lives with this person; the dynamic, long-term and (weakest) timing
+ * sections don't answer one, so hints never point there.
+ */
+export const COMPATIBILITY_V3_HINT_SECTIONS = [
+  'understandingPartner',
+  'yourSide',
+  'communication',
+  'friction',
+] as const;
+
+/** Astrology vocabulary that turns a hint into a spec instead of a moment. */
+const HINT_JARGON = /ธาตุ|ดาว|วันเกิด|ปาจื้อ|โหรา|เจ้าวัน|MBTI|[IE][NS][TF][JP]/;
+
 export const CompatibilityV3TeaserSchema = z.object({
   verdict: thaiProse(20, 200),
   hook: thaiProse(40, 260),
   lockedHints: z
     .array(
       z.object({
-        text: thaiProse(20, 150),
-        section: z.enum(COMPATIBILITY_V3_DETAIL_SECTIONS),
+        text: thaiProse(20, 150).refine((value) => !HINT_JARGON.test(value), {
+          message: 'A locked hint names a moment with this person in plain words, with no astrology or MBTI terms',
+        }),
+        section: z.enum(COMPATIBILITY_V3_HINT_SECTIONS),
       }),
     )
     .length(3)

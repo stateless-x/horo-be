@@ -11,6 +11,7 @@ import {
   buildCompatibilityPromptFor,
   calculateCompatibilityCharts,
   generateCompatibilityV3,
+  readerGender,
 } from '../src/lib/compatibility-generation';
 
 const originalFetch = globalThis.fetch;
@@ -38,7 +39,7 @@ const generated = {
     lockedHints: [
       { text: th(50), section: 'understandingPartner' },
       { text: th(50), section: 'yourSide' },
-      { text: th(50), section: 'timing' },
+      { text: th(50), section: 'friction' },
     ],
   },
 };
@@ -140,11 +141,16 @@ describe('v3 prompt', () => {
     expect(prompt).not.toContain('`chemistry`');
   });
 
-  test('gives Thai labels, the reader gender, and the partner MBTI tendencies', () => {
+  test('gives only Thai names, keeps Bazi and Thai astrology apart, and states the reader gender', () => {
     const prompt = v3Prompt('boss-both-mbti');
-    expect(prompt).toContain('ชื่อภาษาไทยที่ต้องใช้: คุณ เกิดวันเสาร์');
-    expect(prompt).toContain('ดาวศุกร์');
+    expect(prompt).toContain('ปาจื้อ: เจ้าวันน้ำหยาง ธาตุน้ำ');
+    expect(prompt).toContain('โหราศาสตร์ไทย: เกิดวันเสาร์ ดาวเสาร์');
+    expect(prompt).toContain('โหราศาสตร์ไทย: เกิดวันศุกร์ ดาวศุกร์');
+    expect(prompt).toContain('ห้ามบอกว่าธาตุมาจากดาวหรือวันเกิด');
     expect(prompt).toContain('ผู้ถามเป็นผู้หญิง');
+    // The raw codes the model used to echo: day masters, elements, weekdays, planets' English names.
+    expect(prompt).not.toMatch(/\b(ren|gui|water|saturday|friday|Saturn|Venus)\b/);
+    expect(prompt).not.toMatch(/\b(Si|Se|Ni|Ne|Ti|Te|Fi|Fe) \(/);
     expect(prompt).toContain('แนวโน้มตาม MBTI ของ คุณวิภา (ENTJ');
     expect(prompt).not.toMatch(/ฟังก์ชันหลัก [A-Z][a-z] /);
     expect(prompt).not.toContain('ไม่มีข้อมูล MBTI ของ');
@@ -189,5 +195,57 @@ describe('generateCompatibilityV3', () => {
     expect(repair.messages[2].content).toContain('enquanto');
     expect(repair.messages[3].content).toContain('teaser.hook');
     expect(repair.messages[3].content).toContain('complete corrected JSON');
+  });
+});
+
+describe('reader gender', () => {
+  test('an unknown gender asks for neutral wording', () => {
+    const input = fixtureInput('friend-no-mbti');
+    const reader = { ...input.reader, gender: readerGender('other') };
+    const charts = calculateCompatibilityCharts(reader, input.partner);
+    const prompt = buildCompatibilityPromptFor('v3', reader, input.partner, input.relationshipType, charts);
+    expect(reader.gender).toBeNull();
+    expect(prompt).toContain('ไม่ทราบเพศของผู้ถาม');
+  });
+
+  test('v2 gets the gender line too', () => {
+    const input = fixtureInput('talking-reader-mbti-only');
+    const charts = calculateCompatibilityCharts(input.reader, input.partner);
+    const prompt = buildCompatibilityPromptFor('v2', input.reader, input.partner, input.relationshipType, charts);
+    expect(prompt).toContain('ผู้ถามเป็นผู้ชาย');
+  });
+});
+
+describe('pair check', () => {
+  test('an element the pair does not have in the verdict costs one repair turn that names it', async () => {
+    // talking-reader-mbti-only: both people are earth.
+    const wrong = structuredClone(generated);
+    wrong.teaser.verdict = 'คู่นี้เป็นดินที่มั่นคงเจอกับไฟที่ลุกไว ถ้าจับจังหวะให้ดีจะอบอุ่น แต่ถ้าเร่งจะร้อนเกินไป';
+    const replies = [wrong, generated];
+    const bodies: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return deepSeekResponse(replies.shift());
+    }) as unknown as typeof fetch;
+
+    const result = await generateCompatibilityV3(fixtureInput('talking-reader-mbti-only'));
+
+    expect(bodies).toHaveLength(2);
+    const repair = JSON.parse(bodies[1]) as { messages: Array<{ content: string }> };
+    expect(repair.messages[3].content).toContain('teaser.verdict');
+    expect(repair.messages[3].content).toContain('ไฟ');
+    expect(result.content.teaser.verdict).toBe(generated.teaser.verdict);
+  });
+
+  test('a hint with astrology terms is rejected by the schema', () => {
+    const jargon = structuredClone(generated);
+    jargon.teaser.lockedHints[0].text = th(50, 'ทำไมความต่างของธาตุทองกับธาตุไฟ');
+    expect(CompatibilityV3GeneratedSchema.safeParse(jargon).success).toBe(false);
+  });
+
+  test('a hint may not point at timing', () => {
+    const timing = structuredClone(generated);
+    timing.teaser.lockedHints[2].section = 'timing';
+    expect(CompatibilityV3GeneratedSchema.safeParse(timing).success).toBe(false);
   });
 });

@@ -66,10 +66,12 @@ describe('compatibility generation validation', () => {
 
     expect(result).toEqual(validGeneratedContent);
     expect(requests).toHaveLength(2);
+    // The repair is a follow-up turn on the model's own reply that names the failed field.
     const repairedRequest = JSON.parse(String(requests[1]?.body)) as {
-      messages: Array<{ content: string }>;
+      messages: Array<{ role: string; content: string }>;
     };
-    expect(repairedRequest.messages[1]?.content).toContain('complete nextSteps object');
+    expect(repairedRequest.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(repairedRequest.messages[3]?.content).toContain('nextSteps');
   });
 
   test('rejects after one failed repair without making another request', async () => {
@@ -83,5 +85,34 @@ describe('compatibility generation validation', () => {
     await expect(generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300))
       .rejects.toThrow('Invalid compatibility JSON');
     expect(requests).toHaveLength(2);
+  });
+});
+
+describe('v2 shape', () => {
+  test('states the verdict limit the schema enforces', async () => {
+    const requests: RequestInit[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return deepSeekResponse(validGeneratedContent);
+    }) as typeof fetch;
+
+    await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300);
+
+    const body = JSON.parse(String(requests[0]?.body)) as { messages: Array<{ content: string }> };
+    expect(body.messages[1]?.content).toContain('verdict 1 to 180 characters');
+  });
+
+  test('a verdict over 180 characters is repaired by naming that field', async () => {
+    const requests: RequestInit[] = [];
+    const responses = [{ ...validGeneratedContent, verdict: 'ก'.repeat(181) }, validGeneratedContent];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return deepSeekResponse(responses.shift());
+    }) as typeof fetch;
+
+    await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300);
+
+    const repair = JSON.parse(String(requests[1]?.body)) as { messages: Array<{ content: string }> };
+    expect(repair.messages[3]?.content).toContain('verdict');
   });
 });

@@ -1,7 +1,9 @@
 import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../lib/astrology';
+import { z } from 'zod';
 import {
   CompatibilityStructuredContentSchema,
   CompatibilityV3ContentSchema,
+  GenderSchema,
   TOKEN_LIMITS,
   type CompatibilityStructuredContent,
   type CompatibilityV3Content,
@@ -15,6 +17,7 @@ import {
   generateStructuredCompatibilityReadingV3,
   type OnModelCall,
 } from './llm';
+import { elementCreditedToPlanet, foreignElementWords, mapStrings, tightenNameSpacing } from './compatibility-text';
 
 /**
  * Compatibility generation from birth data alone: deterministic charts and
@@ -30,8 +33,15 @@ import {
 export interface CompatibilityReaderInput {
   birthDate: Date;
   birthHour?: number;
-  gender: Gender;
+  /** null when unknown: the prompt then asks for gender-neutral wording. */
+  gender: Gender | null;
   mbtiType: MbtiType | null;
+}
+
+/** A profile's stored gender as the prompt understands it; anything unrecognised is unknown. */
+export function readerGender(raw: string | null | undefined): Gender | null {
+  const parsed = GenderSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 export interface CompatibilityPartnerInput {
@@ -41,7 +51,7 @@ export interface CompatibilityPartnerInput {
 }
 
 export function calculateCompatibilityCharts(reader: CompatibilityReaderInput, partner: CompatibilityPartnerInput) {
-  const readerBazi = calculateBazi(reader.birthDate, reader.birthHour, reader.gender);
+  const readerBazi = calculateBazi(reader.birthDate, reader.birthHour, reader.gender ?? undefined);
   const readerThai = calculateThaiAstrology(reader.birthDate);
   // Mirrors the route: the partner form has no hour or gender.
   const partnerBazi = calculateBazi(partner.birthDate, undefined, 'female');
@@ -61,6 +71,7 @@ export function buildCompatibilityPromptFor(
 ): string {
   const person1 = {
     name: 'เจ้า',
+    gender: reader.gender,
     birthDate: reader.birthDate,
     baziChart: charts.readerBazi,
     thaiAstrology: charts.readerThai,
@@ -81,7 +92,7 @@ export function buildCompatibilityPromptFor(
   };
   return version === 'v2'
     ? buildCompatibilityPrompt(person1, person2, relationshipType, scoreContext)
-    : buildCompatibilityPromptV3({ ...person1, gender: reader.gender }, person2, relationshipType, scoreContext);
+    : buildCompatibilityPromptV3(person1, person2, relationshipType, scoreContext);
 }
 
 interface GenerateCompatibilityInput {
@@ -114,13 +125,49 @@ export async function generateCompatibilityV2(
   const content = CompatibilityStructuredContentSchema.parse({
     contentVersion: 2,
     scoreExplanation: charts.score.overallAnalysis,
-    ...generated,
+    ...mapStrings(generated, (text) => tightenNameSpacing(text, input.partner.name)),
   });
   return {
     content,
     charts,
     prompt,
     timings: { calcMs: Math.round(llmStart - calcStart), llmMs: Math.round(llmEnd - llmStart) },
+  };
+}
+
+/**
+ * The free verdict and hook, and the dynamic paragraph, may only name the two
+ * people's own elements, and may not credit an element to a Thai planet. The
+ * model once wrote "ดินเจอกับไฟ" for a pair who are both earth, and "ไฟจาก
+ * ดาวอังคาร" when the fire came from Bazi. A failure triggers the repair turn.
+ */
+function elementCheck(allowed: CompatibilityCharts['readerBazi']['element'][]) {
+  type Checked = { teaser: { verdict: string; hook: string }; detail: { dynamic: string } };
+  const fields: Array<[path: string[], read: (content: Checked) => string]> = [
+    [['teaser', 'verdict'], (content) => content.teaser.verdict],
+    [['teaser', 'hook'], (content) => content.teaser.hook],
+    [['detail', 'dynamic'], (content) => content.detail.dynamic],
+  ];
+  return (content: Checked, ctx: z.RefinementCtx) => {
+    for (const [path, read] of fields) {
+      const text = read(content);
+      const foreign = foreignElementWords(text, allowed);
+      if (foreign.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message: `Names element ${foreign.join(', ')}, but this pair's elements are only those given in the data`,
+        });
+      }
+      const credited = elementCreditedToPlanet(text);
+      if (credited) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message: `"${credited}" credits an element to a planet; elements come from Bazi, planets from Thai astrology`,
+        });
+      }
+    }
   };
 }
 
@@ -131,12 +178,16 @@ export async function generateCompatibilityV3(
   const charts = calculateCompatibilityCharts(input.reader, input.partner);
   const prompt = buildCompatibilityPromptFor('v3', input.reader, input.partner, input.relationshipType, charts);
   const llmStart = performance.now();
-  const generated = await generateStructuredCompatibilityReadingV3(prompt, input.onModelCall);
+  const generated = await generateStructuredCompatibilityReadingV3(
+    prompt,
+    input.onModelCall,
+    elementCheck([charts.readerBazi.element, charts.partnerBazi.element]),
+  );
   const llmEnd = performance.now();
   const content = CompatibilityV3ContentSchema.parse({
     contentVersion: 3,
     scoreExplanation: charts.score.overallAnalysis,
-    ...generated,
+    ...mapStrings(generated, (text) => tightenNameSpacing(text, input.partner.name)),
   });
   return {
     content,

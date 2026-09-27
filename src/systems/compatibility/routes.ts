@@ -12,6 +12,8 @@ import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
+import { readerGender } from '../../lib/compatibility-generation';
+import { mapStrings, tightenNameSpacing } from '../../lib/compatibility-text';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
@@ -181,6 +183,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const prompt = buildCompatibilityPrompt(
         {
           name: 'เจ้า',
+          gender: readerGender(userProfile.gender),
           birthDate: userProfile.birthDate,
           baziChart: userBaziChart,
           thaiAstrology: userThaiAstrology,
@@ -206,7 +209,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const structuredContent = CompatibilityStructuredContentSchema.parse({
         contentVersion: 2,
         scoreExplanation: compatibilityScore.overallAnalysis,
-        ...generatedContent,
+        ...mapStrings(generatedContent, (text) => tightenNameSpacing(text, partnerName)),
       });
       const reading = JSON.stringify(structuredContent);
       const shareToken = Math.random().toString(36).substring(2, 15);

@@ -10,13 +10,13 @@
  * (see ./prompts/render.ts for the {{var}} / {{#block}} syntax).
  */
 
-import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType, Gender } from "../../lib/shared";
+import type { BaziChart, ThaiAstrology, EnrichedPillar, ElementProfile, PillarInteraction, RelationshipType, MbtiType, Gender, HeavenlyStem } from "../../lib/shared";
 import type { FortuneCategoryKey } from "../../lib/shared/types/astrology";
 import { getMbtiInfo, getMbtiCognitiveFunctions, getMbtiActionableGuidance } from "../../lib/shared";
 import { getReadingPeriod, toBuddhistYear } from "../../lib/shared/utils/date";
 import { THAI_MONTHS_FULL } from "../../lib/shared/constants/thai-time";
 import { renderPrompt } from "./prompts/render";
-import { buildTraitChips, type DailyCategory, type TraitChip } from "../../lib/astrology";
+import { buildTraitChips, BAZI_ELEMENT_LABELS, THAI_DAY_LABELS, HEAVENLY_STEMS, type DailyCategory, type TraitChip } from "../../lib/astrology";
 
 import systemMd from "./prompts/md/system.md" with { type: "text" };
 import systemStructuredMd from "./prompts/md/system-structured.md" with { type: "text" };
@@ -54,7 +54,11 @@ export const SYSTEM_PROMPT_STRUCTURED = systemStructuredMd.trimEnd();
  *
  * Enhanced version: Includes actionable guidance for practical, personalized advice.
  */
-export function buildMbtiContext(mbtiType: string | null | undefined): string {
+export function buildMbtiContext(
+  mbtiType: string | null | undefined,
+  /** Give cognitive functions as Thai glosses only; the bare codes (Ne, Si) leak into Thai prose. */
+  thaiGlossOnly = false,
+): string {
   if (!mbtiType) return '';
 
   const info = getMbtiInfo(mbtiType);
@@ -67,8 +71,8 @@ export function buildMbtiContext(mbtiType: string | null | undefined): string {
   return '\n' + renderPrompt(mbtiContextMd, {
     code: info.code,
     nameTh: info.nameTh,
-    dominantFunction: cognitive.dominantFunction,
-    auxiliaryFunction: cognitive.auxiliaryFunction,
+    dominantFunction: thaiGlossOnly ? cognitiveFunctionThai(cognitive.dominantFunction) : cognitive.dominantFunction,
+    auxiliaryFunction: thaiGlossOnly ? cognitiveFunctionThai(cognitive.auxiliaryFunction) : cognitive.auxiliaryFunction,
     strengths: cognitive.strengths,
     weaknesses: cognitive.weaknesses,
     decisionMaking: guidance.decisionMaking,
@@ -181,6 +185,8 @@ const COMPATIBILITY_V3_TEMPLATE =
 
 interface CompatibilityPromptPerson {
   name: string;
+  /** Reader only: picks pronouns and polite particles for the conversation starter. */
+  gender?: Gender | null;
   birthDate: Date;
   baziChart: BaziChart;
   thaiAstrology: ThaiAstrology;
@@ -221,22 +227,23 @@ function compatibilityDataVars(
     mbti: Boolean(person1.mbtiType),
     p2Name: person2.name,
     p1BirthDate: person1.birthDate.toLocaleDateString("th-TH"),
-    p1DayMaster: person1.baziChart.dayMaster,
-    p1Element: person1.baziChart.element,
-    p1ThaiDay: person1.thaiAstrology.day,
-    p1Planet: person1.thaiAstrology.planet,
+    p1DayMaster: dayMasterThai(person1.baziChart.dayMaster),
+    p1Element: BAZI_ELEMENT_LABELS[person1.baziChart.element],
+    p1ThaiDay: THAI_DAY_LABELS[person1.thaiAstrology.day],
+    p1Planet: thaiPlanetName(person1.thaiAstrology.planet),
+    readerGenderLine: READER_GENDER_LINES[person1.gender ?? 'unknown'],
     p2BirthDate: person2.birthDate.toLocaleDateString("th-TH"),
-    p2DayMaster: person2.baziChart.dayMaster,
-    p2Element: person2.baziChart.element,
-    p2ThaiDay: person2.thaiAstrology.day,
-    p2Planet: person2.thaiAstrology.planet,
+    p2DayMaster: dayMasterThai(person2.baziChart.dayMaster),
+    p2Element: BAZI_ELEMENT_LABELS[person2.baziChart.element],
+    p2ThaiDay: THAI_DAY_LABELS[person2.thaiAstrology.day],
+    p2Planet: thaiPlanetName(person2.thaiAstrology.planet),
     p2Mbti: Boolean(person2.mbtiType),
     p2MbtiType: person2.mbtiType ?? '',
     score: scoreContext.score,
     scoreExplanation: scoreContext.scoreExplanation,
     deterministicStrengths: scoreContext.strengths.map(item => `- ${item}`).join('\n'),
     deterministicChallenges: scoreContext.challenges.map(item => `- ${item}`).join('\n'),
-    mbtiContext: buildMbtiContext(person1.mbtiType),
+    mbtiContext: buildMbtiContext(person1.mbtiType, true),
     mbtiGuidanceBlock,
     focusBlock: RELATIONSHIP_FOCUS[relationshipType],
   };
@@ -259,6 +266,24 @@ export function buildCompatibilityPrompt(
   );
 }
 
+/**
+ * Thai for a day master: its element and polarity, e.g. 'ding' -> 'ไฟหยิน'.
+ * The prompt shows only Thai names: raw codes like "ding" or "fire" were
+ * echoed into the reading.
+ */
+function dayMasterThai(stem: HeavenlyStem): string {
+  const entry = HEAVENLY_STEMS.find((s) => s.enumKey === stem);
+  if (!entry) throw new Error(`Unknown heavenly stem: ${stem}`);
+  return `${BAZI_ELEMENT_LABELS[entry.element].replace('ธาตุ', '')}${entry.yinYang === 'yang' ? 'หยาง' : 'หยิน'}`;
+}
+
+/** Tells the model which first-person pronoun and polite particle the reader uses. */
+const READER_GENDER_LINES: Record<Gender | 'unknown', string> = {
+  female: 'ผู้ถามเป็นผู้หญิง ใน conversationStarter ให้ใช้ ดิฉัน หนู หรือ เรา ตามความสนิท และลงท้ายด้วย ค่ะ หรือ คะ',
+  male: 'ผู้ถามเป็นผู้ชาย ใน conversationStarter ให้ใช้ ผม หรือ เรา และลงท้ายด้วย ครับ',
+  unknown: 'ไม่ทราบเพศของผู้ถาม ใน conversationStarter ให้ใช้ เรา และเลี่ยงคำลงท้ายที่บอกเพศ',
+};
+
 /** 'ดวงอังคาร (Mars)' -> 'ดาวอังคาร'. The input comes from a fixed table in lib/astrology/thai.ts. */
 function thaiPlanetName(planet: string): string {
   const match = planet.match(/^ดวง(.+) \(.+\)$/);
@@ -273,22 +298,13 @@ function cognitiveFunctionThai(fn: string): string {
   return match[1];
 }
 
-/** Thai day and element labels exactly as the onboarding trait chips show them, plus the planet. */
-function thaiLabels(person: CompatibilityPromptPerson): string {
-  const chips = buildTraitChips(person.thaiAstrology.day, person.baziChart.element, null)
-    .map((chip) => `${chip.label} (${chip.trait})`)
-    .join(' ');
-  return `${chips} ${thaiPlanetName(person.thaiAstrology.planet)}`;
-}
-
 /**
  * Compatibility content v3: the v2 data and rules, plus a context block (Thai
- * labels so the model never echoes codes like "ding", the reader's gender for
- * the conversation starter, the partner's MBTI tendencies) and the v3 task
- * list that asks for `detail` and `teaser` in one JSON object.
+ * day personalities, the partner's MBTI tendencies) and the v3 task list that
+ * asks for `detail` and `teaser` in one JSON object.
  */
 export function buildCompatibilityPromptV3(
-  person1: CompatibilityPromptPerson & { gender: Gender },
+  person1: CompatibilityPromptPerson,
   person2: CompatibilityPromptPerson,
   relationshipType: RelationshipType,
   scoreContext: CompatibilityScoreContext,
@@ -306,9 +322,6 @@ export function buildCompatibilityPromptV3(
     ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
     p1Personality: person1.thaiAstrology.personality,
     p2Personality: person2.thaiAstrology.personality,
-    p1ThaiLabels: thaiLabels(person1),
-    p2ThaiLabels: thaiLabels(person2),
-    readerGenderTh: person1.gender === 'female' ? 'ผู้หญิง' : 'ผู้ชาย',
     p2MbtiNameTh: partnerInfo?.nameTh ?? '',
     p2MbtiDominant: partnerCognitive ? cognitiveFunctionThai(partnerCognitive.dominantFunction) : '',
     p2MbtiAuxiliary: partnerCognitive ? cognitiveFunctionThai(partnerCognitive.auxiliaryFunction) : '',

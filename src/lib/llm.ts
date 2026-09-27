@@ -4,7 +4,7 @@ import { SYSTEM_PROMPT } from "./prompts";
 import {
   CompatibilityStructuredContentSchema,
   CompatibilityV3GeneratedSchema,
-  COMPATIBILITY_V3_DETAIL_SECTIONS,
+  COMPATIBILITY_V3_HINT_SECTIONS,
   COMPATIBILITY_V3_TIMING_BASIS,
   type CompatibilityStructuredContent,
 } from "../../lib/shared";
@@ -179,7 +179,7 @@ Return valid JSON matching exactly this shape (all fields required):
     "watchFor": string
   }
 }
-Length limits: action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
+Length limits: verdict 1 to 180 characters (one sentence), chemistry, caution and advice 1 to 500 characters each, action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
 Do not include the score, markdown, or any text outside this JSON object.`;
 
 type GeneratedCompatibilityContent = Pick<
@@ -209,13 +209,13 @@ async function generateValidatedCompatibilityJson<T>(
   prompt: string,
   schema: z.ZodType<T>,
   maxTokens: number,
-  onModelCall?: OnModelCall,
   /**
-   * When given, a schema failure is repaired as a follow-up turn: the model
-   * sees its own reply and this description of what failed, and corrects it.
-   * Without it (v2), the repair re-asks from scratch with a generic hint.
+   * Describes a schema failure for the repair turn: the model sees its own
+   * reply and this description, and corrects that reply. Regenerating from
+   * scratch repeated the same slips.
    */
-  describeInvalid?: (issues: z.ZodIssue[]) => string,
+  describeInvalid: (issues: z.ZodIssue[]) => string,
+  onModelCall?: OnModelCall,
 ): Promise<T> {
   let effectivePrompt = prompt;
   let repairTurn: ChatMessage[] = [];
@@ -253,23 +253,27 @@ async function generateValidatedCompatibilityJson<T>(
 
       if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
       validationRetryUsed = true;
-      if (describeInvalid) {
-        // Regenerating from scratch repeats the same slips (the prototype saw
-        // "Practical" come back twice) and a bare "fix these fields" can come
-        // back as only those fields, so the model edits its own reply instead.
-        repairTurn = [
-          { role: "assistant", content: text },
-          { role: "user", content: describeInvalid(result.error.issues) },
-        ];
-      } else {
-        effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
-      }
+      repairTurn = [
+        { role: "assistant", content: text },
+        { role: "user", content: describeInvalid(result.error.issues) },
+      ];
     } catch (error) {
       if (validationRetryUsed) throw error;
       validationRetryUsed = true;
       effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
     }
   }
+}
+
+/**
+ * The repair turn for either version: names each failed field (and, for v3,
+ * the offending token), so the model fixes that instead of guessing. v2 used
+ * to repair with a generic hint that never said which field; a verdict over
+ * 180 characters then failed twice in a row.
+ */
+function describeInvalid(issues: z.ZodIssue[]): string {
+  const fields = issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+  return `Your JSON above failed validation: ${fields}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
 }
 
 /** Generate the compact narrative portion of compatibility v2. */
@@ -282,6 +286,7 @@ export async function generateStructuredCompatibilityReading(
     `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`,
     GeneratedCompatibilityContentSchema,
     maxTokens,
+    describeInvalid,
     onModelCall,
   );
 }
@@ -307,7 +312,7 @@ Return valid JSON matching exactly this shape (all fields required, write "detai
 }
 communication has exactly 3 items. friction has exactly 2 items and every scenario starts with "ถ้า".
 timing.basis values come only from: ${COMPATIBILITY_V3_TIMING_BASIS.join(', ')}.
-lockedHints has exactly 3 items; each section is a different one of: ${COMPATIBILITY_V3_DETAIL_SECTIONS.join(', ')}.
+lockedHints has exactly 3 items; each section is a different one of: ${COMPATIBILITY_V3_HINT_SECTIONS.join(', ')}.
 Length limits: nextSteps.action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
 Do not include the score, markdown, comments, or any text outside this JSON object.`;
 
@@ -319,25 +324,21 @@ Do not include the score, markdown, comments, or any text outside this JSON obje
 const COMPATIBILITY_V3_MAX_TOKENS = 3000;
 
 /**
- * Names each failed field for the one repair turn. A stray foreign token is
- * the usual cause (about 1 first reply in 4 to 5 in measured runs).
+ * Generate compatibility v3: the free teaser and the full detail in one call.
+ * `pairCheck` adds rules that depend on this pair (e.g. which elements may be
+ * named); its failures go through the same repair turn as schema failures.
  */
-function describeInvalidV3(issues: z.ZodIssue[]): string {
-  const fields = issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
-  return `Your JSON above failed validation: ${fields}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
-}
-
-/** Generate compatibility v3: the free teaser and the full detail in one call. */
 export async function generateStructuredCompatibilityReadingV3(
   prompt: string,
   onModelCall?: OnModelCall,
+  pairCheck?: (content: CompatibilityV3Generated, ctx: z.RefinementCtx) => void,
 ): Promise<CompatibilityV3Generated> {
   return generateValidatedCompatibilityJson(
     `${prompt}\n${STRUCTURED_COMPATIBILITY_V3_SHAPE}`,
-    CompatibilityV3GeneratedSchema,
+    pairCheck ? CompatibilityV3GeneratedSchema.superRefine(pairCheck) : CompatibilityV3GeneratedSchema,
     COMPATIBILITY_V3_MAX_TOKENS,
+    describeInvalid,
     onModelCall,
-    describeInvalidV3,
   );
 }
 
