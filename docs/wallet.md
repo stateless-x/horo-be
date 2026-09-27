@@ -21,11 +21,14 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 |---|---|
 | `src/lib/pricing.ts` | The only place prices live: products, packs, welcome gift, cap, bonus TTL |
 | `lib/db/schema/wallet.ts` | `orders`, `wallet_ledger` and their indexes (additive) |
-| `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, canAfford, spendWithin/spend, refund, orders, credit, adjust, ledger |
+| `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, canAfford, hasPaid, spendWithin/spend, refundSpend, createOrder/getOrder/markPaid, creditOrder, adjust, ledger (partner names joined) |
 | `src/lib/entitlements.ts` | `checkUnlock` + `chargeUnlockWithin`: the ดวงคู่ unlock seam, charged with delivery |
-| `src/routes/wallet.ts` | `/api/wallet` routes and the dev-only grant |
+| `src/lib/order-fulfilment.ts` | `fulfilPaidOrder`: credit a paid order, then unlock its `unlock_ref` (one-flow purchase) |
+| `src/systems/compatibility/unlock.ts` | `dbUnlockStore`, `unlockForUser`: the atomic unlock the route and fulfilment share |
+| `src/routes/wallet.ts` | `/api/wallet` routes and the dev-only grant and pay |
 | `lib/shared/types/wallet.ts` | IDs and response shapes shared with horo-fe (`bun run sync:types`) |
-| `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant guards; the ledger block needs a local Postgres |
+| `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant guards, disabled routes; the ledger block needs a local Postgres |
+| `tests/compatibility-v4.test.ts` | The unlock route order; the one-flow purchase on a local Postgres |
 
 ## Prices and rules
 
@@ -77,8 +80,9 @@ Partial unique indexes back the idempotency, independent of the lock:
 
 The unlock pays atomically with delivery. The seam is in `src/lib/entitlements.ts`:
 
-1. **`checkUnlock(userId)`**, before generating.
+1. **`checkUnlock(userId, rowId)`**, before generating.
    - Lock off, or `COMPAT_UNLOCK_FREE=1` (dev): ok, with no wallet access.
+   - Row already paid for (`hasPaid`): ok, see below.
    - Otherwise it runs `ensureWelcome`, then `canAfford(userId, 49)`. This is a read-only pre-check and takes no lock.
    - Short → `{ ok: false, body: { error: INSUFFICIENT_BALANCE, balance, price } }`, sent as the 402 body.
 2. **Generate the detail.** A failure here costs nothing, because nothing has been charged.
@@ -92,31 +96,51 @@ The unlock pays atomically with delivery. The seam is in `src/lib/entitlements.t
 
 **A row already paid for** skips the balance pre-check. `checkUnlock` asks `wallet.hasPaid(user, 'compat_unlock', rowId)` first. This covers a row devtools relocked after it was paid, and a retry after a failed patch. The charge then finds the existing spend and costs nothing.
 
+## One-flow purchase
+
+When the balance is short of the price, the door does not ask for a top-up and then a second tap:
+1. The primary button reads "ปลดล็อก ฿49". It posts `POST /api/wallet/checkout { packId, unlockRef: rowId }`, using the
+   cheapest pack that covers the shortfall (`smallestPackCovering`, `horo-fe/src/features/wallet/wallet-copy.ts`).
+2. The order stores `unlock_ref`, an additive column on `orders`.
+3. Once paid, `fulfilPaidOrder(orderId)` runs `creditOrder`, then `unlockForUser(order.user, unlock_ref)`. That is the
+   same atomic unlock the route runs, owner-only and charged once per row.
+4. A replayed webhook credits nothing and charges nothing. The row is already unlocked.
+
+"ซื้อแพ็กคุ้มกว่า" under the button opens the pack sheet. At or above the price the door still spends:
+"ใช้ 49 มู ปลดล็อก (มี N มู)".
+
+Until T5 the checkout answers `payment: 'unavailable'`, and the door ends at "PromptPay เร็ว ๆ นี้". The T5 webhook must
+call `wallet.markPaid(orderId)`, then `fulfilPaidOrder(orderId)`. To try the flow locally, use the dev stand-in
+`POST /api/wallet/dev/pay { orderId }`. It marks the signed-in user's own pending order paid and fulfils it.
+
 ## Routes
 
 All routes need a session.
 
 | Route | Returns |
 |---|---|
-| `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows) |
-| `POST /api/wallet/checkout { packId }` | `{ orderId, status: 'pending', payment: 'unavailable', message }`; 409 `balance_cap`; 404 while the lock is off |
+| `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows; a ดวงคู่ spend or refund carries `refName`, the partner's name, from one left join on `ref_id`, or null once the reading is gone) |
+| `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'unavailable', message }`; 409 `balance_cap`; 404 while the lock is off |
 | `GET /api/wallet/orders/:id` | the owner's order status; 404 otherwise |
 | `POST /api/wallet/dev/grant { delta, note }` | dev only; see below |
+| `POST /api/wallet/dev/pay { orderId }` | dev only: mark the user's pending order paid and fulfil it (the T5 stand-in) |
 
 `POST /api/wallet/checkout` is a seam: `startPayment(order)` in `src/routes/wallet.ts` returns `unavailable` until T5.
 
-`POST /api/wallet/dev/grant` is mounted only outside production. Each request checks, in order:
+Both dev routes are mounted only outside production (`devGuard`). Each request checks, in order:
 1. production → 404;
 2. a non-local `DATABASE_URL` → 403;
 3. no session → 401;
 4. an invalid body → 400.
 
-It writes an `admin_adjust` row noted `dev: …`.
+The grant writes an `admin_adjust` row noted `dev: …`.
 
 ## Deferred
 
-- **Stripe PromptPay (T5):** the charge in `startPayment`, the webhook that marks an order `paid` and calls
-  `creditOrder` in the same transaction, and order expiry.
+- **Stripe PromptPay (T5):** the charge in `startPayment`, the webhook (`markPaid`, then `fulfilPaidOrder`), and order
+  expiry. The unlock inside fulfilment takes up to about 20 s of generation. If it fails, the credit stays and the
+  door's own unlock (balance now ≥ price) finishes it. Whether the webhook answers first and fulfils in the background
+  is T5's call.
 - **Bonus expiry (later ticket):** `expires_at` is stored but not enforced. No `expire` rows are written, and the balance
   counts bonus rows past expiry. When it lands, spend bonus first (decision log).
 - **Admin page (T13):** grants, refunds and outstanding balance in horo-admin. Refund UX for a refunded spend
