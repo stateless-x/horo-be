@@ -35,7 +35,10 @@ import {
   generateCompatibilityV3,
   generateCompatibilityV4,
 } from '../../src/lib/compatibility-generation';
-import { thaiWordCount } from '../../src/lib/compatibility-text';
+import { fixKnownTypos, thaiWordCount } from '../../src/lib/compatibility-text';
+
+/** Drops each reply's text from the record, except a reply cut off at the token ceiling, kept to diagnose it. */
+const withoutText = ({ text, ...attempt }: Attempt) => (attempt.finishReason === 'length' ? { ...attempt, text } : attempt);
 
 type Fixture = (typeof COMPATIBILITY_DEV_FIXTURES)[number];
 
@@ -66,6 +69,10 @@ interface Attempt {
   finishReason?: string;
   /** The model's JSON text, kept so a failed first reply can be diagnosed. */
   text?: string;
+  /** On a repair turn, what the repair asked to fix, so a clean result can be told from a repaired one. */
+  repair?: string;
+  /** The reply had a known misspelling, which the generation corrects silently; counted here to track the rate. */
+  hadTypo?: boolean;
   error?: string;
 }
 let attemptLog: Attempt[] = [];
@@ -75,10 +82,12 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
   if (!url.includes('api.deepseek.com')) return realFetch(input, init);
   const t0 = performance.now();
+  const messages = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }).messages;
+  const repair = messages.length > 2 ? messages.at(-1)?.content : undefined;
   try {
     const res = await realFetch(input, init);
     const body = await res.clone().text();
-    const attempt: Attempt = { ms: Math.round(performance.now() - t0), status: res.status };
+    const attempt: Attempt = { ms: Math.round(performance.now() - t0), status: res.status, repair };
     try {
       const data = JSON.parse(body) as {
         usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -88,6 +97,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       attempt.completionTokens = data.usage?.completion_tokens;
       attempt.finishReason = data.choices?.[0]?.finish_reason;
       attempt.text = data.choices?.[0]?.message?.content;
+      attempt.hadTypo = attempt.text !== undefined && fixKnownTypos(attempt.text) !== attempt.text;
     } catch {
       attempt.error = 'non-JSON body';
     }
@@ -183,7 +193,7 @@ async function runOnce(f: Fixture, arch: 'v2' | 'v3' | 'v4', run: number) {
       timings: result.timings,
       qualityFlags: v4?.qualityFlags,
       detailWords: v4?.content.chapters.map((c) => `${c.key}:${thaiWordCount(c.detail)}`),
-      attempts: attemptLog.map(({ text: _text, ...a }) => a),
+      attempts: attemptLog.map(withoutText),
       firstTryPass: modelCalls === 1, finalPass: true,
       firstTryError: arch === 'v3' && modelCalls > 1 ? firstReplyIssue(attemptLog[0]) : undefined,
       content,
@@ -195,7 +205,7 @@ async function runOnce(f: Fixture, arch: 'v2' | 'v3' | 'v4', run: number) {
   } catch (error) {
     return {
       fixture: f.id, arch, run, totalMs: Math.round(performance.now() - t0), modelCalls,
-      attempts: attemptLog.map(({ text: _text, ...a }) => a),
+      attempts: attemptLog.map(withoutText),
       firstTryPass: false, finalPass: false, firstTryError: firstReplyIssue(attemptLog[0]), error: String(error),
       // Every reply the model gave, so a failed reading can be diagnosed from its text.
       replies: attemptLog.map((a) => a.text),
