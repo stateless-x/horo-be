@@ -4,6 +4,8 @@ status: active — synchronous response budget (2026-09-08), v4 live budget and 
 scope: the compatibility POST and unlock responses: timeouts, the v4 model budget, teaser-first locked mode
 last_reviewed: 2026-09-27
 owner: backend
+supersedes: []
+superseded_by: null
 ---
 
 # Compatibility response and reading voice
@@ -178,6 +180,8 @@ Measured on 2026-09-27 with the five dev fixtures, real DeepSeek and the live bu
 | Detail (3 calls in parallel) | 5/5 passed | 12.4 to 17.6 s | about 15 s |
 
 A cover-only call takes 1.7 to 3.8 s after the plan.
+
+Three unlocks on the local stack the same day took 16.5, 18.5 and 32.6 s end to end. The 32.6 s one needed a repair on the overview, attraction, future and calendar call, which wrote about 3,400 tokens twice. So "ราว 20 วินาที" on the button is the typical case, not the worst case.
 
 ### Verification
 
