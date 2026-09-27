@@ -72,9 +72,6 @@ export const V4InsightPlanSchema = z.object({
     .max(8)
     .refine((insights) => V4_CHAPTER_KEYS.every((key) => insights.some((i) => i.chapter === key)), {
       message: 'Every chapter needs at least one insight',
-    })
-    .refine((insights) => insights.some((i) => i.chapter === 'attraction' && i.basis.includes('dayBranch')), {
-      message: 'The attraction chapter needs an insight that rests on the day-branch relation (the spouse palace)',
     }),
 });
 export type V4InsightPlan = z.infer<typeof V4InsightPlanSchema>;

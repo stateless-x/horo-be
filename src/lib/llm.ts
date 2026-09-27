@@ -228,10 +228,16 @@ async function generateValidatedCompatibilityJson<T>(
    * whatever still fails after it is returned as `softIssues`, not thrown.
    */
   softCheck?: (data: T) => string[],
+  /**
+   * Repair turns allowed for rule failures. v2 and v3 keep one; the v4
+   * section calls allow two, because a long reply that fixes one slip
+   * sometimes makes another (a stray Chinese word in a fixed plan step).
+   */
+  maxRepairs = 1,
 ): Promise<{ data: T; softIssues: string[] }> {
   let effectivePrompt = prompt;
   let repairTurn: ChatMessage[] = [];
-  let validationRetryUsed = false;
+  let repairsUsed = 0;
   let transportFailures = 0;
 
   while (true) {
@@ -263,8 +269,9 @@ async function generateValidatedCompatibilityJson<T>(
       const result = schema.safeParse(parsed);
       if (result.success) {
         const softIssues = softCheck?.(result.data) ?? [];
-        if (softIssues.length === 0 || validationRetryUsed) return { data: result.data, softIssues };
-        validationRetryUsed = true;
+        // Quality issues get one repair, and only as the first one.
+        if (softIssues.length === 0 || repairsUsed > 0) return { data: result.data, softIssues };
+        repairsUsed += 1;
         repairTurn = [
           { role: "assistant", content: text },
           { role: "user", content: describeInvalid(softIssues) },
@@ -272,15 +279,15 @@ async function generateValidatedCompatibilityJson<T>(
         continue;
       }
 
-      if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
-      validationRetryUsed = true;
+      if (repairsUsed >= maxRepairs) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
+      repairsUsed += 1;
       repairTurn = [
         { role: "assistant", content: text },
         { role: "user", content: describeInvalid(result.error.issues.map(issueLine)) },
       ];
     } catch (error) {
-      if (validationRetryUsed) throw error;
-      validationRetryUsed = true;
+      if (repairsUsed >= maxRepairs) throw error;
+      repairsUsed += 1;
       effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
     }
   }
@@ -474,6 +481,7 @@ export function generateCompatibilityV4Plan(prompt: string, options: V4PartOptio
     describeInvalid,
     options.onModelCall,
     options.softCheck,
+    2,
   );
 }
 
@@ -491,6 +499,7 @@ export function generateCompatibilityV4Sections(
     describeInvalid,
     options.onModelCall,
     options.softCheck,
+    2,
   );
 }
 

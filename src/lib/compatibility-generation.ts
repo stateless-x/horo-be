@@ -263,6 +263,14 @@ const LABEL_CONTRADICTION: Record<V4MonthLabel, RegExp | null> = {
 
 type Issue = [path: string, message: string];
 
+/**
+ * Where a wrong element is a hard failure: the verdict, the overview story
+ * and the attraction chapter state the pair's astrology outright. Elsewhere
+ * a slip is often a metaphor, so it costs a repair and a flag instead.
+ */
+const ELEMENT_CORE = /^cover\.verdict$|^overview\.story$|^attraction\./;
+const ELEMENT_ISSUE = 'Names element';
+
 /** Rules every prose field must pass: correct elements, nothing credited to a planet, the reader's gender. */
 function factIssues(entries: Array<[string, string]>, allowedFor: (path: string) => Element[], gender: Gender | null): Issue[] {
   const issues: Issue[] = [];
@@ -372,7 +380,7 @@ export async function generateCompatibilityV4(
         stringLeaves(content).filter(([path]) => !path.endsWith('.month')),
         (path) => (path.startsWith('calendar.') ? [...pairElements, monthElement(path)] : pairElements),
         gender,
-      ),
+      ).filter(([path, message]) => !message.startsWith(ELEMENT_ISSUE) || ELEMENT_CORE.test(path)),
       ctx,
     );
     content.calendar?.forEach((entry, i) => {
@@ -396,6 +404,14 @@ export async function generateCompatibilityV4(
   };
   const softCheck = (content: Partial<V4Sections>) => {
     const issues = qualityIssues(stringLeaves(content), partnerName);
+    // Element slips outside the core fields: often a metaphor, worth a repair, not a failed reading.
+    for (const [path, message] of factIssues(
+      stringLeaves(content).filter(([p]) => !p.endsWith('.month') && !ELEMENT_CORE.test(p)),
+      (p) => (p.startsWith('calendar.') ? [...pairElements, monthElement(p)] : pairElements),
+      gender,
+    )) {
+      if (message.startsWith(ELEMENT_ISSUE)) issues.push(`${path}: ${message}`);
+    }
     if (content.cover && !content.cover.verdict.includes(partnerName)) {
       issues.push(`cover.verdict: name ${partnerName} and this pair's specific tension or gift`);
     }
@@ -456,6 +472,9 @@ export async function generateCompatibilityV4(
     },
     qualityFlags: [
       ...duplicateInsights(plan.data.insights).map((key) => `insights: two insights cite the same data for ${key}`),
+      ...(plan.data.insights.some((i) => i.chapter === 'attraction' && i.basis.includes('dayBranch'))
+        ? []
+        : ['insights: no attraction insight rests on the spouse palace (dayBranch)']),
       ...parts.flatMap((part) => part.softIssues),
     ],
   };

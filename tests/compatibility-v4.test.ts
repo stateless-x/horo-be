@@ -119,10 +119,14 @@ describe('generateCompatibilityV4', () => {
     expect(content.calendar[0].month).toBe('2026-10');
   });
 
-  test('an element neither person has, in any chapter, is rejected', async () => {
+  test('an element neither person has is a failure in the core fields and a flag elsewhere', async () => {
     // Reader metal, partner fire: water is neither.
-    mockModel(() => sections({ you: chapter('ธาตุน้ำในตัวคุณทำให้ใจเย็น ') }));
+    mockModel(() => sections({ attraction: chapter('ธาตุน้ำของคุณกับนักษัตรวันเกิดของทั้งสองคน ') }));
     await expect(generateCompatibilityV4(input)).rejects.toThrow('Names element น้ำ');
+
+    mockModel(() => sections({ you: chapter('ธาตุน้ำในตัวคุณทำให้ใจเย็น ') }));
+    const result = await generateCompatibilityV4(input);
+    expect(result.qualityFlags.some((flag) => flag.startsWith('you.detail: Names element น้ำ'))).toBe(true);
   });
 });
 
