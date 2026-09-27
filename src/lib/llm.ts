@@ -17,6 +17,7 @@ import {
 
 type CompatibilityV3Generated = z.infer<typeof CompatibilityV3GeneratedSchema>;
 import { CHART_BUDGET, DAILY_BUDGET } from "../../lib/shared/types/generation-budget";
+import { foreignTextIn } from "./compatibility-text";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const MAX_TOKENS_CAP = 8192; // deepseek-chat hard limit
@@ -336,10 +337,12 @@ export async function generateStructuredCompatibilityReading(
   prompt: string,
   maxTokens: number = 1000,
   onModelCall?: OnModelCall,
+  /** Masked before the foreign-word rule, so a partner called Mind is not English. */
+  partnerName?: string,
 ): Promise<GeneratedCompatibilityContent> {
   const { data } = await generateValidatedCompatibilityJson(
     `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`,
-    GeneratedCompatibilityContentSchema.superRefine(rejectForeignWords),
+    GeneratedCompatibilityContentSchema.superRefine((content, ctx) => rejectForeignWords(content, ctx, partnerName)),
     maxTokens,
     describeInvalid,
     onModelCall,
@@ -404,7 +407,7 @@ export async function generateStructuredCompatibilityReadingV3(
  * in them must still parse against, so the foreign-word rule lives here, on
  * generation only. v2 leaked "naturally" into Thai output in the samples.
  */
-function rejectForeignWords(content: GeneratedCompatibilityContent, ctx: z.RefinementCtx) {
+function rejectForeignWords(content: GeneratedCompatibilityContent, ctx: z.RefinementCtx, partnerName: string | undefined) {
   const fields: Array<[string, string]> = [
     ['verdict', content.verdict],
     ['chemistry', content.chemistry],
@@ -415,7 +418,7 @@ function rejectForeignWords(content: GeneratedCompatibilityContent, ctx: z.Refin
     ['nextSteps.watchFor', content.nextSteps.watchFor],
   ];
   for (const [path, text] of fields) {
-    const token = foreignTokenIn(text);
+    const token = partnerName === undefined ? foreignTokenIn(text) : foreignTextIn(text, partnerName);
     if (token) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message: `Non-Thai text in prose: "${token}"` });
   }
 }

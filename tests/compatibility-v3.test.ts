@@ -174,6 +174,17 @@ describe('generateCompatibilityV3', () => {
     expect(calls).toBe(1);
   });
 
+  test('a partner called Mind is a name, not a foreign token', async () => {
+    const named = structuredClone(generated);
+    named.teaser.hook = th(120, 'Mindกับคุณ ');
+    globalThis.fetch = (async () => deepSeekResponse(named)) as unknown as typeof fetch;
+    let calls = 0;
+    const input = fixtureInput('family-partner-mbti-only');
+    const result = await generateCompatibilityV3({ ...input, partner: { ...input.partner, name: 'Mind' }, onModelCall: () => calls++ });
+    expect(calls).toBe(1);
+    expect(result.content.teaser.hook).toStartWith('Mindกับคุณ');
+  });
+
   test('a leaked foreign token costs exactly one repair call', async () => {
     const leaked = structuredClone(generated);
     leaked.teaser.hook = th(120, 'enquanto ');

@@ -59,11 +59,13 @@ import {
   escapeRegExp,
   fixKnownTypos,
   foreignElementWords,
+  foreignTextIn,
   guessesPartnerView,
   hintJargon,
   mapStrings,
   maskName,
   mixesPronouns,
+  proseLeaves,
   stockLine,
   stringLeaves,
   thaiWordCount,
@@ -176,6 +178,7 @@ export async function generateCompatibilityV2(
     prompt,
     TOKEN_LIMITS[input.relationshipType],
     input.onModelCall,
+    input.partner.name,
   );
   const llmEnd = performance.now();
   const content = CompatibilityStructuredContentSchema.parse({
@@ -192,12 +195,24 @@ export async function generateCompatibilityV2(
 }
 
 /**
+ * Every prose field is Thai (MBTI codes aside), read with the partner's name
+ * masked: a partner called Mind or A+ is not English in the text. The model
+ * drops stray foreign words into long Thai output; one costs a repair.
+ */
+export function foreignTextIssues(content: unknown, partnerName: string, ctx: z.RefinementCtx): void {
+  for (const [path, text] of proseLeaves(content)) {
+    const token = foreignTextIn(text, partnerName);
+    if (token) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message: `Non-Thai text in prose: "${token}"` });
+  }
+}
+
+/**
  * The free verdict and hook, and the dynamic paragraph, may only name the two
  * people's own elements, and may not credit an element to a Thai planet. The
  * model once wrote "ดินเจอกับไฟ" for a pair who are both earth, and "ไฟจาก
  * ดาวอังคาร" when the fire came from Bazi. A failure triggers the repair turn.
  */
-function elementCheck(allowed: CompatibilityCharts['readerBazi']['element'][]) {
+function elementCheck(allowed: CompatibilityCharts['readerBazi']['element'][], partnerName: string) {
   type Checked = { teaser: { verdict: string; hook: string }; detail: { dynamic: string } };
   const fields: Array<[path: string[], read: (content: Checked) => string]> = [
     [['teaser', 'verdict'], (content) => content.teaser.verdict],
@@ -205,6 +220,7 @@ function elementCheck(allowed: CompatibilityCharts['readerBazi']['element'][]) {
     [['detail', 'dynamic'], (content) => content.detail.dynamic],
   ];
   return (content: Checked, ctx: z.RefinementCtx) => {
+    foreignTextIssues(content, partnerName, ctx);
     for (const [path, read] of fields) {
       const text = read(content);
       const foreign = foreignElementWords(text, allowed);
@@ -237,7 +253,7 @@ export async function generateCompatibilityV3(
   const generated = await generateStructuredCompatibilityReadingV3(
     prompt,
     input.onModelCall,
-    elementCheck([charts.readerBazi.element, charts.partnerBazi.element]),
+    elementCheck([charts.readerBazi.element, charts.partnerBazi.element], input.partner.name),
   );
   const llmEnd = performance.now();
   const content = CompatibilityV3ContentSchema.parse({
@@ -409,6 +425,7 @@ function v4Context(input: V4Input) {
   };
   const monthElement = (path: string) => calendar[Number(path.split('.')[1])].monthElement;
   const pairCheck = (content: Partial<V4Sections>, ctx: z.RefinementCtx) => {
+    foreignTextIssues(content, partnerName, ctx);
     toIssues(
       factIssues(
         stringLeaves(content).filter(([path]) => !path.endsWith('.month')),
@@ -555,6 +572,7 @@ export async function generateCompatibilityV4Stored(input: V4Input & { withDetai
     // The plan is short (3 to 10 s measured); cap it so the sections keep most of the budget.
     deadlineAt: input.deadlineAt === undefined ? undefined : Math.min(input.deadlineAt, Date.now() + PLAN_BUDGET_MS),
     pairCheck: (content, refine) => {
+      foreignTextIssues(content, input.partner.name, refine);
       const unavailable = new Set<string>([
         ...(input.reader.mbtiType ? [] : ['readerMbti']),
         ...(input.partner.mbtiType ? [] : ['partnerMbti']),

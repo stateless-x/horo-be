@@ -58,19 +58,14 @@ export function foreignTokenIn(text: string): string | null {
   return match ? match[0] : null;
 }
 
-/** A Thai prose field: trimmed, bounded, and free of non-Thai words except MBTI codes. */
-export const thaiProse = (min: number, max: number) =>
-  z
-    .string()
-    .trim()
-    .min(min)
-    .max(max)
-    .superRefine((value, ctx) => {
-      const token = foreignTokenIn(value);
-      if (token) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Non-Thai text in prose: "${token}"` });
-      }
-    });
+/**
+ * A prose field: trimmed and bounded. The Thai-only rule (foreignTokenIn) is
+ * checked at generation, with the partner's name masked (foreignTextIn in
+ * horo-be src/lib/compatibility-text.ts): a schema can't know the name, and a
+ * partner called Mind or A+ would fail every field. It also lets stored rows
+ * with such a name parse back.
+ */
+export const thaiProse = (min: number, max: number) => z.string().trim().min(min).max(max);
 
 /**
  * The sections a locked hint may sell. Hints must name a moment the reader

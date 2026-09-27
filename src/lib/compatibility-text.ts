@@ -1,4 +1,4 @@
-import type { Element } from '../../lib/shared';
+import { foreignTokenIn, type Element } from '../../lib/shared';
 
 /**
  * Deterministic checks and clean-ups for generated compatibility prose,
@@ -98,6 +98,23 @@ const NAME_MARK = '(ชื่อ)';
 export function maskName(text: string, name: string): string {
   const pattern = new RegExp(`(?<!ธาตุ|ดวง)${escapeRegExp(name)}(?!${PLANET_NAMES.join('|')})`, 'g');
   return text.replace(pattern, NAME_MARK);
+}
+
+/**
+ * The first non-Thai token in model prose (foreignTokenIn: MBTI codes allowed),
+ * read with the partner's name masked, so "Mind" or "A+" is a name, not a
+ * stray English word. Every version's generation check calls it.
+ */
+export function foreignTextIn(text: string, partnerName: string): string | null {
+  return foreignTokenIn(maskName(text, partnerName));
+}
+
+/**
+ * The prose strings of a generated reading with their paths: every string but
+ * the month keys and enum values (chapter, section, basis), which are not prose.
+ */
+export function proseLeaves(value: unknown): Array<[string, string]> {
+  return stringLeaves(value).filter(([path]) => !/(?:^|\.)(?:month|chapter|section)$|(?:^|\.)basis\.\d+$/.test(path));
 }
 
 /** Astrology vocabulary that turns a locked hint into a spec instead of a moment. */

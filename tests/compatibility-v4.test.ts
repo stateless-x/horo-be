@@ -297,6 +297,36 @@ describe('partner names that are ordinary words', () => {
     expect(stored.teaser.cover.verdict).toContain('(บีม');
   });
 
+  // Latin letters and symbols: the Thai-only rule reads the text with the name masked.
+  for (const partner of ['Mind', 'A+', 'น้อง*']) {
+    test(`${partner}: cover and detail pass with no repair, and the stored row parses back`, async () => {
+      mockModel(() => renamed(partner));
+      let calls = 0;
+      const full = await generateCompatibilityV4({ ...named(partner), onModelCall: () => calls++ });
+      expect(calls).toBe(5);
+      expect(full.qualityFlags).toEqual([]);
+
+      const { stored } = await generateCompatibilityV4Stored({ ...named(partner), withDetail: true });
+      const parsed = parseCompatibilityContent(JSON.stringify(stored));
+      expect(parsed?.contentVersion).toBe(4);
+      expect(JSON.stringify(parsed)).toContain(JSON.stringify(partner).slice(1, -1));
+    });
+  }
+
+  test('Mind: a real foreign word in prose still gets the repair, which names it', async () => {
+    const good = renamed('Mind');
+    const cover = good.cover as { verdict: string };
+    const coverCalls: string[][] = [];
+    mockModel((keys, messages) => {
+      if (!keys.includes('cover')) return good;
+      coverCalls.push(messages);
+      return coverCalls.length === 1 ? { ...good, cover: { ...cover, verdict: `${cover.verdict} naturally` } } : good;
+    });
+    await generateCompatibilityV4({ ...named('Mind') });
+    expect(coverCalls).toHaveLength(2);
+    expect(coverCalls[1].at(-1)).toContain('cover.verdict: Non-Thai text in prose: "naturally"');
+  });
+
   test('ดาว: a real jargon hint gets the repair, which names it', async () => {
     const good = renamed('ดาว');
     const cover = good.cover as { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };

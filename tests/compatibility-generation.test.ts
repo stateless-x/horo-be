@@ -74,6 +74,23 @@ describe('compatibility generation validation', () => {
     expect(repairedRequest.messages[3]?.content).toContain('nextSteps');
   });
 
+  test('a partner called Mind is a name, not English; a real foreign word still costs a repair', async () => {
+    const named = { ...validGeneratedContent, verdict: 'Mindกับคุณคุยกันได้ดีเมื่อบอกความต้องการให้ชัด' };
+    const leaked = { ...named, advice: `${validGeneratedContent.advice} naturally` };
+    const requests: RequestInit[] = [];
+    const responses = [leaked, named];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return deepSeekResponse(responses.shift());
+    }) as typeof fetch;
+
+    const result = await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300, undefined, 'Mind');
+    expect(result).toEqual(named);
+    expect(requests).toHaveLength(2);
+    const repair = JSON.parse(String(requests[1]?.body)) as { messages: Array<{ content: string }> };
+    expect(repair.messages[3]?.content).toContain('Non-Thai text in prose: "naturally"');
+  });
+
   test('rejects after one failed repair without making another request', async () => {
     const requests: RequestInit[] = [];
     const invalidContent = { ...validGeneratedContent, nextSteps: undefined };
