@@ -1,5 +1,5 @@
 import { Elysia } from 'elysia';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { auth } from '../lib/auth';
 import { config } from '../config';
 import { normalizeMbtiType } from '../../lib/astrology';
@@ -17,6 +17,15 @@ import {
 } from '../../lib/shared';
 import { generateCompatibilityV2, generateCompatibilityV3, generateCompatibilityV4 } from '../lib/compatibility-generation';
 import type { OnModelCall } from '../lib/llm';
+import { validateSessionFromRequest } from '../lib/session';
+import {
+  DevRegenerateCompatibilitySchema,
+  DevRequestError,
+  isLocalDatabaseUrl,
+  regenerateChart,
+  regenerateCompatibility,
+  regenerateDaily,
+} from '../lib/dev-regenerate';
 import { generateTeaser } from '../systems/fortune/teaser';
 
 // Dev-only login bypass. Mounted from index.ts only when NODE_ENV !== 'production'
@@ -79,6 +88,57 @@ function devGenerator<TInput, TOutput, TContent>(
       set.status = 502;
       return {
         error: 'Generation failed',
+        detail: error instanceof Error ? error.message : String(error),
+      } satisfies DevGenerateError;
+    }
+  };
+}
+
+const NoBodySchema = z.object({}).passthrough();
+
+/**
+ * One dev regenerate endpoint: it WRITES the signed-in user's readings, so
+ * the guards run in this order, each before anything else can answer:
+ * production 404, then 403 unless DATABASE_URL points at this machine (the
+ * local .env.local is the production database), then session 401, then body
+ * 400. The database URL is read per request, never cached.
+ */
+function devWrite<TInput, TResult extends object>(
+  schema: z.ZodType<TInput, z.ZodTypeDef, unknown>,
+  run: (input: TInput, context: { userId: string; request: Request; startedAt: number }) => Promise<TResult>,
+) {
+  return async ({ body, request, set }: { body: unknown; request: Request; set: { status?: number | string } }) => {
+    if (config.env === 'production') return notFound();
+
+    if (!isLocalDatabaseUrl(config.database.url)) {
+      set.status = 403;
+      return {
+        error: 'Refused: DATABASE_URL is not a local database',
+        detail: 'Regenerate writes to the database. Start horo-be with the horo-be-dev-localdb launch config.',
+      } satisfies DevGenerateError;
+    }
+
+    const session = await validateSessionFromRequest(request);
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not signed in', detail: 'Open /api/dev/login first.' } satisfies DevGenerateError;
+    }
+
+    const parsed = schema.safeParse(body ?? {});
+    if (!parsed.success) {
+      set.status = 400;
+      return { error: 'Invalid request', detail: parsed.error.message } satisfies DevGenerateError;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await run(parsed.data, { userId: session.userId, request, startedAt });
+      return { ...result, totalMs: Date.now() - startedAt };
+    } catch (error) {
+      console.error('[Dev] Regenerate failed:', error);
+      set.status = error instanceof DevRequestError ? error.status : 502;
+      return {
+        error: 'Regenerate failed',
         detail: error instanceof Error ? error.message : String(error),
       } satisfies DevGenerateError;
     }
@@ -180,4 +240,12 @@ export const devRoutes = new Elysia({ prefix: '/api/dev' })
       const { result, prompt, timings } = await generateTeaser(profile, onModelCall);
       return { output: result, content: result, prompt, timings };
     }),
-  );
+  )
+  .post(
+    '/regenerate/compatibility',
+    devWrite(DevRegenerateCompatibilitySchema, (input, { userId, startedAt }) =>
+      regenerateCompatibility(userId, input, startedAt),
+    ),
+  )
+  .post('/regenerate/daily', devWrite(NoBodySchema, (_input, { userId, request }) => regenerateDaily(userId, request)))
+  .post('/regenerate/chart', devWrite(NoBodySchema, (_input, { userId, request }) => regenerateChart(userId, request)));
