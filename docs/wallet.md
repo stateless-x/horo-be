@@ -21,8 +21,8 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 |---|---|
 | `src/lib/pricing.ts` | The only place prices live: products, packs, welcome gift, cap, bonus TTL |
 | `lib/db/schema/wallet.ts` | `orders`, `wallet_ledger` and their indexes (additive) |
-| `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, spend, refund, orders, credit, adjust, ledger |
-| `src/lib/entitlements.ts` | `assertCanUnlock`: the ดวงคู่ unlock seam that spends |
+| `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, canAfford, spendWithin/spend, refund, orders, credit, adjust, ledger |
+| `src/lib/entitlements.ts` | `checkUnlock` + `chargeUnlockWithin`: the ดวงคู่ unlock seam, charged with delivery |
 | `src/routes/wallet.ts` | `/api/wallet` routes and the dev-only grant |
 | `lib/shared/types/wallet.ts` | IDs and response shapes shared with horo-fe (`bun run sync:types`) |
 | `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant guards; the ledger block needs a local Postgres |
@@ -32,7 +32,10 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 - Products (มู, VAT-inclusive): `compat_unlock` 49, `month_pass` 29, `year_reading` 99, `wallpaper` 39.
   Only `compat_unlock` is spendable (`SpendableProductId`).
 - Packs: `p49` ฿49 → 49 · `p99` ฿99 → 99 + 10 bonus · `p199` ฿199 → 199 + 30 bonus.
-- Welcome gift: 49 once per account, on the first wallet touch (`GET /api/wallet` or an unlock).
+- Welcome gift: 49 once per account, on the first wallet touch while ดวงคู่ locked mode is on (`GET /api/wallet` or an
+  unlock). **Not sellable, not shown:** with the lock off there is no gift, `GET /api/wallet` returns
+  `{ enabled: false }`, and the frontend shows no wallet (owner decision, 2026-09-27). One flag gates both:
+  `COMPAT_LOCK_ENABLED`.
 - Closed loop: never cashed out, never transferred between users, never spent outside Horo. Balance cap 2,000.
 - Base units never expire. Bonus rows carry `expires_at` = purchase + 180 days.
 
@@ -56,8 +59,10 @@ Partial unique indexes back the idempotency, independent of the lock:
 
 ## Operations
 
-- `spend(user, product, refId)`: charges once per (user, product, refId). A repeat call returns `charged: false` and
-  costs nothing. Below the price it throws `InsufficientBalance { balance, price }`.
+- `spendWithin(tx, user, product, refId)`: charges once per (user, product, refId) inside the caller's transaction,
+  under the advisory lock. A repeat call returns `charged: false` and costs nothing. Below the price it throws
+  `InsufficientBalance { balance, price }`. `spend(...)` is the same in a transaction of its own.
+- `canAfford(user, price)`: a read-only pre-check with no lock. `spendWithin` re-checks under the lock.
 - `refundSpend(user, product, refId, note)`: a `+price` row of kind `refund`, at most once. **Refund is terminal:** a
   later `spend` on that thing throws `SpendRefunded`. The spend index allows one spend per thing, and treating a refunded
   spend as paid would give a free unlock with the credit back.
@@ -70,18 +75,27 @@ Partial unique indexes back the idempotency, independent of the lock:
 
 ## The ดวงคู่ unlock
 
-`assertCanUnlock(userId, rowId)`:
-1. Lock off, or `COMPAT_UNLOCK_FREE=1` (dev): ok, with no wallet access.
-2. Otherwise `ensureWelcome`, then `spend(userId, 'compat_unlock', rowId)`.
-3. `InsufficientBalance` becomes `{ ok: false, body: { error: INSUFFICIENT_BALANCE, balance, price } }`, which the unlock route sends as the 402 body. Any other error is
-   thrown.
+The unlock pays atomically with delivery. The seam is in `src/lib/entitlements.ts`:
 
-The unlock route charges **before** it generates the detail (`src/systems/compatibility/reading.ts`). A failed
-generation does not refund. The spend is keyed to the row, so a retry is never charged a second time. That covers a
-transient failure. A failure that repeats on every attempt leaves the user paid with no report. Example: a partner
-name with digits ("มูหนึ่ง2242") failed the detail's number check on every retry, 2026-09-27. That case needs a manual
-`refundSpend` (T13). The long-term
-fix is to insert the spend in the same transaction as the detail patch, after generation.
+1. **`checkUnlock(userId)`**, before generating.
+   - Lock off, or `COMPAT_UNLOCK_FREE=1` (dev): ok, with no wallet access.
+   - Otherwise it runs `ensureWelcome`, then `canAfford(userId, 49)`. This is a read-only pre-check and takes no lock.
+   - Short → `{ ok: false, body: { error: INSUFFICIENT_BALANCE, balance, price } }`, sent as the 402 body.
+2. **Generate the detail.** A failure here costs nothing, because nothing has been charged.
+3. **One transaction: `chargeUnlockWithin(tx, userId, rowId)` + patch the detail.**
+   - `chargeUnlockWithin` calls `wallet.spendWithin(tx, …)`. That takes the per-user advisory lock inside the caller's
+     transaction, re-checks the balance, and charges once per row.
+   - If the balance dropped since step 1, it returns the same 402 body, and the caller rolls back instead of saving.
+   - If the patch fails, the charge rolls back with it. `tests/wallet.test.ts` covers this rollback.
+
+**Until the route moves to this order,** it still calls `assertCanUnlock` (welcome gift, then `spend`, before
+generating). A failure that repeats on every attempt then leaves the user paid with no report. Example: a partner
+name with digits failed the detail's number check on every retry, 2026-09-27. Delete `assertCanUnlock` when the route
+lands.
+
+**Known dev-only gap.** A row relocked by devtools after it was paid for has a spend but no detail. `checkUnlock` only
+reads the balance, so at a balance of 0 that row gets a 402, although `spendWithin` would not charge it again. Use the
+dev grant.
 
 ## Routes
 
@@ -89,8 +103,8 @@ All routes need a session.
 
 | Route | Returns |
 |---|---|
-| `GET /api/wallet` | grants the welcome gift, then `{ balance, cap, packs, prices, ledger }` (the newest 20 rows) |
-| `POST /api/wallet/checkout { packId }` | `{ orderId, status: 'pending', payment: 'unavailable', message }`; 409 `balance_cap` |
+| `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows) |
+| `POST /api/wallet/checkout { packId }` | `{ orderId, status: 'pending', payment: 'unavailable', message }`; 409 `balance_cap`; 404 while the lock is off |
 | `GET /api/wallet/orders/:id` | the owner's order status; 404 otherwise |
 | `POST /api/wallet/dev/grant { delta, note }` | dev only; see below |
 
