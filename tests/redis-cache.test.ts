@@ -34,9 +34,14 @@ describe('getRedisClient() memoization', () => {
     expect(second).toBeNull();
     expect(first).toBe(second);
 
-    // If the guard didn't memoize, "REDIS_URL not set" would log on every call.
+    // If the guard didn't memoize, "REDIS_URL not set" would log on every call,
+    // so two calls would log twice. At most once, not exactly once: bun runs
+    // every test file in one process and getRedisClient() is memoized
+    // process-wide, so an earlier file that touches the rate limiter
+    // (rate-limit-buckets.test.ts on Linux file order) may already have
+    // initialized it, and then neither call here logs at all.
     const initLogs = logCalls.filter((line) => line.includes('REDIS_URL not set'));
-    expect(initLogs.length).toBe(1);
+    expect(initLogs.length).toBeLessThanOrEqual(1);
   });
 });
 
