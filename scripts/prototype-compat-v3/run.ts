@@ -197,6 +197,8 @@ async function runOnce(f: Fixture, arch: 'v2' | 'v3' | 'v4', run: number) {
       fixture: f.id, arch, run, totalMs: Math.round(performance.now() - t0), modelCalls,
       attempts: attemptLog.map(({ text: _text, ...a }) => a),
       firstTryPass: false, finalPass: false, firstTryError: firstReplyIssue(attemptLog[0]), error: String(error),
+      // Every reply the model gave, so a failed reading can be diagnosed from its text.
+      replies: attemptLog.map((a) => a.text),
     };
   }
 }

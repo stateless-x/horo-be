@@ -54,11 +54,13 @@ const pct = (xs: number[], p: number) => {
 };
 const median = (xs: number[]) => pct(xs, 50);
 const sec = (ms: number) => (ms / 1000).toFixed(1);
+/** v4 makes 4 calls when nothing needs a repair (plan + 3 sections); the others make 1. */
+const firstTry = (r: Json) => (r.arch === 'v4' ? r.finalPass && r.modelCalls === 4 : r.firstTryPass);
 
 const out: string[] = [];
 const w = (line = '') => out.push(line);
 
-w('# Compatibility v3 prototype samples');
+w('# Compatibility report samples');
 w();
 w(`Generated ${new Date().toISOString()} by \`horo-be/scripts/prototype-compat-v3/run.ts\` + \`render.ts\`.`);
 w('All people are synthetic fixtures. No database, no real user data. Model: DeepSeek `deepseek-chat`, JSON mode, temperature 0.7, same system prompt as production.');
@@ -75,7 +77,7 @@ if (preamble) {
 // ---- latency
 w('## Latency and pass rate');
 w();
-w('| arch | calls | first-try schema pass | final pass | wall p50 | wall max | out tokens p50 | out tokens max | finish=length |');
+w('| arch | readings | passed with no repair | final pass | wall p50 | wall max | out tokens per call p50 | per call max | finish=length |');
 w('|---|---|---|---|---|---|---|---|---|');
 for (const arch of ARCHS) {
   const rs = records.filter((r) => r.arch === arch);
@@ -84,7 +86,7 @@ for (const arch of ARCHS) {
   const toks = rs.flatMap((r) => r.attempts.map((a: Json) => a.completionTokens ?? 0));
   const truncated = rs.flatMap((r) => r.attempts).filter((a: Json) => a.finishReason === 'length').length;
   w(
-    `| ${arch} | ${rs.length} | ${rs.filter((r) => r.firstTryPass).length}/${rs.length} | ${rs.filter((r) => r.finalPass).length}/${rs.length} | ` +
+    `| ${arch} | ${rs.length} | ${rs.filter(firstTry).length}/${rs.length} | ${rs.filter((r) => r.finalPass).length}/${rs.length} | ` +
       `${sec(median(ms))}s | ${sec(Math.max(...ms))}s | ${median(toks)} | ${Math.max(...toks)} | ${truncated} |`,
   );
 }
@@ -197,6 +199,56 @@ function checklist(c: Json, elements: Element[], f: Json) {
   w();
 }
 
+/** v4 report as markdown: the teaser view (cover, bars, hints), then everything the full view adds. */
+function v4View(c: Json, f: Json, qualityFlags: string[]) {
+  const chapters: Json[] = c.chapters;
+  w('**v4 teaser view** (`view: \'teaser\'`)');
+  w();
+  w(`> **${c.archetype.name}**: ${c.archetype.tagline}`);
+  w('>');
+  w(`> **${c.cover.verdict}**`);
+  w('>');
+  for (const d of c.dimensions) w(`> - ${d.label} **${d.score}** _(from ${d.basis.join(', ')})_`);
+  w('>');
+  for (const h of c.cover.lockedHints) w(`> - [ล็อก] ${h.text} _(→ ${h.chapter})_`);
+  w();
+  w('**v4 full view** (the teaser plus)');
+  w();
+  w(`**ภาพรวม.** ${c.overview.story}`);
+  w();
+  for (const d of c.dimensions) w(`- ${d.label} ${d.score}: ${c.overview.dimensionLines[d.key]}`);
+  w();
+  for (const ch of chapters) {
+    w(`**${ch.title}**`);
+    w();
+    w(`_${ch.summary}_`);
+    w();
+    w(ch.detail);
+    w();
+    if (ch.pairs) ch.pairs.forEach((p: Json, i: number) => w(`${i + 1}. ทำ: ${p.do}<br>เลี่ยง: ${p.avoid}`));
+    if (ch.lines) ch.lines.forEach((l: string) => w(`- ส่งได้เลย: ${l}`));
+    if (ch.scenarios) ch.scenarios.forEach((sc: Json, i: number) => w(`${i + 1}. ${sc.scenario}<br>คืนดี: ${sc.repair}`));
+    if (ch.goSignals) ch.goSignals.forEach((g: string) => w(`- ไปต่อได้: ${g}`));
+    if (ch.slowSignals) ch.slowSignals.forEach((g: string) => w(`- ควรชะลอ: ${g}`));
+    if (ch.nextStep) w(`- ขั้นต่อไป (${ch.nextStep.month}): ${ch.nextStep.step}`);
+    w();
+    w(`→ **move:** ${ch.move}`);
+    w();
+  }
+  w('**ปฏิทิน 3 เดือน**');
+  w();
+  for (const m of c.calendar) w(`- ${m.month} **${m.label}**: ${m.text}`);
+  w();
+  w('**แผน 7 วัน**');
+  w();
+  for (const p of c.plan) w(`- วันที่ ${p.day}: ${p.action}<br>พูด: ${p.conversationStarter}<br>สังเกต: ${p.watchFor}`);
+  w();
+  w(`<sub>insight plan: ${c.insights.map((i: Json) => `[${i.chapter}: ${i.basis.join('+')}] ${i.text}`).join(' · ')}</sub>`);
+  w();
+  w(`**Quality flags left after repair (${f.id}):** ${qualityFlags.length ? qualityFlags.join(' · ') : 'none'}`);
+  w();
+}
+
 for (const f of fixtures) {
   const readerDate = new Date(f.reader.birthDate);
   const partnerDate = new Date(f.partner.birthDate);
@@ -218,12 +270,19 @@ for (const f of fixtures) {
 
   const rs = records.filter((r) => r.fixture === f.id);
   const runLine = rs
-    .map((r) => `${r.arch} r${r.run}: ${sec(r.totalMs)}s ${r.firstTryPass ? 'pass' : r.finalPass ? 'pass after repair' : 'FAIL'}${r.checks?.flags?.length ? ` flags=[${r.checks.flags.join('; ')}]` : ''}`)
+    // v4's own quality flags are printed with its sample; the harness's v3-era text checks don't apply to it.
+    .map((r) => `${r.arch} r${r.run}: ${sec(r.totalMs)}s ${firstTry(r) ? 'pass' : r.finalPass ? 'pass after repair' : 'FAIL'}${r.arch !== 'v4' && r.checks?.flags?.length ? ` flags=[${r.checks.flags.join('; ')}]` : ''}`)
     .join(' · ');
   w(`<sub>${runLine}</sub>`);
   w();
 
   const v2 = rs.find((r) => r.arch === 'v2' && r.run === 1 && r.content);
+  const v4r = rs.find((r) => r.arch === 'v4' && r.run === 1 && r.content && r.finalPass);
+  if (v4r) {
+    w(`<sub>v4 sample below: run 1, ${sec(v4r.totalMs)}s, ${v4r.modelCalls} model calls</sub>`);
+    w();
+    v4View(v4r.content, f, v4r.qualityFlags ?? []);
+  }
   const v3r = rs.find((r) => r.arch === SHOW && r.run === 1 && r.content && r.finalPass);
   if (v3r) {
     w(`<sub>v3 sample below: ${SHOW}, run 1</sub>`);
