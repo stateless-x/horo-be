@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 /**
- * ละอองดาว (stardust) wallet: the vocabulary and response shapes shared by the
+ * มู wallet (1 มู = ฿1): the vocabulary and response shapes shared by the
  * API (src/routes/wallet.ts) and the frontend. The numbers (prices, pack sizes,
  * cap) live only in horo-be/src/lib/pricing.ts; the frontend reads them from
  * GET /api/wallet. Design: horo-be/docs/wallet.md.
  */
 
-/** Everything ละอองดาว can buy. Only compat_unlock is spendable today. */
+/** Everything มู can buy. Only compat_unlock is spendable today. */
 export const PRODUCT_IDS = ['compat_unlock', 'month_pass', 'year_reading', 'wallpaper'] as const;
 export type ProductId = (typeof PRODUCT_IDS)[number];
 
@@ -26,9 +26,9 @@ export interface WalletPack {
   id: PackId;
   /** What the buyer pays, VAT-inclusive, in whole baht. */
   priceBaht: number;
-  /** ละอองดาว that never expire. */
+  /** มู that never expire. */
   base: number;
-  /** Extra ละอองดาว that expire 180 days after purchase. */
+  /** Extra มู that expire 180 days after purchase. */
   bonus: number;
 }
 
@@ -72,14 +72,15 @@ export interface OrderStatusResponse {
   packId: PackId;
   status: OrderStatus;
   amountSatang: number;
-  stardust: number;
+  /** Base + bonus มู the order credits once paid. */
+  units: number;
   createdAt: string;
   paidAt: string | null;
 }
 
-/** HTTP 402 body when a spend needs more ละอองดาว than the balance holds. */
-export interface InsufficientStardustBody {
-  error: 'insufficient_stardust';
+/** HTTP 402 body when a spend needs more มู than the balance holds. */
+export interface InsufficientBalanceBody {
+  error: 'insufficient_balance';
   balance: number;
   price: number;
 }

@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db as appDb } from './db';
-import { orders, stardustLedger, type DbClient } from '../../lib/db';
+import { orders, walletLedger, type DbClient } from '../../lib/db';
 import type { LedgerEntry, LedgerKind, PackId, ProductId } from '../../lib/shared/types/wallet';
 import {
   BALANCE_CAP,
@@ -14,7 +14,7 @@ import {
 } from './pricing';
 
 /**
- * The ละอองดาว (stardust) ledger (docs/wallet.md). Balance = SUM(delta) over an
+ * The มู ledger (docs/wallet.md). Balance = SUM(delta) over an
  * append-only table. Every write that depends on the balance runs in one
  * transaction holding a per-user advisory lock, so two taps at once are
  * serialized and the balance never goes negative or over the cap. The partial
@@ -28,7 +28,7 @@ export class InsufficientBalance extends Error {
     readonly balance: number,
     readonly price: number,
   ) {
-    super(`Insufficient stardust: balance ${balance}, price ${price}`);
+    super(`Insufficient balance: balance ${balance}, price ${price}`);
   }
 }
 
@@ -71,9 +71,9 @@ type Reader = DbClient | Tx;
 
 async function sumBalance(reader: Reader, userId: string): Promise<number> {
   const [row] = await reader
-    .select({ balance: sql<number>`coalesce(sum(${stardustLedger.delta}), 0)::int` })
-    .from(stardustLedger)
-    .where(eq(stardustLedger.userId, userId));
+    .select({ balance: sql<number>`coalesce(sum(${walletLedger.delta}), 0)::int` })
+    .from(walletLedger)
+    .where(eq(walletLedger.userId, userId));
   return row.balance;
 }
 
@@ -82,7 +82,7 @@ async function lockUser(tx: Tx, userId: string): Promise<void> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
 }
 
-function toEntry(row: typeof stardustLedger.$inferSelect): LedgerEntry {
+function toEntry(row: typeof walletLedger.$inferSelect): LedgerEntry {
   return {
     id: row.id,
     delta: row.delta,
@@ -101,7 +101,7 @@ export function createWallet(db: DbClient) {
   /** Grants WELCOME_GIFT once per account; later calls and concurrent first touches insert nothing. */
   async function ensureWelcome(userId: string): Promise<void> {
     await db
-      .insert(stardustLedger)
+      .insert(walletLedger)
       .values({ userId, delta: WELCOME_GIFT, kind: 'welcome', note: 'ของขวัญต้อนรับ' })
       .onConflictDoNothing();
   }
@@ -116,21 +116,21 @@ export function createWallet(db: DbClient) {
     return db.transaction(async (tx) => {
       await lockUser(tx, userId);
       const sameThing = and(
-        eq(stardustLedger.userId, userId),
-        eq(stardustLedger.productId, productId),
-        eq(stardustLedger.refId, refId),
+        eq(walletLedger.userId, userId),
+        eq(walletLedger.productId, productId),
+        eq(walletLedger.refId, refId),
       );
       const prior = await tx
-        .select({ kind: stardustLedger.kind })
-        .from(stardustLedger)
-        .where(and(sameThing, sql`${stardustLedger.kind} in ('spend', 'refund')`));
+        .select({ kind: walletLedger.kind })
+        .from(walletLedger)
+        .where(and(sameThing, sql`${walletLedger.kind} in ('spend', 'refund')`));
       if (prior.some((row) => row.kind === 'refund')) throw new SpendRefunded(productId, refId);
 
       const current = await sumBalance(tx, userId);
       if (prior.length > 0) return { charged: false as const, balance: current };
       if (current < price) throw new InsufficientBalance(current, price);
 
-      await tx.insert(stardustLedger).values({ userId, delta: -price, kind: 'spend', productId, refId });
+      await tx.insert(walletLedger).values({ userId, delta: -price, kind: 'spend', productId, refId });
       return { charged: true as const, balance: current - price };
     });
   }
@@ -143,22 +143,22 @@ export function createWallet(db: DbClient) {
     return db.transaction(async (tx) => {
       await lockUser(tx, userId);
       const [spent] = await tx
-        .select({ delta: stardustLedger.delta })
-        .from(stardustLedger)
+        .select({ delta: walletLedger.delta })
+        .from(walletLedger)
         .where(
           and(
-            eq(stardustLedger.userId, userId),
-            eq(stardustLedger.productId, productId),
-            eq(stardustLedger.refId, refId),
-            eq(stardustLedger.kind, 'spend'),
+            eq(walletLedger.userId, userId),
+            eq(walletLedger.productId, productId),
+            eq(walletLedger.refId, refId),
+            eq(walletLedger.kind, 'spend'),
           ),
         );
       if (!spent) throw new Error(`No spend to refund for ${productId}/${refId}`);
       const inserted = await tx
-        .insert(stardustLedger)
+        .insert(walletLedger)
         .values({ userId, delta: -spent.delta, kind: 'refund', productId, refId, note })
         .onConflictDoNothing()
-        .returning({ id: stardustLedger.id });
+        .returning({ id: walletLedger.id });
       return { refunded: inserted.length > 0, balance: await sumBalance(tx, userId) };
     });
   }
@@ -175,8 +175,8 @@ export function createWallet(db: DbClient) {
         packId,
         amountSatang: packAmountSatang(pack),
         currency: CURRENCY,
-        stardustBase: pack.base,
-        stardustBonus: pack.bonus,
+        unitsBase: pack.base,
+        unitsBonus: pack.bonus,
         provider: 'stripe',
       })
       .returning();
@@ -206,24 +206,24 @@ export function createWallet(db: DbClient) {
       await lockUser(tx, order.userId);
 
       const [already] = await tx
-        .select({ id: stardustLedger.id })
-        .from(stardustLedger)
-        .where(and(eq(stardustLedger.orderId, orderId), eq(stardustLedger.kind, 'purchase')))
+        .select({ id: walletLedger.id })
+        .from(walletLedger)
+        .where(and(eq(walletLedger.orderId, orderId), eq(walletLedger.kind, 'purchase')))
         .limit(1);
       const current = await sumBalance(tx, order.userId);
       if (already) return { credited: false as const, balance: current };
 
-      const credit = order.stardustBase + order.stardustBonus;
+      const credit = order.unitsBase + order.unitsBonus;
       if (current + credit > BALANCE_CAP) throw new BalanceCapExceeded(current, credit);
 
-      const rows: (typeof stardustLedger.$inferInsert)[] = [
-        { userId: order.userId, delta: order.stardustBase, kind: 'purchase', orderId },
+      const rows: (typeof walletLedger.$inferInsert)[] = [
+        { userId: order.userId, delta: order.unitsBase, kind: 'purchase', orderId },
       ];
-      if (order.stardustBonus > 0) {
+      if (order.unitsBonus > 0) {
         const expiresAt = new Date(Date.now() + BONUS_TTL_DAYS * 24 * 60 * 60 * 1000);
-        rows.push({ userId: order.userId, delta: order.stardustBonus, kind: 'bonus', orderId, expiresAt });
+        rows.push({ userId: order.userId, delta: order.unitsBonus, kind: 'bonus', orderId, expiresAt });
       }
-      await tx.insert(stardustLedger).values(rows);
+      await tx.insert(walletLedger).values(rows);
       return { credited: true as const, balance: current + credit };
     });
   }
@@ -236,7 +236,7 @@ export function createWallet(db: DbClient) {
       const current = await sumBalance(tx, userId);
       if (current + delta > BALANCE_CAP) throw new BalanceCapExceeded(current, delta);
       if (current + delta < 0) throw new InsufficientBalance(current, -delta);
-      await tx.insert(stardustLedger).values({ userId, delta, kind: 'admin_adjust', note });
+      await tx.insert(walletLedger).values({ userId, delta, kind: 'admin_adjust', note });
       return { balance: current + delta };
     });
   }
@@ -245,9 +245,9 @@ export function createWallet(db: DbClient) {
   async function ledger(userId: string, limit: number): Promise<LedgerEntry[]> {
     const rows = await db
       .select()
-      .from(stardustLedger)
-      .where(eq(stardustLedger.userId, userId))
-      .orderBy(desc(stardustLedger.createdAt), desc(stardustLedger.id))
+      .from(walletLedger)
+      .where(eq(walletLedger.userId, userId))
+      .orderBy(desc(walletLedger.createdAt), desc(walletLedger.id))
       .limit(limit);
     return rows.map(toEntry);
   }

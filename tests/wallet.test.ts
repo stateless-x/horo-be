@@ -13,10 +13,10 @@ import {
   type Wallet,
 } from '../src/lib/wallet';
 import { walletDevRoutes } from '../src/routes/wallet';
-import { createDbClient, orders, stardustLedger, user, type DbClient } from '../lib/db';
+import { createDbClient, orders, walletLedger, user, type DbClient } from '../lib/db';
 
 /**
- * The ละอองดาว ledger (docs/wallet.md).
+ * The มู ledger (docs/wallet.md).
  *
  * The first block needs no database. The second runs against a real local
  * Postgres, because its guarantees live in advisory locks and partial unique
@@ -34,7 +34,7 @@ describe('pricing', () => {
       [199, 229],
     ]);
     for (const pack of Object.values(PACKS)) {
-      expect(pack.base).toBe(pack.priceBaht); // 1 ละอองดาว = ฿1 for the base units
+      expect(pack.base).toBe(pack.priceBaht); // 1 มู = ฿1 for the base units
       expect(packAmountSatang(pack)).toBe(pack.priceBaht * 100);
     }
   });
@@ -62,7 +62,7 @@ describe('assertCanUnlock', () => {
         throw new InsufficientBalance(12, 49);
       }),
     );
-    expect(decision).toEqual({ ok: false, code: 'insufficient_stardust', balance: 12, price: 49 });
+    expect(decision).toEqual({ ok: false, code: 'insufficient_balance', balance: 12, price: 49 });
   });
 
   test('any other wallet failure is thrown, not turned into a refusal', async () => {
@@ -136,9 +136,9 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
   }
 
   /** Raw insert, bypassing the wallet's checks, to prove the index alone refuses it. */
-  async function rawInsertFails(row: typeof stardustLedger.$inferInsert): Promise<string> {
+  async function rawInsertFails(row: typeof walletLedger.$inferInsert): Promise<string> {
     try {
-      await db.insert(stardustLedger).values(row);
+      await db.insert(walletLedger).values(row);
       return 'inserted';
     } catch (error) {
       return (error as { code?: string }).code ?? String(error);
@@ -159,7 +159,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
   afterAll(async () => {
     if (!db || userIds.length === 0) return;
     // Test cleanup only: the app never deletes ledger rows.
-    await db.delete(stardustLedger).where(inArray(stardustLedger.userId, userIds));
+    await db.delete(walletLedger).where(inArray(walletLedger.userId, userIds));
     await db.delete(orders).where(inArray(orders.userId, userIds));
     await db.delete(user).where(inArray(user.id, userIds));
   });

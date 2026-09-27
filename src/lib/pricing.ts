@@ -2,15 +2,15 @@ import type { PackId, ProductId, WalletPack } from '../../lib/shared/types/walle
 
 /**
  * The single source of truth for what Horo sells and for how much
- * (docs/wallet.md). Everything is in ละอองดาว (stardust), a closed-loop unit
- * pegged 1 ละอองดาว = ฿1 and always shown with the baht beside it. Integers
+ * (docs/wallet.md). Everything is in มู, a closed-loop unit
+ * pegged 1 มู = ฿1 and always shown with the baht beside it. Integers
  * only, VAT-inclusive.
  *
  * Closed loop (owner decision 2026-09-27): never cashed out, never transferred
  * between users, never spent outside Horo.
  */
 
-/** Price of each product in ละอองดาว. */
+/** Price of each product in มู. */
 export const PRODUCT_PRICES: Record<ProductId, number> = {
   compat_unlock: 49,
   month_pass: 29,
@@ -18,7 +18,7 @@ export const PRODUCT_PRICES: Record<ProductId, number> = {
   wallpaper: 39,
 };
 
-/** Products that can be bought with ละอองดาว today. The others have no unlock path yet. */
+/** Products that can be bought with มู today. The others have no unlock path yet. */
 export type SpendableProductId = Extract<ProductId, 'compat_unlock'>;
 
 /** Packs sold for baht: base units never expire, bonus units expire BONUS_TTL_DAYS after purchase. */

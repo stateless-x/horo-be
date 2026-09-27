@@ -3,7 +3,7 @@ import { pgTable, uuid, varchar, text, timestamp, integer, uniqueIndex, index } 
 import { user } from './users';
 
 /**
- * ละอองดาว (stardust) wallet. Design and invariants: docs/wallet.md.
+ * มู wallet (1 มู = ฿1). Design and invariants: docs/wallet.md.
  * Additive only, so `drizzle-kit push` applies it at deploy (.claude/CLAUDE.md).
  *
  * Status, provider and kind are varchar with the allowed values in
@@ -17,8 +17,8 @@ export const orders = pgTable('orders', {
   packId: varchar('pack_id', { length: 16 }).notNull(), // PackId
   amountSatang: integer('amount_satang').notNull(),
   currency: varchar('currency', { length: 3 }).notNull().default('THB'),
-  stardustBase: integer('stardust_base').notNull(),
-  stardustBonus: integer('stardust_bonus').notNull(),
+  unitsBase: integer('units_base').notNull(),
+  unitsBonus: integer('units_bonus').notNull(),
   status: varchar('status', { length: 16 }).notNull().default('pending'), // OrderStatus
   provider: varchar('provider', { length: 16 }).notNull(), // 'stripe' | 'manual'
   providerRef: text('provider_ref').unique(), // the provider's payment id; null until a charge exists
@@ -38,7 +38,7 @@ export const orders = pgTable('orders', {
  * - spend: one charge per (user, product, thing), e.g. per compatibility row;
  * - refund of a spend: at most one per spend.
  */
-export const stardustLedger = pgTable('stardust_ledger', {
+export const walletLedger = pgTable('wallet_ledger', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: text('user_id').references(() => user.id).notNull(),
   delta: integer('delta').notNull(),
@@ -50,15 +50,15 @@ export const stardustLedger = pgTable('stardust_ledger', {
   expiresAt: timestamp('expires_at'), // bonus rows only
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
-  userIdx: index('stardust_ledger_user_idx').on(table.userId, table.createdAt),
-  orderCreditIdx: uniqueIndex('stardust_ledger_order_credit_idx')
+  userIdx: index('wallet_ledger_user_idx').on(table.userId, table.createdAt),
+  orderCreditIdx: uniqueIndex('wallet_ledger_order_credit_idx')
     .on(table.orderId, table.kind)
     .where(sql`kind in ('purchase', 'bonus')`),
-  welcomeIdx: uniqueIndex('stardust_ledger_welcome_idx').on(table.userId).where(sql`kind = 'welcome'`),
-  spendIdx: uniqueIndex('stardust_ledger_spend_idx')
+  welcomeIdx: uniqueIndex('wallet_ledger_welcome_idx').on(table.userId).where(sql`kind = 'welcome'`),
+  spendIdx: uniqueIndex('wallet_ledger_spend_idx')
     .on(table.userId, table.productId, table.refId)
     .where(sql`kind = 'spend'`),
-  spendRefundIdx: uniqueIndex('stardust_ledger_spend_refund_idx')
+  spendRefundIdx: uniqueIndex('wallet_ledger_spend_refund_idx')
     .on(table.userId, table.productId, table.refId)
     .where(sql`kind = 'refund' and ref_id is not null`),
 }));

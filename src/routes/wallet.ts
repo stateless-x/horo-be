@@ -14,7 +14,7 @@ import {
 } from '../../lib/shared/types/wallet';
 
 /**
- * ละอองดาว wallet routes (docs/wallet.md). Session required on every route.
+ * มู wallet routes (docs/wallet.md). Session required on every route.
  * Payment is not wired yet: checkout records a pending order and says so.
  */
 
@@ -26,7 +26,7 @@ type Order = NonNullable<Awaited<ReturnType<Wallet['getOrder']>>>;
  * provider exists there is nothing to start.
  */
 async function startPayment(_order: Order): Promise<Pick<CheckoutResponse, 'payment' | 'message'>> {
-  return { payment: 'unavailable', message: 'ยังเติมละอองดาวไม่ได้ตอนนี้ ระบบจ่ายเงินด้วย PromptPay กำลังจะเปิด' };
+  return { payment: 'unavailable', message: 'ยังเติมมูไม่ได้ตอนนี้ ระบบจ่ายเงินด้วย PromptPay กำลังจะเปิด' };
 }
 
 export function walletRoutes(wallet: Wallet = appWallet) {
@@ -90,7 +90,7 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         packId: order.packId as PackId,
         status: order.status as OrderStatusResponse['status'],
         amountSatang: order.amountSatang,
-        stardust: order.stardustBase + order.stardustBonus,
+        units: order.unitsBase + order.unitsBonus,
         createdAt: order.createdAt.toISOString(),
         paidAt: order.paidAt?.toISOString() ?? null,
       } satisfies OrderStatusResponse;
@@ -103,7 +103,7 @@ const DevGrantSchema = z.object({
 });
 
 /**
- * Dev and test only: add or remove ละอองดาว on the signed-in user. Mounted from
+ * Dev and test only: add or remove มู on the signed-in user. Mounted from
  * index.ts only outside production, and re-checked here per request in the
  * same order as the dev regenerate routes: production 404, then 403 unless
  * DATABASE_URL is this machine (the local .env.local is the production

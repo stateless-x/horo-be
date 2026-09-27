@@ -3,12 +3,12 @@ import { InsufficientBalance, wallet as appWallet, type Wallet } from './wallet'
 
 /**
  * Entitlements: what a user may open. For now only the ดวงคู่ unlock seam
- * (docs/monetization-tickets.md T8), paid in ละอองดาว (docs/wallet.md).
+ * (docs/monetization-tickets.md T8), paid in มู (docs/wallet.md).
  */
 
 export type UnlockDecision =
   | { ok: true }
-  | { ok: false; code: 'insufficient_stardust'; balance: number; price: number };
+  | { ok: false; code: 'insufficient_balance'; balance: number; price: number };
 
 /**
  * May this user unlock this compatibility report? Free while locked mode is
@@ -29,7 +29,7 @@ export async function assertCanUnlock(
     return { ok: true };
   } catch (error) {
     if (error instanceof InsufficientBalance) {
-      return { ok: false, code: 'insufficient_stardust', balance: error.balance, price: error.price };
+      return { ok: false, code: 'insufficient_balance', balance: error.balance, price: error.price };
     }
     throw error;
   }
