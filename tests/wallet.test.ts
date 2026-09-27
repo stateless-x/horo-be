@@ -13,7 +13,7 @@ import {
   type Wallet,
 } from '../src/lib/wallet';
 import { walletDevRoutes, walletRoutes } from '../src/routes/wallet';
-import { createDbClient, orders, walletLedger, user, type DbClient } from '../lib/db';
+import { birthProfiles, compatibility, createDbClient, orders, walletLedger, user, type DbClient } from '../lib/db';
 
 /**
  * The มู ledger (docs/wallet.md).
@@ -225,6 +225,11 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     // Test cleanup only: the app never deletes ledger rows.
     await db.delete(walletLedger).where(inArray(walletLedger.userId, userIds));
     await db.delete(orders).where(inArray(orders.userId, userIds));
+    const profiles = await db.select({ id: birthProfiles.id }).from(birthProfiles).where(inArray(birthProfiles.userId, userIds));
+    if (profiles.length > 0) {
+      await db.delete(compatibility).where(inArray(compatibility.profileAId, profiles.map((profile) => profile.id)));
+      await db.delete(birthProfiles).where(inArray(birthProfiles.userId, userIds));
+    }
     await db.delete(user).where(inArray(user.id, userIds));
   });
 
@@ -362,6 +367,24 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     const userId = await newUser();
     await expect(wallet.adjust(userId, -1, 'overdraw')).rejects.toBeInstanceOf(InsufficientBalance);
     expect(await wallet.balance(userId)).toBe(0);
+  });
+
+  test('a ดวงคู่ spend carries the partner name from one join; a deleted row falls back to none', async () => {
+    const userId = await newUser();
+    const [profile] = await db
+      .insert(birthProfiles)
+      .values({ userId, birthDate: new Date('1998-09-09T00:00:00Z'), gender: 'female' })
+      .returning({ id: birthProfiles.id });
+    const [pair] = await db
+      .insert(compatibility)
+      .values({ profileAId: profile.id, partnerName: 'ต้น', partnerBirthDate: '1997-01-01', relationshipType: 'romantic', score: 60, analysis: '{}' })
+      .returning({ id: compatibility.id });
+    await wallet.adjust(userId, 98, 'test funds');
+    await wallet.spend(userId, 'compat_unlock', pair.id);
+    await wallet.spend(userId, 'compat_unlock', crypto.randomUUID()); // a row that no longer exists
+    const [gone, named] = await wallet.ledger(userId, 10);
+    expect(named).toMatchObject({ kind: 'spend', refId: pair.id, refName: 'ต้น' });
+    expect(gone).toMatchObject({ kind: 'spend', refName: null });
   });
 
   test('ledger lists the newest rows first', async () => {

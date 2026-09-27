@@ -5,6 +5,7 @@ import { validateSessionFromRequest } from '../lib/session';
 import { isLocalDatabaseUrl } from '../lib/dev-regenerate';
 import { BALANCE_CAP, PACKS, PRODUCT_PRICES } from '../lib/pricing';
 import { BalanceCapExceeded, InsufficientBalance, wallet as appWallet, type Wallet } from '../lib/wallet';
+import { fulfilPaidOrder } from '../lib/order-fulfilment';
 import {
   CheckoutRequestSchema,
   type CheckoutResponse,
@@ -67,7 +68,7 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         return { error: 'Invalid request', detail: parsed.error.message };
       }
       try {
-        const order = await wallet.createOrder(session.userId, parsed.data.packId);
+        const order = await wallet.createOrder(session.userId, parsed.data.packId, parsed.data.unlockRef);
         return { orderId: order.id, status: 'pending', ...(await startPayment(order)) } satisfies CheckoutResponse;
       } catch (error) {
         if (error instanceof BalanceCapExceeded) {
@@ -109,38 +110,75 @@ const DevGrantSchema = z.object({
   note: z.string().min(1).max(200),
 });
 
+const DevPaySchema = z.object({ orderId: z.string().uuid() });
+
+type Set = { status?: number | string };
+
 /**
- * Dev and test only: add or remove มู on the signed-in user. Mounted from
- * index.ts only outside production, and re-checked here per request in the
- * same order as the dev regenerate routes: production 404, then 403 unless
- * DATABASE_URL is this machine (the local .env.local is the production
- * database), then session 401, then body 400.
+ * The dev guards, in the same order as the dev regenerate routes: production
+ * 404, then 403 unless DATABASE_URL is this machine (the local .env.local is
+ * the production database), then session 401, then body 400. Returns the
+ * refusal to send, or the user and the parsed body.
  */
-export function walletDevRoutes(wallet: Wallet = appWallet) {
-  return new Elysia({ prefix: '/api/wallet/dev' }).post('/grant', async ({ request, body, set }) => {
-    if (config.env === 'production') return new Response('Not found', { status: 404 });
-    if (!isLocalDatabaseUrl(config.database.url)) {
-      set.status = 403;
-      return { error: 'Refused: DATABASE_URL is not a local database' };
-    }
-    const session = await validateSessionFromRequest(request);
-    if (!session) {
-      set.status = 401;
-      return { error: 'Not authenticated' };
-    }
-    const parsed = DevGrantSchema.safeParse(body);
-    if (!parsed.success) {
-      set.status = 400;
-      return { error: 'Invalid request', detail: parsed.error.message };
-    }
-    try {
-      return await wallet.adjust(session.userId, parsed.data.delta, `dev: ${parsed.data.note}`);
-    } catch (error) {
-      if (error instanceof BalanceCapExceeded || error instanceof InsufficientBalance) {
-        set.status = 409;
-        return { error: error.message };
+async function devGuard<T>(schema: z.ZodType<T>, request: Request, body: unknown, set: Set) {
+  if (config.env === 'production') return { refusal: new Response('Not found', { status: 404 }) };
+  if (!isLocalDatabaseUrl(config.database.url)) {
+    set.status = 403;
+    return { refusal: { error: 'Refused: DATABASE_URL is not a local database' } };
+  }
+  const session = await validateSessionFromRequest(request);
+  if (!session) {
+    set.status = 401;
+    return { refusal: { error: 'Not authenticated' } };
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    set.status = 400;
+    return { refusal: { error: 'Invalid request', detail: parsed.error.message } };
+  }
+  return { userId: session.userId, input: parsed.data };
+}
+
+/**
+ * Dev and test only, mounted from index.ts only outside production and
+ * re-checked per request (devGuard).
+ * - grant: add or remove มู on the signed-in user.
+ * - pay: stand-in for the T5 webhook. Marks the user's pending order paid and
+ *   fulfils it, so the one-flow purchase (credit, then unlock unlock_ref) runs
+ *   end to end before a payment provider exists.
+ */
+export function walletDevRoutes(wallet: Wallet = appWallet, fulfil = fulfilPaidOrder) {
+  return new Elysia({ prefix: '/api/wallet/dev' })
+    .post('/grant', async ({ request, body, set }) => {
+      const guard = await devGuard(DevGrantSchema, request, body, set);
+      if ('refusal' in guard) return guard.refusal;
+      try {
+        return await wallet.adjust(guard.userId, guard.input.delta, `dev: ${guard.input.note}`);
+      } catch (error) {
+        if (error instanceof BalanceCapExceeded || error instanceof InsufficientBalance) {
+          set.status = 409;
+          return { error: error.message };
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    })
+    .post('/pay', async ({ request, body, set }) => {
+      const guard = await devGuard(DevPaySchema, request, body, set);
+      if ('refusal' in guard) return guard.refusal;
+      const order = await wallet.getOrder(guard.userId, guard.input.orderId);
+      if (!order) {
+        set.status = 404;
+        return { error: 'Order not found' };
+      }
+      await wallet.markPaid(order.id);
+      try {
+        return await fulfil(order.id);
+      } catch (error) {
+        if (error instanceof BalanceCapExceeded) {
+          set.status = 409;
+          return { error: error.message };
+        }
+        throw error;
+      }
+    });
 }

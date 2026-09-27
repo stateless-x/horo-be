@@ -2,7 +2,7 @@ import type { compatibility } from '../../../lib/db';
 import { RelationshipTypeSchema, shapeCompatibilityView, shareCompatibilityV4, type CompatibilityV4Stored } from '../../../lib/shared';
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Detail } from '../../lib/compatibility-generation';
-import { chargeUnlockWithin, checkUnlock, type UnlockDecision } from '../../lib/entitlements';
+import { chargeUnlockWithin, checkUnlock, type UnlockDecision, type UnlockWallet } from '../../lib/entitlements';
 import type { WalletTx } from '../../lib/wallet';
 import type { InsufficientBalanceBody } from '../../../lib/shared/types/wallet';
 import { generationKey, type GenerationSingleFlight } from '../../lib/generation-singleflight';
@@ -141,6 +141,8 @@ export async function unlockReading(args: {
   requestStartedAt: number;
   store: UnlockStore;
   flight: GenerationSingleFlight;
+  /** The app wallet unless a test passes its own. */
+  wallet?: UnlockWallet;
 }): Promise<UnlockResult> {
   const { userId, profileId, id, store } = args;
   const notFound = { status: 404, body: { error: 'Compatibility reading not found' } } as const;
@@ -148,7 +150,7 @@ export async function unlockReading(args: {
   if (!row || row.profileAId !== profileId) return notFound;
   if (!lockedStored(row.analysis)) return { status: 200, body: readingResponse(row) };
 
-  const decision = await checkUnlock(userId, id);
+  const decision = await checkUnlock(userId, id, args.wallet);
   if (!decision.ok) return { status: 402, body: decision.body };
 
   const flight = await args.flight.run<UnlockResult>({
@@ -175,7 +177,7 @@ export async function unlockReading(args: {
       }
       console.log('[compatibility v4] detail written', { id, timings: generation.timings });
       const unlocked: CompatibilityV4Stored = { ...stored, detail: generation.detail, detailGeneratedAt: new Date().toISOString() };
-      const saved = await store.saveDetailPaid(id, JSON.stringify(unlocked), (tx) => chargeUnlockWithin(tx, userId, id));
+      const saved = await store.saveDetailPaid(id, JSON.stringify(unlocked), (tx) => chargeUnlockWithin(tx, userId, id, args.wallet));
       if (!saved.ok) {
         console.warn('[compatibility v4] unlock refused at charge; detail discarded', { id, body: saved.body });
         return { status: 402, body: saved.body };

@@ -5,20 +5,20 @@ import { compatibility } from '../../../lib/db';
 import { MBTI_TYPES, RELATIONSHIP_TYPES, type RelationshipType } from '../../../lib/shared';
 import { eq, and, desc, sql, count } from 'drizzle-orm';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
-import { cache, invalidateCache } from '../../lib/redis';
+import { cache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Stored, readerGender } from '../../lib/compatibility-generation';
 import { config } from '../../config';
-import { historyItem, readingResponse, shareResponse, unlockReading } from './reading';
+import { historyItem, readingResponse, shareResponse } from './reading';
 import { refundChecksOnFailure } from './check-limit';
+import { compatCacheKey, unlockForUser } from './unlock';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
 }
 
-const compatCacheKey = (userId: string, id: string) => `compat:${userId}:${id}`;
 
 /**
  * Compatibility system: relationship-type-aware compatibility readings
@@ -388,35 +388,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
     }
 
     try {
-      const userProfile = await getCachedProfile(session.userId);
-      if (!userProfile) {
-        set.status = 404;
-        return { error: 'User profile not found' };
-      }
-
-      const result = await unlockReading({
-        userId: session.userId,
-        profileId: userProfile.id,
-        id: params.id,
-        requestStartedAt,
-        flight: generationSingleFlight,
-        store: {
-          load: async (id) => {
-            const [row] = await db.select().from(compatibility).where(eq(compatibility.id, id)).limit(1);
-            return row ?? null;
-          },
-          saveDetailPaid: async (id, analysis, charge) => {
-            const outcome = await db.transaction(async (tx) => {
-              const decision = await charge(tx);
-              if (!decision.ok) return decision;
-              const [row] = await tx.update(compatibility).set({ analysis }).where(eq(compatibility.id, id)).returning();
-              return { ok: true as const, row };
-            });
-            if (outcome.ok) await invalidateCache(compatCacheKey(session.userId, id));
-            return outcome;
-          },
-        },
-      });
+      const result = await unlockForUser(session.userId, params.id, requestStartedAt);
       set.status = result.status;
       return result.body;
     } catch (error) {

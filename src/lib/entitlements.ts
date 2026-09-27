@@ -15,7 +15,7 @@ import { InsufficientBalance, wallet as appWallet, type Wallet, type WalletTx } 
 /** Refused: the 402 body the unlock route sends as is. */
 export type UnlockDecision = { ok: true } | { ok: false; body: InsufficientBalanceBody };
 
-type UnlockWallet = Pick<Wallet, 'ensureWelcome' | 'canAfford' | 'hasPaid' | 'spendWithin'>;
+export type UnlockWallet = Pick<Wallet, 'ensureWelcome' | 'canAfford' | 'hasPaid' | 'spendWithin'>;
 
 /** Nothing is sold while locked mode is off (a row locked earlier opens free), nor with COMPAT_UNLOCK_FREE (dev). */
 const unlockIsFree = () => !config.compat.lockEnabled || config.compat.unlockFree;

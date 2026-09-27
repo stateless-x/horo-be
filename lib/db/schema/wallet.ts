@@ -22,6 +22,8 @@ export const orders = pgTable('orders', {
   status: varchar('status', { length: 16 }).notNull().default('pending'), // OrderStatus
   provider: varchar('provider', { length: 16 }).notNull(), // 'stripe' | 'manual'
   providerRef: text('provider_ref').unique(), // the provider's payment id; null until a charge exists
+  // One-flow purchase: the compatibility row to unlock once this order is paid and credited. Null for a plain top-up.
+  unlockRef: text('unlock_ref'),
   paidAt: timestamp('paid_at'),
   refundedAt: timestamp('refunded_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),

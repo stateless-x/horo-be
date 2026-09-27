@@ -38,6 +38,8 @@ export interface LedgerEntry {
   kind: LedgerKind;
   productId: ProductId | null;
   refId: string | null;
+  /** What refId points at, for a ดวงคู่ unlock the partner's name; null once that row is gone. */
+  refName: string | null;
   note: string | null;
   /** ISO date; set on bonus rows only. */
   expiresAt: string | null;
@@ -61,7 +63,11 @@ export interface WalletState {
 }
 
 /** POST /api/wallet/checkout body. */
-export const CheckoutRequestSchema = z.object({ packId: z.enum(PACK_IDS) });
+export const CheckoutRequestSchema = z.object({
+  packId: z.enum(PACK_IDS),
+  /** One-flow purchase: the ดวงคู่ row to unlock as soon as this order is paid. */
+  unlockRef: z.string().uuid().optional(),
+});
 export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;
 
 /** POST /api/wallet/checkout. `payment` is 'unavailable' until the PromptPay provider is wired (monetization T5). */

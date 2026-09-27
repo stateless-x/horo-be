@@ -31,8 +31,12 @@ import {
 import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 import { ELEMENT_IMAGE } from '../src/lib/prompts';
 import { PRODUCT_PRICES } from '../src/lib/pricing';
-import { InsufficientBalance, wallet, type WalletTx } from '../src/lib/wallet';
+import { InsufficientBalance, createWallet, wallet, type WalletTx } from '../src/lib/wallet';
 import { INSUFFICIENT_BALANCE } from '../lib/shared/types/wallet';
+import { eq } from 'drizzle-orm';
+import { createDbClient, orders, user, walletLedger } from '../lib/db';
+import { isLocalDatabaseUrl } from '../src/lib/dev-regenerate';
+import { fulfilPaidOrder } from '../src/lib/order-fulfilment';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -703,6 +707,62 @@ describe('locked mode (teaser-first)', () => {
     const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
     return memoryStore(row(JSON.stringify(stored)));
   };
+
+  test.skipIf(!process.env.WALLET_TEST_DATABASE_URL)(
+    'one-flow purchase: a paid order with unlock_ref credits, then unlocks that row with one spend (local Postgres)',
+    async () => {
+      const url = process.env.WALLET_TEST_DATABASE_URL!;
+      if (!isLocalDatabaseUrl(url)) throw new Error('WALLET_TEST_DATABASE_URL must point at a database on this machine');
+      config.compat = { lockEnabled: true, unlockFree: false };
+      const db = createDbClient(url);
+      const testWallet = createWallet(db);
+      const userId = `one-flow-${crypto.randomUUID().slice(0, 8)}`;
+      await db.insert(user).values({ id: userId, name: 'one flow', email: `${userId}@wallet.test` });
+      try {
+        // The welcome gift already went on another row: balance 0, so the door offered "ปลดล็อก ฿49".
+        await testWallet.ensureWelcome(userId);
+        await testWallet.spend(userId, 'compat_unlock', 'another-row');
+        const order = await testWallet.createOrder(userId, 'p49', 'row-1');
+        expect((await testWallet.markPaid(order.id)).marked).toBe(true);
+
+        countingModel();
+        const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
+        const state = { row: row(JSON.stringify(stored)) };
+        const store: UnlockStore = {
+          load: async (id) => (id === state.row.id ? state.row : null),
+          // The route's transaction, on the real ledger: the charge and the detail commit together.
+          saveDetailPaid: (_id, analysis, charge) =>
+            db.transaction(async (tx) => {
+              const decision = await charge(tx);
+              if (!decision.ok) return decision;
+              state.row = { ...state.row, analysis };
+              return { ok: true as const, row: state.row };
+            }),
+        };
+        const deps = {
+          wallet: testWallet,
+          unlock: (buyer: string, rowId: string) =>
+            unlockReading({ ...unlockArgs(store), userId: buyer, id: rowId, wallet: testWallet }),
+        };
+
+        const counter = countingModel();
+        expect(await fulfilPaidOrder(order.id, deps)).toEqual({ credited: true, balance: 49, unlockStatus: 200 });
+        expect(counter.calls).toBe(3);
+        expect(readingResponse(state.row).locked).toBe(false);
+
+        // A replayed webhook: no second credit, no second charge, no model call.
+        expect(await fulfilPaidOrder(order.id, deps)).toEqual({ credited: false, balance: 0, unlockStatus: 200 });
+        expect(counter.calls).toBe(3);
+        const rows = await testWallet.ledger(userId, 10);
+        expect(rows.filter((entry) => entry.kind === 'spend' && entry.refId === 'row-1')).toHaveLength(1);
+        expect(await testWallet.balance(userId)).toBe(0);
+      } finally {
+        await db.delete(walletLedger).where(eq(walletLedger.userId, userId));
+        await db.delete(orders).where(eq(orders.userId, userId));
+        await db.delete(user).where(eq(user.id, userId));
+      }
+    },
+  );
 
   test('with locking on and a balance of 0, unlock answers 402 with the wallet contract before any model call', async () => {
     config.compat = { lockEnabled: true, unlockFree: false };

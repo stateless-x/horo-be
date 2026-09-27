@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db as appDb } from './db';
-import { orders, walletLedger, type DbClient } from '../../lib/db';
+import { compatibility, orders, walletLedger, type DbClient } from '../../lib/db';
 import type { LedgerEntry, LedgerKind, PackId, ProductId } from '../../lib/shared/types/wallet';
 import {
   BALANCE_CAP,
@@ -84,13 +84,14 @@ async function lockUser(tx: Tx, userId: string): Promise<void> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
 }
 
-function toEntry(row: typeof walletLedger.$inferSelect): LedgerEntry {
+function toEntry(row: typeof walletLedger.$inferSelect, refName: string | null): LedgerEntry {
   return {
     id: row.id,
     delta: row.delta,
     kind: row.kind as LedgerKind,
     productId: row.productId as ProductId | null,
     refId: row.refId,
+    refName,
     note: row.note,
     expiresAt: row.expiresAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -198,8 +199,11 @@ export function createWallet(db: DbClient) {
     });
   }
 
-  /** Creates a pending order for a pack, refused if paying it would pass the cap. */
-  async function createOrder(userId: string, packId: PackId) {
+  /**
+   * Creates a pending order for a pack, refused if paying it would pass the cap.
+   * `unlockRef`: the ดวงคู่ row to unlock once the order is paid (one-flow purchase).
+   */
+  async function createOrder(userId: string, packId: PackId, unlockRef?: string) {
     const pack = PACKS[packId];
     const current = await balance(userId);
     if (current + pack.base + pack.bonus > BALANCE_CAP) throw new BalanceCapExceeded(current, pack.base + pack.bonus);
@@ -213,6 +217,7 @@ export function createWallet(db: DbClient) {
         unitsBase: pack.base,
         unitsBonus: pack.bonus,
         provider: 'stripe',
+        unlockRef: unlockRef ?? null,
       })
       .returning();
     return order;
@@ -246,7 +251,8 @@ export function createWallet(db: DbClient) {
         .where(and(eq(walletLedger.orderId, orderId), eq(walletLedger.kind, 'purchase')))
         .limit(1);
       const current = await sumBalance(tx, order.userId);
-      if (already) return { credited: false as const, balance: current };
+      const who = { userId: order.userId, unlockRef: order.unlockRef };
+      if (already) return { credited: false as const, balance: current, ...who };
 
       const credit = order.unitsBase + order.unitsBonus;
       if (current + credit > BALANCE_CAP) throw new BalanceCapExceeded(current, credit);
@@ -259,7 +265,7 @@ export function createWallet(db: DbClient) {
         rows.push({ userId: order.userId, delta: order.unitsBonus, kind: 'bonus', orderId, expiresAt });
       }
       await tx.insert(walletLedger).values(rows);
-      return { credited: true as const, balance: current + credit };
+      return { credited: true as const, balance: current + credit, ...who };
     });
   }
 
@@ -276,18 +282,35 @@ export function createWallet(db: DbClient) {
     });
   }
 
-  /** The newest rows first. */
+  /**
+   * Marks a pending order paid. The provider's webhook calls this (T5); a
+   * replay, or an order in any other state, changes nothing.
+   */
+  async function markPaid(orderId: string) {
+    const updated = await db
+      .update(orders)
+      .set({ status: 'paid', paidAt: new Date() })
+      .where(and(eq(orders.id, orderId), eq(orders.status, 'pending')))
+      .returning({ id: orders.id });
+    return { marked: updated.length > 0 };
+  }
+
+  /** The newest rows first, each ดวงคู่ spend or refund named by its partner (one join, no per-row query). */
   async function ledger(userId: string, limit: number): Promise<LedgerEntry[]> {
     const rows = await db
-      .select()
+      .select({ row: walletLedger, refName: compatibility.partnerName })
       .from(walletLedger)
+      .leftJoin(
+        compatibility,
+        and(eq(walletLedger.productId, 'compat_unlock'), sql`${compatibility.id}::text = ${walletLedger.refId}`),
+      )
       .where(eq(walletLedger.userId, userId))
       .orderBy(desc(walletLedger.createdAt), desc(walletLedger.id))
       .limit(limit);
-    return rows.map(toEntry);
+    return rows.map(({ row, refName }) => toEntry(row, refName));
   }
 
-  return { balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder, creditOrder, adjust, ledger };
+  return { balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder, markPaid, creditOrder, adjust, ledger };
 }
 
 export type Wallet = ReturnType<typeof createWallet>;
