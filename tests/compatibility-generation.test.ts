@@ -1,19 +1,32 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { generateStructuredCompatibilityReading } from '../src/lib/llm';
+import { generateCompatibilityV4Plan } from '../src/lib/llm';
+
+/**
+ * The generation loop every compatibility call shares (generateValidatedCompatibilityJson),
+ * driven through the insight plan call, the smallest v4 shape.
+ */
 
 const originalFetch = globalThis.fetch;
 
-const validGeneratedContent = {
-  verdict: 'คุยกันได้ดีเมื่อบอกความต้องการให้ชัด',
-  chemistry: 'ทั้งคู่ช่วยกันมองเรื่องเดิมจากคนละมุม',
-  caution: 'ถ้ารีบสรุปจากความเงียบ อาจทำให้บทสนทนาติดขัด',
-  advice: 'ใช้คำถามที่ตอบได้ตรง ๆ เพื่อให้ต่างฝ่ายมีพื้นที่บอกความต้องการ',
-  nextSteps: {
-    action: 'เย็นวันศุกร์ ชวนคุยเรื่องช่วงเวลาที่สะดวกติดต่อกัน',
-    conversationStarter: 'เราอยากคุยกันให้ลงตัวขึ้น เธอสะดวกคุยช่วงไหนบ้าง',
-    watchFor: 'อีกฝ่ายบอกช่วงเวลาที่สะดวกหรือเสนอทางเลือกอื่นที่ชัดเจน',
-  },
+const insight = (chapter: string, basis: string) => ({
+  text: 'ทั้งคู่ช่วยกันมองเรื่องเดิมจากคนละมุมเมื่อบอกความต้องการให้ชัด',
+  basis: [basis],
+  chapter,
+});
+
+const validPlan = {
+  insights: [
+    insight('attraction', 'dayBranch'),
+    insight('partner', 'partnerThaiDay'),
+    insight('you', 'readerThaiDay'),
+    insight('communication', 'element'),
+    insight('friction', 'yearBranch'),
+    insight('future', 'month1'),
+  ],
 };
+
+/** Five insights: no chapter for future, which the schema names. */
+const planMissingFuture = { insights: validPlan.insights.slice(0, 5) };
 
 function deepSeekResponse(content: unknown): Response {
   return new Response(JSON.stringify({
@@ -21,115 +34,59 @@ function deepSeekResponse(content: unknown): Response {
   }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
+/** Answers each model call with the next reply in `replies`, recording every request. */
+function mockReplies(...replies: unknown[]): RequestInit[] {
+  const requests: RequestInit[] = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(init ?? {});
+    return deepSeekResponse(replies.length > 1 ? replies.shift() : replies[0]);
+  }) as typeof fetch;
+  return requests;
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-describe('compatibility generation validation', () => {
-  test('returns a valid first response with one fetch and the requested token limit', async () => {
-    const requests: RequestInit[] = [];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(init ?? {});
-      return deepSeekResponse(validGeneratedContent);
-    }) as typeof fetch;
+describe('compatibility generation loop', () => {
+  test('returns a valid first reply with one fetch and the plan token limit', async () => {
+    const requests = mockReplies(validPlan);
 
-    const result = await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 432);
+    const result = await generateCompatibilityV4Plan('วางข้อสังเกตของคู่นี้', {});
 
-    expect(result).toEqual(validGeneratedContent);
+    expect(result).toEqual({ data: validPlan, softIssues: [] });
     expect(requests).toHaveLength(1);
-    const requestBody = JSON.parse(String(requests[0]?.body)) as { max_tokens: number };
-    expect(requestBody.max_tokens).toBe(432);
+    const body = JSON.parse(String(requests[0]?.body)) as { max_tokens: number };
+    expect(body.max_tokens).toBe(1500);
   });
 
-  test.each([
-    ['missing next steps', { ...validGeneratedContent, nextSteps: undefined }],
-    ['partial next steps', {
-      ...validGeneratedContent,
-      nextSteps: {
-        action: validGeneratedContent.nextSteps.action,
-        conversationStarter: validGeneratedContent.nextSteps.conversationStarter,
-      },
-    }],
-    ['overlong next step', {
-      ...validGeneratedContent,
-      nextSteps: { ...validGeneratedContent.nextSteps, action: 'ก'.repeat(181) },
-    }],
-  ])('repairs %s once before returning complete content', async (_label, invalidContent) => {
-    const requests: RequestInit[] = [];
-    const responses = [invalidContent, validGeneratedContent];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(init ?? {});
-      return deepSeekResponse(responses.shift());
-    }) as typeof fetch;
+  test('repairs an invalid reply once, as a follow-up turn that names the failed field', async () => {
+    const requests = mockReplies(planMissingFuture, validPlan);
 
-    const result = await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300);
+    const result = await generateCompatibilityV4Plan('วางข้อสังเกตของคู่นี้', {});
 
-    expect(result).toEqual(validGeneratedContent);
+    expect(result.data).toEqual(validPlan);
     expect(requests).toHaveLength(2);
-    // The repair is a follow-up turn on the model's own reply that names the failed field.
-    const repairedRequest = JSON.parse(String(requests[1]?.body)) as {
-      messages: Array<{ role: string; content: string }>;
-    };
-    expect(repairedRequest.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'user']);
-    expect(repairedRequest.messages[3]?.content).toContain('nextSteps');
+    const repair = JSON.parse(String(requests[1]?.body)) as { messages: Array<{ role: string; content: string }> };
+    expect(repair.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(repair.messages[3]?.content).toContain('insights');
+    expect(repair.messages[3]?.content).toContain('add one for future');
   });
 
-  test('a partner called Mind is a name, not English; a real foreign word still costs a repair', async () => {
-    const named = { ...validGeneratedContent, verdict: 'Mindกับคุณคุยกันได้ดีเมื่อบอกความต้องการให้ชัด' };
-    const leaked = { ...named, advice: `${validGeneratedContent.advice} naturally` };
-    const requests: RequestInit[] = [];
-    const responses = [leaked, named];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(init ?? {});
-      return deepSeekResponse(responses.shift());
-    }) as typeof fetch;
+  test('rejects once the repairs run out, without another request', async () => {
+    const requests = mockReplies(planMissingFuture);
 
-    const result = await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300, undefined, 'Mind');
-    expect(result).toEqual(named);
-    expect(requests).toHaveLength(2);
-    const repair = JSON.parse(String(requests[1]?.body)) as { messages: Array<{ content: string }> };
-    expect(repair.messages[3]?.content).toContain('Non-Thai text in prose: "naturally"');
-  });
-
-  test('rejects after one failed repair without making another request', async () => {
-    const requests: RequestInit[] = [];
-    const invalidContent = { ...validGeneratedContent, nextSteps: undefined };
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(init ?? {});
-      return deepSeekResponse(invalidContent);
-    }) as typeof fetch;
-
-    await expect(generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300))
+    await expect(generateCompatibilityV4Plan('วางข้อสังเกตของคู่นี้', { maxRepairs: 1 }))
       .rejects.toThrow('Invalid compatibility JSON');
     expect(requests).toHaveLength(2);
   });
-});
 
-describe('v2 shape', () => {
-  test('states the verdict limit the schema enforces', async () => {
-    const requests: RequestInit[] = [];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(init ?? {});
-      return deepSeekResponse(validGeneratedContent);
-    }) as typeof fetch;
+  test('a quality issue gets one repair and is returned as a soft issue if it stays', async () => {
+    const requests = mockReplies(validPlan);
 
-    await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300);
+    const result = await generateCompatibilityV4Plan('วางข้อสังเกตของคู่นี้', { softCheck: () => ['insights.0.text: too generic'] });
 
-    const body = JSON.parse(String(requests[0]?.body)) as { messages: Array<{ content: string }> };
-    expect(body.messages[1]?.content).toContain('verdict 1 to 180 characters');
-  });
-
-  test('a verdict over 180 characters is repaired by naming that field', async () => {
-    const requests: RequestInit[] = [];
-    const responses = [{ ...validGeneratedContent, verdict: 'ก'.repeat(181) }, validGeneratedContent];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(init ?? {});
-      return deepSeekResponse(responses.shift());
-    }) as typeof fetch;
-
-    await generateStructuredCompatibilityReading('วิเคราะห์ความสัมพันธ์', 300);
-
-    const repair = JSON.parse(String(requests[1]?.body)) as { messages: Array<{ content: string }> };
-    expect(repair.messages[3]?.content).toContain('verdict');
+    expect(result).toEqual({ data: validPlan, softIssues: ['insights.0.text: too generic'] });
+    expect(requests).toHaveLength(2);
   });
 });
