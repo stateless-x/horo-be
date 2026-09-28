@@ -29,7 +29,6 @@ import {
   type Gender,
   V4AllSectionsSchema,
   V4_CHAPTER_KEYS,
-  type V4ChapterKey,
   type V4SectionKey,
   type V4Sections,
   type V4InsightPlan,
@@ -40,8 +39,8 @@ import {
 import {
   buildCompatibilityPromptV4,
   buildV4HintRewritePrompt,
-  V4_FUTURE_BY_RELATIONSHIP,
 } from './prompts';
+import { relationshipChapterTitles } from './prompts/relationship-profile';
 import {
   generateCompatibilityV4Plan,
   generateCompatibilityV4Sections,
@@ -177,15 +176,6 @@ export function foreignTextIssues(view: unknown, ctx: z.RefinementCtx): void {
  * ดาวอังคาร" when the fire came from Bazi. A failure triggers the repair turn.
  */
 // ---------------------------------------------------------------- report generation
-
-const CHAPTER_TITLES = (partnerName: string, relationshipType: RelationshipType): Record<V4ChapterKey, string> => ({
-  attraction: 'แรงดึงดูด',
-  partner: `ตัวตนของ${partnerName}ในความสัมพันธ์นี้`,
-  you: 'ตัวคุณในความสัมพันธ์นี้',
-  communication: 'การสื่อสาร',
-  friction: 'จุดเสียดทานและวิธีคืนดี',
-  future: V4_FUTURE_BY_RELATIONSHIP[relationshipType].title,
-});
 
 const DETAIL_WORDS = { min: 100, max: 300 };
 /** Openings and over-claims that fit any pair ("บทเรียนลึกที่สุดที่คุณเคยเจอ"), all from the samples. */
@@ -492,7 +482,7 @@ function v4Context(input: V4Input) {
 
   const detailPart = (written: Partial<V4Sections>): V4DetailPart => {
     const sections = V4AllSectionsSchema.omit({ cover: true }).parse(written);
-    const titles = CHAPTER_TITLES(partnerName, input.relationshipType);
+    const titles = relationshipChapterTitles(input.relationshipType, partnerName);
     return polish({
       palace: { reader: palaceFacts(charts.readerBazi), partner: palaceFacts(charts.partnerBazi) },
       readingMinutes: readingMinutes(sections),

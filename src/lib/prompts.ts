@@ -49,12 +49,7 @@ import compatibilityV4SectionsMd from "./prompts/md/compatibility-v4-sections.md
 import compatibilityContextMd from "./prompts/md/compatibility-context.md" with { type: "text" };
 import compatibilityRulesMd from "./prompts/md/compatibility-rules.md" with { type: "text" };
 import mbtiContextMd from "./prompts/md/mbti-context.md" with { type: "text" };
-import focusTalkingMd from "./prompts/md/compatibility-focus/talking.md" with { type: "text" };
-import focusRomanticMd from "./prompts/md/compatibility-focus/romantic.md" with { type: "text" };
-import focusBossMd from "./prompts/md/compatibility-focus/boss.md" with { type: "text" };
-import focusCoworkerMd from "./prompts/md/compatibility-focus/coworker.md" with { type: "text" };
-import focusFriendMd from "./prompts/md/compatibility-focus/friend.md" with { type: "text" };
-import focusFamilyMd from "./prompts/md/compatibility-focus/family.md" with { type: "text" };
+import { relationshipPromptProfile } from './prompts/relationship-profile';
 
 /**
  * System prompt for all LLM calls
@@ -181,18 +176,6 @@ export function buildTeaserPrompt(
 }
 
 /**
- * Relationship-type-specific focus instructions for compatibility prompt
- */
-const RELATIONSHIP_FOCUS: Record<RelationshipType, string> = {
-  talking: focusTalkingMd.trimEnd(),
-  romantic: focusRomanticMd.trimEnd(),
-  boss: focusBossMd.trimEnd(),
-  coworker: focusCoworkerMd.trimEnd(),
-  friend: focusFriendMd.trimEnd(),
-  family: focusFamilyMd.trimEnd(),
-};
-
-/**
  * The compatibility prompt combines the data block (both people, MBTI guidance
  * and relationship focus), computed report facts, section tasks, and safety
  * rules in one canonical report contract.
@@ -247,6 +230,7 @@ function compatibilityDataVars(
   relationshipType: RelationshipType,
   scoreContext: CompatibilityScoreContext,
 ) {
+  const profile = relationshipPromptProfile(relationshipType);
   return {
     p1Name: person1.name,
     p2Name: person2.name,
@@ -265,8 +249,16 @@ function compatibilityDataVars(
     scoreExplanation: scoreContext.scoreExplanation,
     deterministicStrengths: scoreContext.strengths.map(item => `- ${item}`).join('\n'),
     deterministicChallenges: scoreContext.challenges.map(item => `- ${item}`).join('\n'),
-    focusBlock: RELATIONSHIP_FOCUS[relationshipType],
+    ...profile,
+    guidanceStance: compatibilityGuidanceStance(scoreContext.score),
   };
+}
+
+/** Score changes the stance, not the facts: a lower score must never turn into pressure to repair or get closer. */
+function compatibilityGuidanceStance(score: number): string {
+  if (score < 40) return 'ให้ความสำคัญกับความปลอดภัย ขอบเขต และการสังเกตการตอบสนองจริง ห้ามเร่งให้ใกล้กันหรือทำให้ไปต่อ';
+  if (score < 60) return 'เสนอการทดลองเล็ก ๆ เพื่อดูว่าทั้งสองคนจูนกันได้แค่ไหน โดยไม่รับประกันว่าจะดีขึ้น';
+  return 'ต่อยอดสิ่งที่เข้ากันได้ดี พร้อมชี้จุดที่ยังต้องดูแล ห้ามเขียนเหมือนทุกอย่างไม่มีปัญหา';
 }
 
 /**
@@ -415,16 +407,6 @@ const MONTH_REASON_TH: Record<string, (who: string) => string> = {
   clash: (who) => `นักษัตรประจำเดือนปะทะนักษัตรวันเกิดของ${who}`,
 };
 
-/** The future chapter's title and the next step it times, per relationship stage. */
-export const V4_FUTURE_BY_RELATIONSHIP: Record<RelationshipType, { title: string; nextStep: string }> = {
-  talking: { title: 'สัญญาณว่าไปต่อได้และจังหวะขยับ', nextStep: 'ชวนออกไปเจอกันหรือคุยให้ชัดว่าเป็นอะไรกัน' },
-  romantic: { title: 'สิ่งที่ทำให้อยู่ยาว', nextStep: 'คุยเรื่องใหญ่ของความสัมพันธ์ เช่น อนาคตหรือการตัดสินใจร่วมกัน' },
-  friend: { title: 'มิตรภาพระยะยาว', nextStep: 'ชวนทำแผนใหญ่ด้วยกันหรือคุยเรื่องที่ค้างใจ' },
-  boss: { title: 'โตไปด้วยกันในงาน', nextStep: 'ขอคุยเรื่องขอบเขตงานหรือเรื่องเงินเดือน' },
-  coworker: { title: 'โตไปด้วยกันในงาน', nextStep: 'ตกลงบทบาทหรือขอบเขตงานร่วมกัน' },
-  family: { title: 'ขอบเขตที่รักษาความสัมพันธ์', nextStep: 'บอกขอบเขตที่คุณต้องการ' },
-};
-
 const band = (score: number) => (score >= 75 ? 'เด่น' : score >= 60 ? 'ดี' : score >= 45 ? 'กลาง' : 'ต้องใส่ใจ');
 
 function elementRelationTh(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPerson): string {
@@ -489,7 +471,6 @@ export function buildCompatibilityPromptV4(
   insights: Array<{ text: string; basis: string[]; chapter: string }> = [],
 ): string {
   const who = (w: 'reader' | 'partner') => (w === 'reader' ? person1.name : person2.name);
-  const future = V4_FUTURE_BY_RELATIONSHIP[relationshipType];
   return renderPrompt(step === 'plan' ? V4_PLAN_TEMPLATE : v4WriteTemplate(step), {
     ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
     ...compatibilityPersonalityVars(person1, person2),
@@ -513,10 +494,8 @@ export function buildCompatibilityPromptV4(
         return `  - month${i + 1} ${m.month} (${thaiMonth(m.month)}): ${MONTH_LABEL_TH[m.label]}${reasons ? ` เพราะ ${reasons}` : ' ธาตุและนักษัตรประจำเดือนเป็นกลางกับทั้งสองคน'}`;
       })
       .join('\n'),
-    nextStepKind: future.nextStep,
     bestMonthKey: facts.bestMonth.month,
     bestMonthTh: thaiMonth(facts.bestMonth.month),
-    futureTitle: future.title,
     insightList: insights.map((i, n) => `  ${n + 1}. [${i.chapter}] ${i.text} (อ้างอิง ${i.basis.join(', ')})`).join('\n'),
   });
 }

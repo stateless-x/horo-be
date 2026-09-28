@@ -8,6 +8,7 @@ import {
   V4InsightPlanSchema,
   V4_HINT_MAX,
   type MbtiType,
+  type RelationshipType,
   type V4SectionKey,
 } from '../lib/shared';
 import { bestMonth, ELEMENT_CONTROLLING, ELEMENT_PRODUCING, relationshipCalendar } from '../lib/astrology';
@@ -30,6 +31,7 @@ import {
 } from '../src/systems/compatibility/reading';
 import { elementsNamed, foreignElementWords } from '../src/lib/compatibility-text';
 import { ELEMENT_IMAGE } from '../src/lib/prompts';
+import { relationshipChapterTitles, relationshipPromptProfile } from '../src/lib/prompts/relationship-profile';
 import { PRODUCT_PRICES } from '../src/lib/pricing';
 import { InsufficientBalance, createWallet, wallet, type WalletTx } from '../src/lib/wallet';
 import { INSUFFICIENT_BALANCE } from '../lib/shared/types/wallet';
@@ -181,9 +183,45 @@ describe('v4 prompt facts', () => {
 
     const allPrompts = prompts.join('\n');
     expect(allPrompts).toContain('แม่หมอที่รับฟังเก่งและเข้าใจความสัมพันธ์');
-    expect(allPrompts).toContain('3 โมเมนต์เล็ก ๆ ที่ช่วยให้ความสัมพันธ์ใกล้กันขึ้น');
+    expect(allPrompts).toContain('3 โมเมนต์เล็ก ๆ ตามเป้าหมาย การดูแลความใกล้ชิด ความไว้ใจ และขอบเขตของทั้งคู่');
     expect(allPrompts).toContain('ห้ามอ้างถึงวัน กำหนดเวลา หรือเดดไลน์');
     expect(allPrompts).toContain('ไม่อ้างว่าเป็นการบำบัด');
+  });
+
+  test('adapts every report section to the relationship type without changing the shared contract', async () => {
+    const expected: Record<RelationshipType, string[]> = {
+      romantic: ['ความสัมพันธ์ของคนรักหรือคู่ครอง', 'ความใกล้ชิด ความไว้ใจ และขอบเขตของทั้งคู่'],
+      talking: ['ช่วงกำลังทำความรู้จักกันของคนคุย', 'ไม่เร่งสถานะหรือกดดันคำตอบ'],
+      friend: ['มิตรภาพของทั้งสองคน', 'ไม่บังคับให้มิตรภาพกลับไปเหมือนเดิมทันที'],
+      boss: ['ลูกน้องกับหัวหน้า', 'นิยามว่างานเสร็จคืออะไร'],
+      coworker: ['ระหว่างเพื่อนร่วมงาน', 'เจ้าของงาน จุดส่งมอบ กำหนดเวลา'],
+      family: ['ความสัมพันธ์ของคนในครอบครัว', 'ไม่ใช้อำนาจ อายุ หรือบุญคุณกดอีกฝ่าย'],
+    };
+
+    for (const relationshipType of Object.keys(expected) as RelationshipType[]) {
+      const prompts: string[] = [];
+      mockModel(() => sections(), { onPrompt: (prompt) => prompts.push(prompt) });
+      await generateCompatibilityV4({ ...input, relationshipType });
+      const allPrompts = prompts.join('\n');
+      for (const phrase of expected[relationshipType]) expect(allPrompts).toContain(phrase);
+      expect(allPrompts).toContain(relationshipPromptProfile(relationshipType).futureTitle);
+      expect(allPrompts).toContain('"plan"');
+    }
+
+    for (const relationshipType of ['boss', 'coworker'] as const) {
+      const profile = relationshipPromptProfile(relationshipType);
+      expect(profile.attractionGoal).toContain('ห้ามใช้ภาษาเชิงโรแมนติก');
+      expect(profile.planGoal).not.toContain('ใกล้ชิด');
+    }
+
+    expect(relationshipChapterTitles('boss', 'เมย์')).toEqual({
+      attraction: 'จุดที่สไตล์งานส่งเสริมกัน',
+      partner: 'สไตล์การทำงานของเมย์',
+      you: 'สไตล์การทำงานของคุณ',
+      communication: 'คุยงานให้เข้าใจตรงกัน',
+      friction: 'จุดติดขัดและวิธีเคลียร์งาน',
+      future: 'โตไปด้วยกันในงาน',
+    });
   });
 
   test('uses personality signals privately, without exposing a type label to the model', async () => {
