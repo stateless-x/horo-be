@@ -2,8 +2,9 @@
  * LLM Prompts for Fortune Readings
  *
  * All fortune generation goes through DeepSeek via the backend (see lib/llm.ts).
- * The narrator speaks in Thai using "เจ้า" (thou) to address the user.
- * Tone: mysterious, sacred, slightly unsettling - like entering a temple at midnight.
+ * Readings use warm, plain Thai: like a thoughtful friend who notices patterns
+ * and helps someone choose a next step. Use each person's supplied name, never
+ * archaic pronouns, hostile slang, or a mystical narrator.
  *
  * Prompt TEXT lives in the markdown files under ./prompts/md/ — edit those to
  * change wording. This module only assembles chart data into the templates
@@ -39,18 +40,14 @@ import systemStructuredMd from "./prompts/md/system-structured.md" with { type: 
 import teaserMd from "./prompts/md/teaser.md" with { type: "text" };
 import chartMd from "./prompts/md/chart.md" with { type: "text" };
 import compatibilityDataMd from "./prompts/md/compatibility-data.md" with { type: "text" };
-import compatibilityScoreMd from "./prompts/md/compatibility-score.md" with { type: "text" };
 import compatibilityV4ContextMd from "./prompts/md/compatibility-v4-context.md" with { type: "text" };
 import compatibilityV4RulesMd from "./prompts/md/compatibility-v4-rules.md" with { type: "text" };
 import compatibilityV4TasksPlanMd from "./prompts/md/compatibility-v4-tasks-plan.md" with { type: "text" };
 import compatibilityV4TasksWriteMd from "./prompts/md/compatibility-v4-tasks-write.md" with { type: "text" };
 import compatibilityV4HintRewriteMd from "./prompts/md/compatibility-v4-hint-rewrite.md" with { type: "text" };
 import compatibilityV4SectionsMd from "./prompts/md/compatibility-v4-sections.md" with { type: "text" };
-import compatibilityV2TasksMd from "./prompts/md/compatibility-v2-tasks.md" with { type: "text" };
-import compatibilityV3ContextMd from "./prompts/md/compatibility-v3-context.md" with { type: "text" };
-import compatibilityV3TasksMd from "./prompts/md/compatibility-v3-tasks.md" with { type: "text" };
+import compatibilityContextMd from "./prompts/md/compatibility-context.md" with { type: "text" };
 import compatibilityRulesMd from "./prompts/md/compatibility-rules.md" with { type: "text" };
-import compatibilityMbtiGuidanceMd from "./prompts/md/compatibility-mbti-guidance.md" with { type: "text" };
 import mbtiContextMd from "./prompts/md/mbti-context.md" with { type: "text" };
 import focusTalkingMd from "./prompts/md/compatibility-focus/talking.md" with { type: "text" };
 import focusRomanticMd from "./prompts/md/compatibility-focus/romantic.md" with { type: "text" };
@@ -196,22 +193,15 @@ const RELATIONSHIP_FOCUS: Record<RelationshipType, string> = {
 };
 
 /**
- * The compatibility prompt is three shared pieces: the data block (both
- * people, MBTI guidance, relationship focus, deterministic score), a task list
- * that differs per content version, and the style and safety rules. v2 and v3
- * render the same data and rules, so a rule fixed once applies to both.
- * tests/compatibility-prompt-golden.test.ts pins the v2 result byte for byte.
+ * The compatibility prompt combines the data block (both people, MBTI guidance
+ * and relationship focus), computed report facts, section tasks, and safety
+ * rules in one canonical report contract.
  */
-const COMPATIBILITY_V2_TEMPLATE =
-  compatibilityDataMd + compatibilityScoreMd + compatibilityV2TasksMd + compatibilityRulesMd;
-const COMPATIBILITY_V3_TEMPLATE =
-  compatibilityDataMd + compatibilityScoreMd + compatibilityV3ContextMd + compatibilityV3TasksMd + compatibilityRulesMd;
 /**
- * v4 leaves out the score block (the canned 4-band explanation and stock
- * strengths the owner called empty) and gives the computed report facts
- * instead: archetype, dimension scores with their inputs, month labels.
+ * The report gives computed facts instead of a canned score explanation:
+ * archetype, dimension levels with their inputs, and month labels.
  */
-const V4_HEAD = compatibilityDataMd + compatibilityV4ContextMd + compatibilityV3ContextMd + compatibilityV4RulesMd;
+const V4_HEAD = compatibilityDataMd + compatibilityV4ContextMd + compatibilityContextMd + compatibilityV4RulesMd;
 const V4_PLAN_TEMPLATE = V4_HEAD + compatibilityV4TasksPlanMd + compatibilityRulesMd;
 
 /** The per-section instructions, keyed by the `### key` headings in compatibility-v4-sections.md. */
@@ -257,25 +247,8 @@ function compatibilityDataVars(
   relationshipType: RelationshipType,
   scoreContext: CompatibilityScoreContext,
 ) {
-  const mbtiGuidance = person1.mbtiType ? getMbtiActionableGuidance(person1.mbtiType) : null;
-
-  const relationGuidance = mbtiGuidance
-    ? (relationshipType === 'romantic' ? mbtiGuidance.loveGuidance :
-       relationshipType === 'family' ? mbtiGuidance.familyGuidance :
-       relationshipType === 'boss' || relationshipType === 'coworker' ? mbtiGuidance.careerGuidance :
-       mbtiGuidance.socialGuidance)
-    : '';
-
-  const mbtiGuidanceBlock = mbtiGuidance
-    ? '\n' + renderPrompt(compatibilityMbtiGuidanceMd, {
-        relationGuidance,
-        pitfalls: mbtiGuidance.pitfalls.map((p, i) => `${i + 1}. ${p}`).join('\n'),
-        warnings: mbtiGuidance.warnings.slice(0, 3).map((w, i) => `${i + 1}. ${w}`).join('\n'),
-      }).trim()
-    : '';
-
   return {
-    mbti: Boolean(person1.mbtiType),
+    p1Name: person1.name,
     p2Name: person2.name,
     p1BirthDate: person1.birthDate.toLocaleDateString("th-TH"),
     p1DayMaster: dayMasterThai(person1.baziChart.dayMaster),
@@ -288,33 +261,12 @@ function compatibilityDataVars(
     p2Element: BAZI_ELEMENT_LABELS[person2.baziChart.element],
     p2ThaiDay: THAI_DAY_LABELS[person2.thaiAstrology.day],
     p2Planet: thaiPlanetName(person2.thaiAstrology.planet),
-    p2Mbti: Boolean(person2.mbtiType),
-    p2MbtiType: person2.mbtiType ?? '',
     score: scoreContext.score,
     scoreExplanation: scoreContext.scoreExplanation,
     deterministicStrengths: scoreContext.strengths.map(item => `- ${item}`).join('\n'),
     deterministicChallenges: scoreContext.challenges.map(item => `- ${item}`).join('\n'),
-    mbtiContext: buildMbtiContext(person1.mbtiType, true),
-    mbtiGuidanceBlock,
     focusBlock: RELATIONSHIP_FOCUS[relationshipType],
   };
-}
-
-/**
- * Generate compatibility reading between two people (content v2).
- * Analyzes element interactions and relationship dynamics
- * Tailored to the specific relationship type
- */
-export function buildCompatibilityPrompt(
-  person1: CompatibilityPromptPerson,
-  person2: CompatibilityPromptPerson,
-  relationshipType: RelationshipType = 'romantic',
-  scoreContext: CompatibilityScoreContext,
-): string {
-  return renderPrompt(
-    COMPATIBILITY_V2_TEMPLATE,
-    compatibilityDataVars(person1, person2, relationshipType, scoreContext),
-  );
 }
 
 /**
@@ -349,46 +301,54 @@ function cognitiveFunctionThai(fn: string): string {
   return match[1];
 }
 
-/**
- * Compatibility content v3: the v2 data and rules, plus a context block (Thai
- * day personalities, the partner's MBTI tendencies) and the v3 task list that
- * asks for `detail` and `teaser` in one JSON object.
- */
-export function buildCompatibilityPromptV3(
-  person1: CompatibilityPromptPerson,
-  person2: CompatibilityPromptPerson,
-  relationshipType: RelationshipType,
-  scoreContext: CompatibilityScoreContext,
-): string {
-  return renderPrompt(COMPATIBILITY_V3_TEMPLATE, {
-    ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
-    ...partnerContextVars(person1, person2),
+const PERSONALITY_AXIS_BEHAVIOR: Record<string, string> = {
+  E: 'คิดสิ่งต่าง ๆ ได้ชัดขึ้นเมื่อได้พูดคุยและมีปฏิสัมพันธ์',
+  I: 'ทบทวนความรู้สึกและความคิดให้ชัดก่อนค่อยพูด',
+  S: 'ยึดสิ่งที่เกิดขึ้นจริงและรายละเอียดที่จับต้องได้',
+  N: 'มองความหมาย ภาพรวม และความเป็นไปได้ข้างหน้า',
+  T: 'เริ่มตัดสินใจจากเหตุผล ความสอดคล้อง และทางออก',
+  F: 'เริ่มตัดสินใจจากคุณค่าและผลที่กระทบความรู้สึกของคน',
+  J: 'สบายใจเมื่อความคาดหวังและแผนค่อนข้างชัด',
+  P: 'สบายใจเมื่อยังมีพื้นที่ปรับตามสถานการณ์',
+};
+
+/** Private behavioral evidence for compatibility prose. Raw type labels never enter the prompt. */
+function compatibilityPersonalityContext(person: CompatibilityPromptPerson): string {
+  if (!person.mbtiType) return '';
+  const type = person.mbtiType.trim().toUpperCase();
+  const cognitive = getMbtiCognitiveFunctions(type);
+  if (!cognitive || type.length !== 4) throw new Error(`Unknown personality type for ${person.name}`);
+
+  const tendencies = [...type].map((axis) => {
+    const tendency = PERSONALITY_AXIS_BEHAVIOR[axis];
+    if (!tendency) throw new Error(`Unknown personality type for ${person.name}`);
+    return tendency;
   });
+
+  return [
+    ...tendencies.map((tendency) => `- ${person.name}เป็นคนที่มักจะ${tendency}`),
+    `- จุดแข็งที่อาจเห็น: ${cognitive.strengths}`,
+    `- จุดที่อาจสะดุด: ${cognitive.weaknesses}`,
+  ].join('\n');
 }
 
-/** Thai day personalities and the partner's MBTI tendencies (compatibility-v3-context.md), shared by v3 and v4. */
-function partnerContextVars(person1: CompatibilityPromptPerson, person2: CompatibilityPromptPerson) {
-  const partnerInfo = person2.mbtiType ? getMbtiInfo(person2.mbtiType) : undefined;
-  const partnerCognitive = person2.mbtiType ? getMbtiCognitiveFunctions(person2.mbtiType) : undefined;
-  if (person2.mbtiType && (!partnerInfo || !partnerCognitive)) {
-    throw new Error(`Unknown partner MBTI type: ${person2.mbtiType}`);
-  }
-  const missingMbti = [!person1.mbtiType ? 'คุณ' : null, !person2.mbtiType ? person2.name : null]
-    .filter((who): who is string => who !== null)
-    .join(' และ ');
+/** Astrology personalities plus optional private behavior signals for each person. */
+function compatibilityPersonalityVars(person1: CompatibilityPromptPerson, person2: CompatibilityPromptPerson) {
   return {
     p1Personality: person1.thaiAstrology.personality,
     p2Personality: person2.thaiAstrology.personality,
-    p2MbtiNameTh: partnerInfo?.nameTh ?? '',
-    p2MbtiDominant: partnerCognitive ? cognitiveFunctionThai(partnerCognitive.dominantFunction) : '',
-    p2MbtiAuxiliary: partnerCognitive ? cognitiveFunctionThai(partnerCognitive.auxiliaryFunction) : '',
-    p2MbtiStrengths: partnerCognitive?.strengths ?? '',
-    p2MbtiWeaknesses: partnerCognitive?.weaknesses ?? '',
-    missingMbti,
+    p1Behavior: Boolean(person1.mbtiType),
+    p2Behavior: Boolean(person2.mbtiType),
+    p1BehaviorContext: compatibilityPersonalityContext(person1),
+    p2BehaviorContext: compatibilityPersonalityContext(person2),
+    personalityBasisOptions: [
+      person1.mbtiType ? `readerMbti (แนวโน้มพฤติกรรมส่วนตัวของ${person1.name})` : null,
+      person2.mbtiType ? `partnerMbti (แนวโน้มพฤติกรรมส่วนตัวของ${person2.name})` : null,
+    ].filter((value): value is string => value !== null).join(', '),
   };
 }
 
-// ---------------------------------------------------------------- v4 report
+// ---------------------------------------------------------------- report facts
 
 /**
  * The neutral relation is half of all pairs (6 of 12 branches). Described as
@@ -441,7 +401,7 @@ const DIMENSION_INPUT_TH: Record<DimensionInput, string> = {
   yearBranch: 'ปีนักษัตร',
   element: 'ธาตุ',
   stemCombine: 'เจ้าวันประสานกัน',
-  mbti: 'MBTI ของทั้งสองคน',
+  mbti: 'แนวโน้มพฤติกรรมส่วนตัวของทั้งสองคน',
 };
 const MONTH_LABEL_TH: Record<MonthLabel, string> = { good: 'ดี', mixed: 'กลาง', caution: 'ระวัง' };
 const MONTH_REASON_TH: Record<string, (who: string) => string> = {
@@ -471,10 +431,10 @@ function elementRelationTh(p1: CompatibilityPromptPerson, p2: CompatibilityPromp
   const a = p1.baziChart.element;
   const b = p2.baziChart.element;
   if (a === b) return 'ธาตุเดียวกัน';
-  if (ELEMENT_PRODUCING[a] === b) return `ธาตุของคุณหนุนธาตุของ${p2.name}`;
-  if (ELEMENT_PRODUCING[b] === a) return `ธาตุของ${p2.name}หนุนธาตุของคุณ`;
-  if (ELEMENT_CONTROLLING[a] === b) return `ธาตุของคุณข่มธาตุของ${p2.name}`;
-  return `ธาตุของ${p2.name}ข่มธาตุของคุณ`;
+  if (ELEMENT_PRODUCING[a] === b) return `ธาตุของ${p1.name}หนุนธาตุของ${p2.name}`;
+  if (ELEMENT_PRODUCING[b] === a) return `ธาตุของ${p2.name}หนุนธาตุของ${p1.name}`;
+  if (ELEMENT_CONTROLLING[a] === b) return `ธาตุของ${p1.name}ข่มธาตุของ${p2.name}`;
+  return `ธาตุของ${p2.name}ข่มธาตุของ${p1.name}`;
 }
 
 function elementImage(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPerson): string {
@@ -488,14 +448,14 @@ function elementImage(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPers
  * The pair's signals, strongest first, for the verdict, the overview story
  * and the attraction chapter to lead with. The spouse palace leads only when
  * it is not neutral; otherwise the element relation leads, since it always
- * says something, then the year branch, then the MBTI pairing.
+ * says something, then the year branch, then the optional behavior pairing.
  */
 function leadSignalsTh(p1: CompatibilityPromptPerson, p2: CompatibilityPromptPerson, inputs: PairInputs): string {
   const signals = [
     inputs.dayRelation !== 'neutral' ? `ตำแหน่งคู่ในดวง: นักษัตรวันเกิด${BRANCH_RELATION_TH[inputs.dayRelation]}` : null,
     `ธาตุ: ${elementRelationTh(p1, p2)} ภาพของคู่นี้คือ ${elementImage(p1, p2)}`,
     inputs.yearRelation !== 'neutral' ? `ปีนักษัตร: ${YEAR_RELATION_TH[inputs.yearRelation]}` : null,
-    inputs.mbti ? `MBTI: คุณเป็น ${inputs.mbti.reader} ส่วน${p2.name}เป็น ${inputs.mbti.partner}` : null,
+    inputs.mbti ? 'แนวโน้มพฤติกรรมส่วนตัว: ใช้รูปแบบการรับข้อมูล การตัดสินใจ พลังทางสังคม และการวางแผนของทั้งสองคนประกอบ โดยไม่เปิดเผยชื่อแบบ' : null,
   ].filter((signal): signal is string => signal !== null);
   return signals.map((signal, i) => `  ${i + 1}. ${signal}`).join('\n');
 }
@@ -528,11 +488,11 @@ export function buildCompatibilityPromptV4(
   facts: V4ReportFacts,
   insights: Array<{ text: string; basis: string[]; chapter: string }> = [],
 ): string {
-  const who = (w: 'reader' | 'partner') => (w === 'reader' ? 'คุณ' : person2.name);
+  const who = (w: 'reader' | 'partner') => (w === 'reader' ? person1.name : person2.name);
   const future = V4_FUTURE_BY_RELATIONSHIP[relationshipType];
   return renderPrompt(step === 'plan' ? V4_PLAN_TEMPLATE : v4WriteTemplate(step), {
     ...compatibilityDataVars(person1, person2, relationshipType, scoreContext),
-    ...partnerContextVars(person1, person2),
+    ...compatibilityPersonalityVars(person1, person2),
     score: facts.score,
     archetypeName: facts.archetype.name,
     archetypeTagline: facts.archetype.tagline,
@@ -638,6 +598,7 @@ export function buildStructuredChartPrompt(
  * insights for the chapter it sells, so the shorter line keeps its substance.
  */
 export function buildV4HintRewritePrompt(
+  readerName: string,
   partnerName: string,
   target: number,
   hints: ReadonlyArray<{ text: string; insights: readonly string[] }>,
@@ -645,5 +606,5 @@ export function buildV4HintRewritePrompt(
   const hintList = hints
     .map((hint, i) => `${i + 1}. ข้อความเดิม: ${hint.text}\n   ข้อสังเกตของบทนี้: ${hint.insights.join(' / ') || '-'}`)
     .join('\n');
-  return renderPrompt(compatibilityV4HintRewriteMd, { p2Name: partnerName, target, hintList });
+  return renderPrompt(compatibilityV4HintRewriteMd, { p1Name: readerName, p2Name: partnerName, target, hintList });
 }

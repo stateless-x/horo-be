@@ -8,14 +8,13 @@ import { generationKey } from './generation-singleflight';
 import { parseCompatibilityContent } from './compatibility-content';
 import {
   COMPATIBILITY_V4_LIVE_BUDGET,
-  generateCompatibilityV2,
   generateCompatibilityV4Stored,
   readerGender,
 } from './compatibility-generation';
 import { config } from '../config';
 import { getCachedProfile } from '../systems/shared';
 import { normalizeMbtiType } from '../../lib/astrology';
-import { birthProfiles, chartNarratives, compatibility, dailyReadings } from '../../lib/db';
+import { birthProfiles, chartNarratives, compatibility, dailyReadings, user } from '../../lib/db';
 import { CompatibilityV4StoredSchema, RelationshipTypeSchema, type RelationshipType } from '../../lib/shared';
 import { getTodayBangkokString } from '../../lib/shared/utils/date';
 
@@ -117,8 +116,6 @@ export async function regenerateChart(userId: string, request: Request) {
 const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 
 export const DevRegenerateCompatibilitySchema = z.object({
-  /** full = the report the live route writes (v4); classic = the older v2 reading. */
-  kind: z.enum(['full', 'classic']),
   target: z.discriminatedUnion('type', [
     z.object({ type: z.literal('row'), id: z.string().uuid() }),
     z.object({
@@ -156,11 +153,17 @@ function storedPartnerMbti(analysis: string): string | null {
  * (config.compat.lockEnabled), so a locked row can be made from the panel.
  *
  * Partner MBTI is not a column: for an existing row it comes from a stored
- * v4 report and is unknown for a v2 row. A "new" target
+ * current report and is unknown for a historical row. A "new" target
  * with the same birth date and relationship replaces that row with any MBTI.
  */
 export async function regenerateCompatibility(userId: string, input: DevRegenerateCompatibility, startedAt: number) {
   const profile = await requireProfile(userId);
+  const [account] = await db
+    .select({ name: user.name, displayName: user.displayName })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1);
+  const readerName = account?.displayName || account?.name || 'คุณ';
 
   let partner: { name: string; birthDate: string; mbti: string | null };
   let relationshipType: RelationshipType;
@@ -181,6 +184,7 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
   // The live route's inputs, field for field.
   const generationInput = {
     reader: {
+      name: readerName,
       birthDate: profile.birthDate,
       birthHour: profile.birthHour ?? undefined,
       gender: readerGender(profile.gender),
@@ -189,15 +193,12 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
     partner: { name: partner.name, birthDate: new Date(partner.birthDate), mbtiType: normalizeMbtiType(partner.mbti) },
     relationshipType,
   };
-  const { content, charts, qualityFlags } =
-    input.kind === 'full'
-      ? await generateCompatibilityV4Stored({
-          ...generationInput,
-          withDetail: !config.compat.lockEnabled,
-          maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
-          deadlineAt: startedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
-        }).then(({ stored, ...generation }) => ({ ...generation, content: stored }))
-      : { ...(await generateCompatibilityV2(generationInput)), qualityFlags: [] };
+  const { stored: content, charts, qualityFlags } = await generateCompatibilityV4Stored({
+    ...generationInput,
+    withDetail: !config.compat.lockEnabled,
+    maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
+    deadlineAt: startedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
+  });
 
   const values = {
     partnerName: partner.name,

@@ -107,11 +107,15 @@ const reply = (value: unknown) =>
  * Answers each DeepSeek call with the plan, or with exactly the sections that
  * call's shape asks for, taken from `source` (which may vary per call).
  */
-function mockModel(source: (sectionKeys: V4SectionKey[], messages: string[]) => Record<V4SectionKey, unknown>) {
+function mockModel(
+  source: (sectionKeys: V4SectionKey[], messages: string[]) => Record<V4SectionKey, unknown>,
+  options: { plan?: unknown; onPrompt?: (prompt: string) => void } = {},
+) {
   globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
     const prompt = body.messages[1].content;
-    if (prompt.includes('{ "insights"')) return reply(INSIGHTS);
+    options.onPrompt?.(prompt);
+    if (prompt.includes('{ "insights"')) return reply(options.plan ?? INSIGHTS);
     const all = sections();
     const keys = (Object.keys(all) as V4SectionKey[]).filter((key) => prompt.includes(`  "${key}": `));
     const chosen = source(keys, body.messages.map((m) => m.content));
@@ -169,6 +173,48 @@ describe('generateCompatibilityV4', () => {
 });
 
 describe('v4 prompt facts', () => {
+  test('uses personality signals privately, without exposing a type label to the model', async () => {
+    const prompts: string[] = [];
+    const readerName = 'ฟ้า';
+    mockModel(() => sections(), { onPrompt: (prompt) => prompts.push(prompt) });
+
+    await generateCompatibilityV4({ ...input, reader: { ...input.reader, name: readerName } });
+
+    const allPrompts = prompts.join('\n');
+    expect(allPrompts).toContain(`${readerName}เป็นคนที่มักจะ`);
+    expect(allPrompts).toContain(`${name}เป็นคนที่มักจะ`);
+    expect(allPrompts).not.toContain(fixture.reader.mbti);
+    expect(allPrompts).not.toContain(fixture.partner.mbti);
+    expect(allPrompts).not.toContain('MBTI');
+  });
+
+  test('uses astrology alone when neither person supplied personality data', async () => {
+    const prompts: string[] = [];
+    const astrologyOnlyPlan = {
+      insights: [
+        { text: prose(10), basis: ['dayBranch'], chapter: 'attraction' },
+        { text: prose(10), basis: ['partnerThaiDay'], chapter: 'partner' },
+        { text: prose(10), basis: ['readerThaiDay'], chapter: 'you' },
+        { text: prose(10), basis: ['element'], chapter: 'communication' },
+        { text: prose(10), basis: ['yearBranch'], chapter: 'friction' },
+        { text: prose(10), basis: ['month1'], chapter: 'future' },
+      ],
+    };
+    mockModel(() => sections(), { plan: astrologyOnlyPlan, onPrompt: (prompt) => prompts.push(prompt) });
+
+    await generateCompatibilityV4({
+      ...input,
+      reader: { ...input.reader, mbtiType: null },
+      partner: { ...input.partner, mbtiType: null },
+    });
+
+    const allPrompts = prompts.join('\n');
+    expect(allPrompts).not.toContain(`ข้อมูลแนวโน้มพฤติกรรมส่วนตัวของคุณ ใช้หลังฉากเท่านั้น`);
+    expect(allPrompts).not.toContain(`ข้อมูลแนวโน้มพฤติกรรมส่วนตัวของ${name} ใช้หลังฉากเท่านั้น`);
+    expect(allPrompts).not.toContain('readerMbti');
+    expect(allPrompts).not.toContain('partnerMbti');
+  });
+
   test('a neutral palace reads as open, and the element image leads; dimension levels carry no number', async () => {
     // The fixture pair has a neutral spouse palace and year branch; partner fire controls reader metal.
     const prompts: string[] = [];
@@ -242,6 +288,17 @@ describe('v4 headline rules', () => {
 
     mockModel(() => bad);
     await expect(generateCompatibilityV4(input)).rejects.toThrow('has a number');
+  });
+
+  test('a personality framework label is repaired before readers can see it', async () => {
+    const cover = sections().cover as { verdict: string };
+    const bad = sections({ cover: { ...cover, verdict: `${cover.verdict} ซึ่งสะท้อนจากเอ็มบีทีไอ` } });
+    const calls = coverReplies([bad, sections()]);
+
+    await generateCompatibilityV4(input);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].at(-1)).toContain('exposes a private personality framework');
   });
 
   test('a known typo is corrected without a repair turn', async () => {

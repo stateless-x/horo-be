@@ -14,18 +14,12 @@ import {
 } from '../../lib/astrology';
 import { z } from 'zod';
 import {
-  CompatibilityStructuredContentSchema,
-  CompatibilityV3ContentSchema,
   GenderSchema,
-  TOKEN_LIMITS,
-  type CompatibilityStructuredContent,
-  type CompatibilityV3Content,
   type CompatibilityV4Content,
   CompatibilityV4ContentSchema,
   CompatibilityV4StoredSchema,
   type CompatibilityV4Stored,
   duplicateInsights,
-  foreignTokenIn,
   shapeCompatibilityView,
   type V4DetailPart,
   V4DetailPartSchema,
@@ -43,15 +37,11 @@ import {
   type RelationshipType,
 } from '../../lib/shared';
 import {
-  buildCompatibilityPrompt,
-  buildCompatibilityPromptV3,
   buildCompatibilityPromptV4,
   buildV4HintRewritePrompt,
   V4_FUTURE_BY_RELATIONSHIP,
 } from './prompts';
 import {
-  generateStructuredCompatibilityReading,
-  generateStructuredCompatibilityReadingV3,
   generateCompatibilityV4Plan,
   generateCompatibilityV4Sections,
   rewriteV4Hints,
@@ -73,6 +63,7 @@ import {
   maskNames,
   NAME_MARK,
   mixesPronouns,
+  personalityFrameworkJargon,
   proseLeaves,
   stockLine,
   stringLeaves,
@@ -81,16 +72,26 @@ import {
   wrongGenderWords,
 } from './compatibility-text';
 
+const LATIN_RUN = /[A-Za-z]+/g;
+const ALLOWED_LATIN_WORD = /^(?:[IE][NS][TF][JP]|MBTI)$/;
+const FOREIGN_RUN = /[^\u0E00-\u0E7F0-9\s.,:;!?()"'%/]+/;
+
+function foreignTokenIn(text: string): string | null {
+  const stripped = text.replace(LATIN_RUN, (word) => (ALLOWED_LATIN_WORD.test(word) ? '' : word));
+  const match = stripped.match(FOREIGN_RUN);
+  return match ? match[0] : null;
+}
+
 /**
  * Compatibility generation from birth data alone: deterministic charts and
  * score, the prompt, and the model call. No database, cache or rate limit, so
  * the live route, the dev generator tool and the prototype harness all call
- * it. The live POST route generates v4 (generateCompatibilityV4 with
- * COMPATIBILITY_V4_LIVE_BUDGET); the v2 and v3 paths remain for the dev tools
- * (reader named 'เจ้า', partner charted with no hour and gender 'female').
+ * it. Every newly generated report uses the canonical compatibility contract.
  */
 
 export interface CompatibilityReaderInput {
+  /** Display name used only to make the generated reading feel personal. */
+  name?: string | null;
   birthDate: Date;
   birthHour?: number;
   /** null when unknown: the prompt then asks for gender-neutral wording. */
@@ -125,7 +126,7 @@ export type CompatibilityCharts = ReturnType<typeof calculateCompatibilityCharts
 function promptPeople(reader: CompatibilityReaderInput, partner: CompatibilityPartnerInput, charts: CompatibilityCharts) {
   return {
     person1: {
-      name: 'เจ้า',
+      name: reader.name?.trim() || 'คุณ',
       gender: reader.gender,
       birthDate: reader.birthDate,
       baziChart: charts.readerBazi,
@@ -148,58 +149,11 @@ function promptPeople(reader: CompatibilityReaderInput, partner: CompatibilityPa
   };
 }
 
-export function buildCompatibilityPromptFor(
-  version: 'v2' | 'v3',
-  reader: CompatibilityReaderInput,
-  partner: CompatibilityPartnerInput,
-  relationshipType: RelationshipType,
-  charts: CompatibilityCharts,
-): string {
-  const { person1, person2, scoreContext } = promptPeople(reader, partner, charts);
-  return version === 'v2'
-    ? buildCompatibilityPrompt(person1, person2, relationshipType, scoreContext)
-    : buildCompatibilityPromptV3(person1, person2, relationshipType, scoreContext);
-}
-
 interface GenerateCompatibilityInput {
   reader: CompatibilityReaderInput;
   partner: CompatibilityPartnerInput;
   relationshipType: RelationshipType;
   onModelCall?: OnModelCall;
-}
-
-interface CompatibilityGeneration<TContent> {
-  content: TContent;
-  charts: CompatibilityCharts;
-  prompt: string;
-  timings: { calcMs: number; llmMs: number };
-}
-
-export async function generateCompatibilityV2(
-  input: GenerateCompatibilityInput,
-): Promise<CompatibilityGeneration<CompatibilityStructuredContent>> {
-  const calcStart = performance.now();
-  const charts = calculateCompatibilityCharts(input.reader, input.partner);
-  const prompt = buildCompatibilityPromptFor('v2', input.reader, input.partner, input.relationshipType, charts);
-  const llmStart = performance.now();
-  const generated = await generateStructuredCompatibilityReading(
-    prompt,
-    TOKEN_LIMITS[input.relationshipType],
-    input.onModelCall,
-    input.partner.name,
-  );
-  const llmEnd = performance.now();
-  const content = CompatibilityStructuredContentSchema.parse({
-    contentVersion: 2,
-    scoreExplanation: charts.score.overallAnalysis,
-    ...mapStrings(generated, (text) => tightenNameSpacing(text, input.partner.name)),
-  });
-  return {
-    content,
-    charts,
-    prompt,
-    timings: { calcMs: Math.round(llmStart - calcStart), llmMs: Math.round(llmEnd - llmStart) },
-  };
 }
 
 /**
@@ -221,65 +175,7 @@ export function foreignTextIssues(view: unknown, ctx: z.RefinementCtx): void {
  * model once wrote "ดินเจอกับไฟ" for a pair who are both earth, and "ไฟจาก
  * ดาวอังคาร" when the fire came from Bazi. A failure triggers the repair turn.
  */
-function elementCheck(allowed: CompatibilityCharts['readerBazi']['element'][], partnerName: string) {
-  type Checked = { teaser: { verdict: string; hook: string }; detail: { dynamic: string } };
-  const fields: Array<[path: string[], read: (content: Checked) => string]> = [
-    [['teaser', 'verdict'], (content) => content.teaser.verdict],
-    [['teaser', 'hook'], (content) => content.teaser.hook],
-    [['detail', 'dynamic'], (content) => content.detail.dynamic],
-  ];
-  return (content: Checked, ctx: z.RefinementCtx) => {
-    const view = maskNames(content, partnerName);
-    foreignTextIssues(view, ctx);
-    for (const [path, read] of fields) {
-      const text = read(view);
-      const foreign = foreignElementWords(text, allowed);
-      if (foreign.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path,
-          message: `Names element ${foreign.join(', ')}, but this pair's elements are only those given in the data`,
-        });
-      }
-      const credited = elementCreditedToPlanet(text);
-      if (credited) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path,
-          message: `"${credited}" credits an element to a planet; elements come from Bazi, planets from Thai astrology`,
-        });
-      }
-    }
-  };
-}
-
-export async function generateCompatibilityV3(
-  input: GenerateCompatibilityInput,
-): Promise<CompatibilityGeneration<CompatibilityV3Content>> {
-  const calcStart = performance.now();
-  const charts = calculateCompatibilityCharts(input.reader, input.partner);
-  const prompt = buildCompatibilityPromptFor('v3', input.reader, input.partner, input.relationshipType, charts);
-  const llmStart = performance.now();
-  const generated = await generateStructuredCompatibilityReadingV3(
-    prompt,
-    input.onModelCall,
-    elementCheck([charts.readerBazi.element, charts.partnerBazi.element], input.partner.name),
-  );
-  const llmEnd = performance.now();
-  const content = CompatibilityV3ContentSchema.parse({
-    contentVersion: 3,
-    scoreExplanation: charts.score.overallAnalysis,
-    ...mapStrings(generated, (text) => tightenNameSpacing(text, input.partner.name)),
-  });
-  return {
-    content,
-    charts,
-    prompt,
-    timings: { calcMs: Math.round(llmStart - calcStart), llmMs: Math.round(llmEnd - llmStart) },
-  };
-}
-
-// ---------------------------------------------------------------- v4 report
+// ---------------------------------------------------------------- report generation
 
 const CHAPTER_TITLES = (partnerName: string, relationshipType: RelationshipType): Record<V4ChapterKey, string> => ({
   attraction: 'แรงดึงดูด',
@@ -437,6 +333,16 @@ function v4Context(input: V4Input) {
   const pairCheck = (content: Partial<V4Sections>, ctx: z.RefinementCtx) => {
     const view = maskNames(content, partnerName);
     foreignTextIssues(view, ctx);
+    for (const [path, text] of proseLeaves(view)) {
+      const jargon = personalityFrameworkJargon(text);
+      if (jargon) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: path.split('.'),
+          message: `"${jargon}" exposes a private personality framework; write the tendency naturally without naming its source`,
+        });
+      }
+    }
     toIssues(
       factIssues(
         stringLeaves(view).filter(([path]) => !path.endsWith('.month')),
@@ -468,9 +374,6 @@ function v4Context(input: V4Input) {
     for (const dim of view.overview ? facts.dimensions : []) {
       const line = view.overview!.dimensionLines[dim.key];
       const path = ['overview', 'dimensionLines', dim.key];
-      if (!dim.basis.includes('mbti') && /MBTI|[IE][NS][TF][JP]/.test(line)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: 'mentions MBTI, but this score was not computed from MBTI' });
-      }
       if ((dim.score < 45 && /เด่น|สูงมาก|ดีมาก/.test(line)) || (dim.score >= 75 && /ต่ำ|อ่อนแอ|น่าห่วง/.test(line))) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `contradicts the score ${dim.score}` });
       }
@@ -527,6 +430,7 @@ function v4Context(input: V4Input) {
     const hints = reply.data.cover.lockedHints;
     const indexes = [...new Set(overLong.filter((i): i is number => i !== null))];
     const prompt = buildV4HintRewritePrompt(
+      person1.name,
       partnerName,
       V4_HINT_REWRITE_TARGET,
       indexes.map((i) => ({ text: hints[i].text, insights: insights.filter((x) => x.chapter === hints[i].chapter).map((x) => x.text) })),
@@ -646,6 +550,7 @@ export async function generateCompatibilityV4Stored(input: V4Input & { withDetai
     plan: ctx.polish(plan.data),
     inputs: {
       reader: {
+        name: input.reader.name?.trim() || 'คุณ',
         birthDate: input.reader.birthDate.toISOString(),
         birthHour: input.reader.birthHour ?? null,
         gender: input.reader.gender,
@@ -696,6 +601,7 @@ export async function generateCompatibilityV4Detail(
     ...input,
     now: new Date(`${stored.teaser.generatedOn}T12:00:00+07:00`),
     reader: {
+      name: stored.inputs.reader.name ?? 'คุณ',
       birthDate: new Date(stored.inputs.reader.birthDate),
       birthHour: stored.inputs.reader.birthHour ?? undefined,
       gender: stored.inputs.reader.gender,

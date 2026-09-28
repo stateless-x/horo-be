@@ -7,15 +7,13 @@ import {
   BirthProfileSchema,
   DevCompatibilityRequestSchema,
   shapeCompatibilityView,
-  type CompatibilityStructuredContent,
-  type CompatibilityV3Content,
   type CompatibilityV4Content,
   type DevCompatibilityOutput,
   type DevCompatibilityRequest,
   type DevGenerateError,
   type DevGenerateResponse,
 } from '../../lib/shared';
-import { generateCompatibilityV2, generateCompatibilityV3, generateCompatibilityV4 } from '../lib/compatibility-generation';
+import { generateCompatibilityV4 } from '../lib/compatibility-generation';
 import type { OnModelCall } from '../lib/llm';
 import { validateSessionFromRequest } from '../lib/session';
 import {
@@ -179,12 +177,13 @@ export const devRoutes = new Elysia({ prefix: '/api/dev' })
     devGenerator<
       DevCompatibilityRequest,
       DevCompatibilityOutput,
-      CompatibilityStructuredContent | CompatibilityV3Content | CompatibilityV4Content
+      CompatibilityV4Content
     >(
       DevCompatibilityRequestSchema,
       async (request, onModelCall) => {
         const input = {
           reader: {
+            name: request.reader.name ?? 'คุณ',
             birthDate: new Date(request.reader.birthDate),
             birthHour: request.reader.birthHour,
             gender: request.reader.gender,
@@ -200,28 +199,6 @@ export const devRoutes = new Elysia({ prefix: '/api/dev' })
         };
 
         const names = { readerName: request.reader.name ?? null, partnerName: request.partner.name };
-
-        if (request.version === 'v2') {
-          const { content, charts, prompt, timings } = await generateCompatibilityV2(input);
-          const output: DevCompatibilityOutput = {
-            score: charts.score.score,
-            relationshipType: request.relationshipType,
-            ...names,
-            structuredContent: content,
-          };
-          return { output, content, prompt, timings };
-        }
-
-        if (request.version === 'v3') {
-          const { content, charts, prompt, timings } = await generateCompatibilityV3(input);
-          const output: DevCompatibilityOutput = {
-            score: charts.score.score,
-            relationshipType: request.relationshipType,
-            ...names,
-            structuredContent: shapeCompatibilityView(content, request.view),
-          };
-          return { output, content, prompt, timings };
-        }
 
         const { content, charts, prompt, timings, qualityFlags } = await generateCompatibilityV4(input);
         const output: DevCompatibilityOutput = {

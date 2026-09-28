@@ -88,7 +88,8 @@ export const NAME_MARK = '(ชื่อ)';
  * `text` with the partner's name replaced by a neutral mark, so the vocabulary
  * checks never read a name as a word. Thai nicknames are often ordinary words:
  * ดาว (star, and the word for a planet), น้ำ, ไฟ, ทอง (element words). The
- * reader is never named in the prompt (they are เจ้า), so only the partner is.
+ * The prompt now receives both names. Only the partner is masked here because
+ * these vocabulary checks use their name as the pair-specific anchor.
  *
  * Left as they are: the name right after ธาตุ or ดวง, or right before a planet
  * name (ธาตุไฟ, ดวงดาว, ดาวอังคาร), which are the astrology words, not the
@@ -121,6 +122,15 @@ export function proseLeaves(value: unknown): Array<[string, string]> {
 
 /** Astrology vocabulary that turns a locked hint into a spec instead of a moment. */
 const HINT_JARGON = /ธาตุ|ดาว|วันเกิด|ปาจื้อ|โหรา|เจ้าวัน|นักษัตร|MBTI|[IE][NS][TF][JP]/;
+
+/** Framework labels must never make it into a reader-facing compatibility report. */
+const PERSONALITY_FRAMEWORK_JARGON = /MBTI|เอ็ม[\s-]*บี[\s-]*ที[\s-]*ไอ|ไมเออร์[\s-]*บริกส์|บุคลิกภาพ\s*16\s*แบบ|(?:INTJ|INTP|ENTJ|ENTP|INFJ|INFP|ENFJ|ENFP|ISTJ|ISFJ|ESTJ|ESTP|ISFP|ISTP|ESFJ|ESFP)/i;
+
+/** A private personality-framework label found in reader-facing copy, or null. */
+export function personalityFrameworkJargon(text: string): string | null {
+  const match = text.match(PERSONALITY_FRAMEWORK_JARGON);
+  return match ? match[0] : null;
+}
 
 /** The astrology or MBTI term in a locked hint, or null. Run it on maskName's output. */
 export function hintJargon(text: string): string | null {

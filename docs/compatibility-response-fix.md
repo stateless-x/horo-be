@@ -125,7 +125,7 @@ Payment (T5) is not built, so a balance can't be topped up yet. Don't turn the l
 
 ### Stored shape
 
-The `analysis` column holds `CompatibilityV4StoredSchema` (`lib/shared/types/compatibility-v4.ts`). There is no schema change.
+The `analysis` column holds `CompatibilityV4StoredSchema` (`lib/shared/types/compatibility.ts`). There is no schema change.
 
 ```
 { contentVersion: 4,

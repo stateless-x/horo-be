@@ -2,23 +2,15 @@ import { z } from "zod";
 import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
 import {
-  CompatibilityStructuredContentSchema,
-  CompatibilityV3GeneratedSchema,
-  COMPATIBILITY_V3_HINT_SECTIONS,
-  COMPATIBILITY_V3_TIMING_BASIS,
   V4InsightPlanSchema,
   V4AllSectionsSchema,
   V4_HINT_MAX,
-  foreignTokenIn,
-  type CompatibilityStructuredContent,
   type V4InsightPlan,
   type V4SectionKey,
   type V4Sections,
 } from "../../lib/shared";
 
-type CompatibilityV3Generated = z.infer<typeof CompatibilityV3GeneratedSchema>;
 import { CHART_BUDGET, DAILY_BUDGET } from "../../lib/shared/types/generation-budget";
-import { maskNames } from "./compatibility-text";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const MAX_TOKENS_CAP = 8192; // deepseek-chat hard limit
@@ -174,44 +166,13 @@ export async function generateFortuneReading(
   );
 }
 
-const STRUCTURED_COMPATIBILITY_SHAPE = `
-Return valid JSON matching exactly this shape (all fields required):
-{
-  "verdict": string,
-  "chemistry": string,
-  "caution": string,
-  "advice": string,
-  "nextSteps": {
-    "action": string,
-    "conversationStarter": string,
-    "watchFor": string
-  }
-}
-Length limits: verdict 1 to 180 characters (one sentence), chemistry, caution and advice 1 to 500 characters each, action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
-Do not include the score, markdown, or any text outside this JSON object.`;
-
-type GeneratedCompatibilityContent = Pick<
-  CompatibilityStructuredContent,
-  'verdict' | 'chemistry' | 'caution' | 'advice'
-> & {
-  nextSteps: NonNullable<CompatibilityStructuredContent['nextSteps']>;
-};
-
-const GeneratedCompatibilityContentSchema = CompatibilityStructuredContentSchema.pick({
-  verdict: true,
-  chemistry: true,
-  caution: true,
-  advice: true,
-  nextSteps: true,
-}).required();
-
 /** Called once per model request, retries included. Lets a caller count calls without changing the result. */
 export type OnModelCall = () => void;
 
 /**
- * The compatibility generation loop, shared by v2 and v3: JSON mode, 60 s per
- * call, up to two transport retries with backoff, and one validation repair
- * that re-asks with a short correction appended.
+ * The compatibility generation loop: JSON mode, 60 s per call, up to two
+ * transport retries with backoff, and a validation repair that re-asks with a
+ * short correction appended.
  */
 const CALL_TIMEOUT_MS = 60_000;
 /** A section call measured 9 to 20 s; starting one with less time left would only time out. */
@@ -238,8 +199,8 @@ async function generateValidatedCompatibilityJson<T>(
    */
   softCheck?: (data: T) => string[],
   /**
-   * Repair turns allowed for rule failures. v2 and v3 keep one; the v4
-   * section calls allow two, because a long reply that fixes one slip
+   * Repair turns allowed for rule failures. Section calls allow two, because
+   * a long reply that fixes one slip
    * sometimes makes another (a stray Chinese word in a fixed plan step).
    */
   maxRepairs = 1,
@@ -340,10 +301,8 @@ async function generateValidatedCompatibilityJson<T>(
 }
 
 /**
- * The repair turn for either version: names each failed field (and, for v3,
- * the offending token), so the model fixes that instead of guessing. v2 used
- * to repair with a generic hint that never said which field; a verdict over
- * 180 characters then failed twice in a row.
+ * The repair turn names each failed field, so the model fixes that instead of
+ * guessing.
  */
 const issueLine = (issue: z.ZodIssue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`;
 
@@ -351,99 +310,7 @@ function describeInvalid(problems: string[]): string {
   return `Your JSON above failed validation: ${problems.join('; ')}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
 }
 
-/** Generate the compact narrative portion of compatibility v2. */
-export async function generateStructuredCompatibilityReading(
-  prompt: string,
-  maxTokens: number = 1000,
-  onModelCall?: OnModelCall,
-  /** Masked before the foreign-word rule, so a partner called Mind is not English. */
-  partnerName?: string,
-): Promise<GeneratedCompatibilityContent> {
-  const { data } = await generateValidatedCompatibilityJson(
-    `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`,
-    GeneratedCompatibilityContentSchema.superRefine((content, ctx) => rejectForeignWords(content, ctx, partnerName)),
-    maxTokens,
-    describeInvalid,
-    onModelCall,
-  );
-  return data;
-}
-
-const STRUCTURED_COMPATIBILITY_V3_SHAPE = `
-Return valid JSON matching exactly this shape (all fields required, write "detail" before "teaser"):
-{
-  "detail": {
-    "dynamic": string,
-    "understandingPartner": string,
-    "yourSide": string,
-    "communication": [ { "do": string, "avoid": string } ],
-    "friction": [ { "scenario": string, "repair": string } ],
-    "timing": { "advice": string, "basis": [string] },
-    "longTerm": string,
-    "nextSteps": { "action": string, "conversationStarter": string, "watchFor": string }
-  },
-  "teaser": {
-    "verdict": string,
-    "hook": string,
-    "lockedHints": [ { "text": string, "section": string } ]
-  }
-}
-communication has exactly 3 items. friction has exactly 2 items and every scenario starts with "ถ้า".
-timing.basis values come only from: ${COMPATIBILITY_V3_TIMING_BASIS.join(', ')}.
-lockedHints has exactly 3 items; each section is a different one of: ${COMPATIBILITY_V3_HINT_SECTIONS.join(', ')}.
-Length limits: nextSteps.action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
-Do not include the score, markdown, comments, or any text outside this JSON object.`;
-
-/**
- * Output token ceiling for v3. Measured completions ran 1,300 to 1,970
- * tokens (prototype, 60 runs); 3,000 leaves room without letting a runaway
- * reply eat the 60 s budget.
- */
-const COMPATIBILITY_V3_MAX_TOKENS = 3000;
-
-/**
- * Generate compatibility v3: the free teaser and the full detail in one call.
- * `pairCheck` adds rules that depend on this pair (e.g. which elements may be
- * named); its failures go through the same repair turn as schema failures.
- */
-export async function generateStructuredCompatibilityReadingV3(
-  prompt: string,
-  onModelCall?: OnModelCall,
-  pairCheck?: (content: CompatibilityV3Generated, ctx: z.RefinementCtx) => void,
-): Promise<CompatibilityV3Generated> {
-  const { data } = await generateValidatedCompatibilityJson(
-    `${prompt}\n${STRUCTURED_COMPATIBILITY_V3_SHAPE}`,
-    pairCheck ? CompatibilityV3GeneratedSchema.superRefine(pairCheck) : CompatibilityV3GeneratedSchema,
-    COMPATIBILITY_V3_MAX_TOKENS,
-    describeInvalid,
-    onModelCall,
-  );
-  return data;
-}
-
-/**
- * v2's schema is also the stored-content schema, which old rows with English
- * in them must still parse against, so the foreign-word rule lives here, on
- * generation only. v2 leaked "naturally" into Thai output in the samples.
- */
-function rejectForeignWords(written: GeneratedCompatibilityContent, ctx: z.RefinementCtx, partnerName: string | undefined) {
-  const content = partnerName === undefined ? written : maskNames(written, partnerName);
-  const fields: Array<[string, string]> = [
-    ['verdict', content.verdict],
-    ['chemistry', content.chemistry],
-    ['caution', content.caution],
-    ['advice', content.advice],
-    ['nextSteps.action', content.nextSteps.action],
-    ['nextSteps.conversationStarter', content.nextSteps.conversationStarter],
-    ['nextSteps.watchFor', content.nextSteps.watchFor],
-  ];
-  for (const [path, text] of fields) {
-    const token = foreignTokenIn(text);
-    if (token) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message: `Non-Thai text in prose: "${token}"` });
-  }
-}
-
-// ---------------------------------------------------------------- v4 report
+// ---------------------------------------------------------------- report generation
 
 const V4_PLAN_SHAPE = `
 Return valid JSON matching exactly this shape:

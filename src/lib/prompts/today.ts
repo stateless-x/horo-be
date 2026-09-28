@@ -4,7 +4,7 @@
  * Dedicated prompt for /dashboard/today - a focused daily fortune
  * with MBTI integration, lucky attributes, warnings, and actions.
  *
- * Uses the same mystical Thai narrator voice as all other prompts.
+ * Uses the same grounded, friend-like Thai voice as all other prompts.
  * Prompt TEXT lives in ./md/today.md — edit that to change wording.
  */
 

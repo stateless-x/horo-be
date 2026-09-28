@@ -1,8 +1,10 @@
 import { z } from 'zod';
-import { RelationshipTypeSchema, type RelationshipType } from './compatibility';
-import { COMPATIBILITY_VIEWS, type CompatibilityV3Shaped } from './compatibility-v3';
-import type { CompatibilityV4Shaped } from './compatibility-v4';
-import type { CompatibilityStructuredContent } from './reading';
+import {
+  COMPATIBILITY_VIEWS,
+  RelationshipTypeSchema,
+  type CompatibilityV4Shaped,
+  type RelationshipType,
+} from './compatibility';
 
 /**
  * Contracts for the dev-only generator tools (horo-be `/api/dev/generate/*`,
@@ -54,7 +56,6 @@ export const DevCompatibilityRequestSchema = z.object({
   reader: DevCompatibilityPersonSchema,
   partner: DevCompatibilityPartnerSchema,
   relationshipType: RelationshipTypeSchema,
-  version: z.enum(['v2', 'v3', 'v4']),
   view: z.enum(COMPATIBILITY_VIEWS),
 });
 export type DevCompatibilityRequest = z.infer<typeof DevCompatibilityRequestSchema>;
@@ -65,14 +66,14 @@ export interface DevCompatibilityOutput {
   relationshipType: RelationshipType;
   readerName: string | null;
   partnerName: string;
-  structuredContent: CompatibilityStructuredContent | CompatibilityV3Shaped | CompatibilityV4Shaped;
-  /** v4: quality checks that still failed after the one repair turn (see generateCompatibilityV4). */
+  structuredContent: CompatibilityV4Shaped;
+  /** Quality checks that still failed after the one repair turn. */
   qualityFlags?: string[];
 }
 
 /**
- * Synthetic pairs used by the v3 prototype (scripts/prototype-compat-v3), the
- * prompt tests and the dev tool's preset buttons. No real person's data.
+ * Synthetic pairs used by the current prompt tests and dev-tool presets. No
+ * real person's data.
  */
 export const COMPATIBILITY_DEV_FIXTURES: ReadonlyArray<{
   id: string;

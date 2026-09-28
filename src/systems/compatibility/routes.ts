@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
 import { normalizeMbtiType } from '../../../lib/astrology';
-import { compatibility } from '../../../lib/db';
+import { compatibility, user } from '../../../lib/db';
 import { MBTI_TYPES, RELATIONSHIP_TYPES, type RelationshipType } from '../../../lib/shared';
 import { eq, and, desc, sql, count } from 'drizzle-orm';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
@@ -57,6 +57,13 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         set.status = 404;
         return { error: 'User profile not found' };
       }
+
+      const [account] = await db
+        .select({ name: user.name, displayName: user.displayName })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+      const readerName = account?.displayName || account?.name || 'คุณ';
 
       // Convert partner birth date to Date object (frontend sends ISO string)
       const partnerBirthDateObj = new Date(partnerBirthDate);
@@ -145,6 +152,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         // Locked mode writes only the free teaser; the detail is written on unlock.
         const generation = await generateCompatibilityV4Stored({
           reader: {
+            name: readerName,
             birthDate: userProfile.birthDate,
             birthHour: userProfile.birthHour ?? undefined,
             gender: readerGender(userProfile.gender),
