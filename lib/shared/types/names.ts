@@ -21,10 +21,11 @@ export function spaceLatinName(text: string, name: string): string {
   if (!LATIN_OR_DIGIT.test(trimmed)) return text;
   const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Not inside a longer Latin word or number: a partner called A is not the A in ATM.
-  const nameAt = `(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`;
+  // A captured edge instead of a lookbehind, which Safari before 16.4 cannot parse.
+  const whole = `${escaped}(?![A-Za-z0-9])`;
   return text
-    .replace(new RegExp(`([${THAI}])${INLINE_SPACE}(${nameAt})`, 'g'), '$1 $2')
-    .replace(new RegExp(`(${nameAt})${INLINE_SPACE}(?=[${THAI}])`, 'g'), '$1 ');
+    .replace(new RegExp(`([${THAI}])${INLINE_SPACE}(${whole})`, 'g'), '$1 $2')
+    .replace(new RegExp(`(^|[^A-Za-z0-9])(${whole})${INLINE_SPACE}(?=[${THAI}])`, 'g'), '$1$2 ');
 }
 
 /** `text` with both people's names spaced (spaceLatinName); a missing name is skipped. */
