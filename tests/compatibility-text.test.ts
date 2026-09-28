@@ -11,12 +11,16 @@ import {
   hintJargon,
   mapStrings,
   maskName,
+  maskNames,
   mixesPronouns,
+  NAME_MARK,
+  READER_MARK,
   stockLine,
   thaiWordCount,
   tightenNameSpacing,
   wrongGenderWords,
 } from '../src/lib/compatibility-text';
+import { spaceLatinName, spaceLatinNames } from '../lib/shared';
 
 describe('foreignElementWords', () => {
   test('catches the free verdict that gave an all-earth pair fire', () => {
@@ -196,5 +200,70 @@ describe('maskName', () => {
   test('a name with regex characters is matched literally', () => {
     expect(maskName('a.b กับคุณ', 'a.b')).toBe('(ชื่อ) กับคุณ');
     expect(maskName('axb กับคุณ', 'a.b')).toBe('axb กับคุณ');
+  });
+});
+
+describe('maskNames', () => {
+  test("the reader's supplied name gets its own mark, so it never stands in for the partner", () => {
+    const masked = maskNames({ verdict: 'ดาวกับMindคุยกันได้ดี' }, 'Mind', 'ดาว');
+    expect(masked.verdict).toBe(`${READER_MARK}กับ${NAME_MARK}คุยกันได้ดี`);
+  });
+
+  test('ดาว, Mind, มู2242 as the reader: no check reads the name as a word', () => {
+    const view = (reader: string, text: string) => maskNames(text, 'ต้น', reader);
+    expect(hintJargon(view('ดาว', 'ทำไมดาวถึงเงียบเมื่อแผนเปลี่ยน'))).toBeNull();
+    expect(view('Mind', 'Mindกับต้นคุยกันได้ดี')).not.toMatch(/[A-Za-z]/);
+    expect(view('มู2242', 'มู2242กับต้นไว้ใจกันได้ดี')).not.toMatch(/[0-9]/);
+  });
+
+  test('no supplied reader name: คุณ is a pronoun and stays', () => {
+    expect(maskNames('คุณกับต้นคุยกันได้ดี', 'ต้น', 'คุณ')).toBe(`คุณกับ${NAME_MARK}คุยกันได้ดี`);
+    expect(maskNames('คุณกับต้นคุยกันได้ดี', 'ต้น', null)).toBe(`คุณกับ${NAME_MARK}คุยกันได้ดี`);
+    expect(maskNames('คุณกับต้นคุยกันได้ดี', 'ต้น', '  ')).toBe(`คุณกับ${NAME_MARK}คุยกันได้ดี`);
+  });
+
+  test('one name inside the other is masked whole, whichever person has it', () => {
+    expect(maskNames('ดาวใจกับดาวคุยกัน', 'ดาว', 'ดาวใจ')).toBe(`${READER_MARK}กับ${NAME_MARK}คุยกัน`);
+    expect(maskNames('ดาวใจกับดาวคุยกัน', 'ดาวใจ', 'ดาว')).toBe(`${NAME_MARK}กับ${READER_MARK}คุยกัน`);
+  });
+});
+
+describe('spaceLatinName', () => {
+  test('a Latin name gets one space each side where it touches Thai', () => {
+    expect(spaceLatinName('ฉบับเต็มของคุณกับIce', 'Ice')).toBe('ฉบับเต็มของคุณกับ Ice');
+    expect(spaceLatinName('ของIceที่คุม', 'Ice')).toBe('ของ Ice ที่คุม');
+    expect(spaceLatinName('แต่ Mindเปิด', 'Mind')).toBe('แต่ Mind เปิด');
+    expect(spaceLatinName('ที่ Mindพูด', 'Mind')).toBe('ที่ Mind พูด');
+    expect(spaceLatinName('Mindเปิดใจก่อน', 'Mind')).toBe('Mind เปิดใจก่อน');
+    expect(spaceLatinName('คุยกับA+แล้ว', 'A+')).toBe('คุยกับ A+ แล้ว');
+  });
+
+  test('a name with digits counts, and extra spaces become one', () => {
+    expect(spaceLatinName('ของมู2242ที่', 'มู2242')).toBe('ของ มู2242 ที่');
+    expect(spaceLatinName('กับ   Ice   ที่', 'Ice')).toBe('กับ Ice ที่');
+  });
+
+  test('no space before punctuation or at a line start or end', () => {
+    expect(spaceLatinName('Ice, คุณ', 'Ice')).toBe('Ice, คุณ');
+    expect(spaceLatinName('คุยกับ(Ice)', 'Ice')).toBe('คุยกับ(Ice)');
+    expect(spaceLatinName('ของIce\nที่คุม', 'Ice')).toBe('ของ Ice\nที่คุม');
+    expect(spaceLatinName('Ice · ปลดล็อก', 'Ice')).toBe('Ice · ปลดล็อก');
+  });
+
+  test('Thai-script names keep today\'s spacing', () => {
+    for (const name of ['บีม (ตัวจริง)', 'ดาว']) {
+      expect(spaceLatinName(`คุยกับ${name}แล้ว`, name)).toBe(`คุยกับ${name}แล้ว`);
+    }
+  });
+
+  test('only the whole name: a partner called A is not the A in ATM', () => {
+    expect(spaceLatinName('ไปATMกับAแล้ว', 'A')).toBe('ไปATMกับ A แล้ว');
+  });
+
+  test('applying it twice changes nothing more, and both names are spaced', () => {
+    const once = spaceLatinNames('แต่ Mindเปิดใจให้Iceก่อน', ['Ice', 'Mind']);
+    expect(once).toBe('แต่ Mind เปิดใจให้ Ice ก่อน');
+    expect(spaceLatinNames(once, ['Ice', 'Mind'])).toBe(once);
+    expect(spaceLatinNames('ให้Iceก่อน', ['Ice', null, undefined])).toBe('ให้ Ice ก่อน');
   });
 });

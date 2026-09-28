@@ -423,6 +423,74 @@ describe('partner names that are ordinary words', () => {
   });
 });
 
+describe('reader names that are ordinary words, English or digits', () => {
+  type Cover = { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };
+  type Overview = { story: string; dimensionLines: Record<string, string> };
+  /**
+   * The fixture's replies naming the reader where a check would read the name
+   * as a word: the verdict (Mind is English), the "you" hint (ดาว is jargon in
+   * a hint) and a dimension line (มู2242 has a number).
+   */
+  const namingReader = (reader: string): Record<V4SectionKey, unknown> => {
+    const all = sections();
+    const cover = all.cover as Cover;
+    const overview = all.overview as Overview;
+    return {
+      ...all,
+      cover: {
+        verdict: `${reader}กับ${cover.verdict}`,
+        lockedHints: cover.lockedHints.map((hint) =>
+          hint.chapter === 'you' ? { ...hint, text: `ทำไม${reader}ถึงเก็บเรื่องเล็กไว้คนเดียวจนกลายเป็นเรื่องใหญ่` } : hint,
+        ),
+      },
+      overview: { ...overview, dimensionLines: { ...overview.dimensionLines, chemistry: `${reader}กับ${overview.dimensionLines.chemistry}` } },
+    };
+  };
+  const readerCalled = (reader?: string) => ({ ...input, reader: { ...input.reader, name: reader } });
+
+  for (const [reader, rule] of [
+    ['ดาว', 'is an astrology or MBTI term'],
+    ['Mind', 'Non-Thai text in prose'],
+    ['มู2242', 'has a number'],
+  ] as const) {
+    test(`${reader}: the report passes with no repair, teaser now and detail on unlock too`, async () => {
+      mockModel(() => namingReader(reader));
+      let calls = 0;
+      const full = await generateCompatibilityV4({ ...readerCalled(reader), onModelCall: () => calls++ });
+      expect(calls).toBe(5);
+      expect(full.qualityFlags).toEqual([]);
+
+      const { stored } = await generateCompatibilityV4Stored({ ...readerCalled(reader), withDetail: false });
+      expect(stored.inputs.reader.name).toBe(reader);
+      calls = 0;
+      await generateCompatibilityV4Detail(stored, { partner: { name }, relationshipType: fixture.relationshipType, onModelCall: () => calls++ });
+      expect(calls).toBe(3);
+    });
+
+    test(`${reader}: the same text without a supplied reader name still fails (${rule})`, async () => {
+      mockModel(() => namingReader(reader));
+      await expect(generateCompatibilityV4({ ...readerCalled(undefined), maxRepairs: 1 })).rejects.toThrow(rule);
+    });
+  }
+});
+
+describe('Latin names in the stored text', () => {
+  test('a Latin partner and reader are spaced from the Thai around them; a Thai partner is not', async () => {
+    const replies = (partner: string) =>
+      JSON.parse(JSON.stringify(sections()).replaceAll(name, partner).replaceAll('หลอมทองของคุณ', 'หลอมทองของMind')) as Record<V4SectionKey, unknown>;
+    mockModel(() => replies('Ice'));
+    const iceInput = { ...input, reader: { ...input.reader, name: 'Mind' }, partner: { ...input.partner, name: 'Ice' } };
+    const { content } = await generateCompatibilityV4(iceInput);
+    expect(content.cover.verdict).toBe('ไฟของ Ice หลอมทองของ Mind ดึงกันด้วยความต่างที่ต้องคุยให้ชัด');
+    expect(content.chapters.find((c) => c.key === 'partner')?.title).toBe('ตัวตนของ Ice ในความสัมพันธ์นี้');
+    expect(JSON.stringify(content)).not.toMatch(/[\u0E00-\u0E7F](?:Ice|Mind)|(?:Ice|Mind)[\u0E00-\u0E7F]/);
+
+    mockModel(() => replies('ต้น'));
+    const thai = await generateCompatibilityV4({ ...iceInput, partner: { ...input.partner, name: 'ต้น' } });
+    expect(thai.content.cover.verdict).toBe('ไฟของต้นหลอมทองของ Mind ดึงกันด้วยความต่างที่ต้องคุยให้ชัด');
+  });
+});
+
 describe('locked hint length', () => {
   const cover = sections().cover as { verdict: string; lockedHints: Array<{ text: string; chapter: string }> };
   const long = `${cover.lockedHints[0].text} ${'แล้วคุณก็เลือกเงียบต่อไปอีกหลายวันโดยไม่ได้ถามอะไรเลย '.repeat(4)}`.trim();
@@ -718,6 +786,21 @@ describe('locked mode (teaser-first)', () => {
     expect('analysis' in reading).toBe(false);
     expect(json).not.toContain('"inputs"');
     expect(json).not.toContain(stored.inputs.reader.birthDate);
+  });
+
+  test('a row stored before names were spaced answers with a Latin name spaced, on every route', async () => {
+    countingModel();
+    const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+    // As rows were written before: the Latin name run into the Thai around it.
+    const legacy = { ...row(JSON.stringify(stored).replaceAll(name, 'Ice')), partnerName: 'Ice' };
+    expect(legacy.analysis).toContain('ไฟของIceหลอม');
+    const reading = readingResponse(legacy);
+    const share = shareResponse(legacy);
+    for (const response of [reading, share]) {
+      const json = JSON.stringify(response.structuredContent);
+      expect(json).toContain('ไฟของ Ice หลอม');
+      expect(json).not.toMatch(/[\u0E00-\u0E7F]Ice|Ice[\u0E00-\u0E7F]/);
+    }
   });
 
   test('unlock is owner-only and checks nothing else for a stranger', async () => {

@@ -21,6 +21,7 @@ import {
   type CompatibilityV4Stored,
   duplicateInsights,
   shapeCompatibilityView,
+  spaceLatinNames,
   type V4DetailPart,
   V4DetailPartSchema,
   type V4TeaserPart,
@@ -158,7 +159,7 @@ interface GenerateCompatibilityInput {
 
 /**
  * Every prose field is Thai (MBTI codes aside). `view` is the reading with the
- * partner's name masked (maskNames), so a partner called Mind or A+ is not
+ * names masked (maskNames), so a partner or reader called Mind or A+ is not
  * English. The model drops stray foreign words into long Thai output; one
  * costs a repair.
  */
@@ -320,6 +321,8 @@ function v4Context(input: V4Input) {
   const build = (step: 'plan' | readonly V4SectionKey[], insights?: V4InsightPlan['insights']) =>
     buildCompatibilityPromptV4(step, person1, person2, input.relationshipType, scoreContext, facts, insights);
   const partnerName = input.partner.name;
+  /** The reader's supplied name, masked in the checks and spaced in the stored text; none when they gave none. */
+  const readerName = input.reader.name?.trim() || null;
   const pairElements: Element[] = [charts.readerBazi.element, charts.partnerBazi.element];
   const anchorsOnRelations = inputs.dayRelation !== 'neutral' || inputs.yearRelation !== 'neutral';
   const gender = input.reader.gender;
@@ -328,10 +331,10 @@ function v4Context(input: V4Input) {
     for (const [path, message] of issues) ctx.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message });
   };
   const monthElement = (path: string) => calendar[Number(path.split('.')[1])].monthElement;
-  // Every prose rule reads `view`, the reply with the partner's name masked
-  // once here (maskNames). Only the month keys are checked on the reply itself.
+  // Every prose rule reads `view`, the reply with both names masked once
+  // here (maskNames). Only the month keys are checked on the reply itself.
   const pairCheck = (content: Partial<V4Sections>, ctx: z.RefinementCtx) => {
-    const view = maskNames(content, partnerName);
+    const view = maskNames(content, partnerName, readerName);
     foreignTextIssues(view, ctx);
     for (const [path, text] of proseLeaves(view)) {
       const jargon = personalityFrameworkJargon(text);
@@ -383,7 +386,7 @@ function v4Context(input: V4Input) {
     }
   };
   const softCheck = (content: Partial<V4Sections>) => {
-    const view = maskNames(content, partnerName);
+    const view = maskNames(content, partnerName, readerName);
     const issues = qualityIssues(stringLeaves(view), partnerName);
     // Element slips outside the core fields: often a metaphor, worth a repair, not a failed reading.
     for (const [path, message] of factIssues(
@@ -467,8 +470,13 @@ function v4Context(input: V4Input) {
     };
   };
 
-  /** Model text with the known typos fixed and the partner's name spaced (every stored string goes through it). */
-  const polish = <T>(value: T): T => mapStrings(value, (text) => fixKnownTypos(tightenNameSpacing(text, partnerName)));
+  /**
+   * Model text with the known typos fixed and the names spaced (every stored
+   * string goes through it): the partner's name is tightened into its Thai
+   * clause, then a name with Latin letters or digits gets one space each side.
+   */
+  const polish = <T>(value: T): T =>
+    mapStrings(value, (text) => fixKnownTypos(spaceLatinNames(tightenNameSpacing(text, partnerName), [partnerName, readerName])));
 
   const teaserPart = (sections: Partial<V4Sections>): V4TeaserPart =>
     polish({
@@ -526,7 +534,7 @@ export async function generateCompatibilityV4Stored(input: V4Input & { withDetai
     // The plan is short (3 to 10 s measured); cap it so the sections keep most of the budget.
     deadlineAt: input.deadlineAt === undefined ? undefined : Math.min(input.deadlineAt, Date.now() + PLAN_BUDGET_MS),
     pairCheck: (content, refine) => {
-      foreignTextIssues(maskNames(content, input.partner.name), refine);
+      foreignTextIssues(maskNames(content, input.partner.name, input.reader.name), refine);
       const unavailable = new Set<string>([
         ...(input.reader.mbtiType ? [] : ['readerMbti']),
         ...(input.partner.mbtiType ? [] : ['partnerMbti']),

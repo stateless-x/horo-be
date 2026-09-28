@@ -1,7 +1,8 @@
 import type { compatibility } from '../../../lib/db';
-import { RelationshipTypeSchema, shapeCompatibilityView, shareCompatibilityV4, type CompatibilityV4Stored } from '../../../lib/shared';
+import { RelationshipTypeSchema, shapeCompatibilityView, shareCompatibilityV4, spaceLatinNames, type CompatibilityV4Stored } from '../../../lib/shared';
 import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Detail } from '../../lib/compatibility-generation';
+import { mapStrings } from '../../lib/compatibility-text';
 import { chargeUnlockWithin, checkUnlock, type UnlockDecision, type UnlockWallet } from '../../lib/entitlements';
 import type { WalletTx } from '../../lib/wallet';
 import type { InsufficientBalanceBody } from '../../../lib/shared/types/wallet';
@@ -20,6 +21,15 @@ export type CompatibilityRow = typeof compatibility.$inferSelect;
 function lockedStored(analysis: string): CompatibilityV4Stored | null {
   const content = parseCompatibilityContent(analysis);
   return content?.contentVersion === 4 && 'inputs' in content && content.detail === null ? content : null;
+}
+
+/**
+ * v4 text with a Latin or digit name spaced from the Thai around it. New rows
+ * are stored spaced (polish in compatibility-generation); this covers rows
+ * written before that, and is a no-op on the rest.
+ */
+function spaceNames<T>(value: T, row: CompatibilityRow, readerName: string | undefined): T {
+  return mapStrings(value, (text) => spaceLatinNames(text, [row.partnerName, readerName]));
 }
 
 /** The owner's view of one reading (POST, GET :id, unlock). */
@@ -46,7 +56,9 @@ export function readingResponse(row: CompatibilityRow) {
   if (content?.contentVersion === 4) {
     // No `analysis` for v4: the stored JSON holds the insight plan and the input snapshot.
     const locked = 'inputs' in content && content.detail === null;
-    return { ...base, contentVersion: 4, locked, structuredContent: shapeCompatibilityView(content, locked ? 'teaser' : 'full') };
+    const readerName = 'inputs' in content ? content.inputs.reader.name : undefined;
+    const structuredContent = spaceNames(shapeCompatibilityView(content, locked ? 'teaser' : 'full'), row, readerName);
+    return { ...base, contentVersion: 4, locked, structuredContent };
   }
   return { ...base, analysis: row.analysis, contentVersion: content?.contentVersion ?? 1, structuredContent: content, locked: false };
 }
@@ -60,7 +72,11 @@ export function shareResponse(row: CompatibilityRow) {
       relationshipType: row.relationshipType,
       score: row.score,
       contentVersion: 4,
-      structuredContent: shareCompatibilityV4('inputs' in content ? content.teaser : content),
+      structuredContent: spaceNames(
+        shareCompatibilityV4('inputs' in content ? content.teaser : content),
+        row,
+        'inputs' in content ? content.inputs.reader.name : undefined,
+      ),
       userElement: row.userElement,
       partnerElement: row.partnerElement,
       createdAt: row.createdAt.toISOString(),

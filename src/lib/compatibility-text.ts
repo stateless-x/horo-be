@@ -85,31 +85,42 @@ const PLANET_NAMES = ['อาทิตย์', 'จันทร์', 'อัง�
 export const NAME_MARK = '(ชื่อ)';
 
 /**
- * `text` with the partner's name replaced by a neutral mark, so the vocabulary
+ * Stands in for the reader's supplied name. A mark of its own, so the rules
+ * that need the partner (the verdict names them) never pass on the reader.
+ */
+export const READER_MARK = '(ชื่อคุณ)';
+
+/**
+ * `text` with a person's name replaced by a neutral mark, so the vocabulary
  * checks never read a name as a word. Thai nicknames are often ordinary words:
- * ดาว (star, and the word for a planet), น้ำ, ไฟ, ทอง (element words). The
- * The prompt now receives both names. Only the partner is masked here because
- * these vocabulary checks use their name as the pair-specific anchor.
+ * ดาว (star, and the word for a planet), น้ำ, ไฟ, ทอง (element words).
  *
  * Left as they are: the name right after ธาตุ or ดวง, or right before a planet
  * name (ธาตุไฟ, ดวงดาว, ดาวอังคาร), which are the astrology words, not the
  * person. The limit: when the name is itself an element word, a bare slip of
  * that element ("ไฟ" alone for a pair without fire) reads as the name.
  */
-export function maskName(text: string, name: string): string {
+export function maskName(text: string, name: string, mark = NAME_MARK): string {
   const pattern = new RegExp(`(?<!ธาตุ|ดวง)${escapeRegExp(name)}(?!${PLANET_NAMES.join('|')})`, 'g');
-  return text.replace(pattern, NAME_MARK);
+  return text.replace(pattern, mark);
 }
 
 /**
- * A generated reading with the partner's name masked in every string, same
- * shape. Each version's check masks once, at its entry, and every rule reads
- * only the masked copy: a name is never jargon (ดาว), an element (น้ำ), a
- * pronoun (หนู), English (Mind) or a number (มูหนึ่ง2242). Rules that need the
- * name look for NAME_MARK.
+ * A generated reading with both people's names masked in every string, same
+ * shape. Each check masks once, at its entry, and every rule reads only the
+ * masked copy: a name is never jargon (ดาว), an element (น้ำ), a pronoun
+ * (หนู), English (Mind) or a number (มูหนึ่ง2242). The partner becomes
+ * NAME_MARK, which the rules that need the name look for; the reader becomes
+ * READER_MARK. The reader is masked only by a supplied name: without one the
+ * prompt calls them คุณ, which is a pronoun, not a name. The longer name is
+ * masked first, so one name inside the other (ดาว, ดาวใจ) is masked whole.
  */
-export function maskNames<T>(value: T, partnerName: string): T {
-  return mapStrings(value, (text) => maskName(text, partnerName));
+export function maskNames<T>(value: T, partnerName: string, readerName?: string | null): T {
+  const reader = readerName?.trim();
+  const names: Array<[string, string]> = [[partnerName, NAME_MARK]];
+  if (reader && reader !== 'คุณ') names.push([reader, READER_MARK]);
+  names.sort(([a], [b]) => b.length - a.length);
+  return mapStrings(value, (text) => names.reduce((out, [name, mark]) => maskName(out, name, mark), text));
 }
 
 /**

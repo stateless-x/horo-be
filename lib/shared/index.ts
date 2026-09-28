@@ -7,6 +7,7 @@ export * from './types/loading-lines';
 export * from './types/analytics';
 export * from './types/generation-budget';
 export * from './types/dev-tools';
+export * from './types/names';
 
 // Constants
 export * from './constants/thai-time';
