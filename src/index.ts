@@ -138,7 +138,10 @@ if (configErrors.length === 0) {
     // could clear their own LLM rate caps, and the session probe echoed cookie headers.
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');
-      app = app
+      // Elysia registers plugins and routes on this instance. Keep the enriched
+      // builder type local instead of assigning it back to `app`, whose inferred
+      // type describes the always-mounted routes above.
+      app
         .use(devModule.devRoutes)
         .use(walletModule.walletDevRoutes())
         // Debug endpoint to test session validation
