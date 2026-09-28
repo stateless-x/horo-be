@@ -71,13 +71,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       if (rateLimitResult.limited) {
         set.status = 429;
-        set.headers = {
-          ...set.headers,  // Preserve existing headers (including CORS)
+        Object.assign(set.headers, {  // Preserve existing headers (including CORS)
           'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
           'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-        };
+        });
         return {
           error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
           code: 'RATE_LIMIT_EXCEEDED',
@@ -87,12 +86,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       }
 
       // Add rate limit headers to successful requests
-      set.headers = {
-        ...set.headers,  // Preserve existing headers (including CORS)
+      Object.assign(set.headers, {  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
         'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-      };
+      });
 
       try {
         const { result } = await generateTeaser(profile);
@@ -132,13 +130,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
     if (rateLimitResult.limited) {
       set.status = 429;
-      set.headers = {
-        ...set.headers,  // Preserve existing headers (including CORS)
+      Object.assign(set.headers, {  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
         'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
+      });
       return {
         error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
         code: 'RATE_LIMIT_EXCEEDED',
@@ -148,12 +145,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
     }
 
     // Add rate limit headers
-    set.headers = {
-      ...set.headers,  // Preserve existing headers (including CORS)
+    Object.assign(set.headers, {  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-    };
+    });
 
     try {
       const profile = BirthProfileSchema.parse(body);
@@ -360,13 +356,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
           if (rateLimitResult.limited) {
             set.status = 429;
-            set.headers = {
-              ...set.headers,  // Preserve existing headers (including CORS)
+            Object.assign(set.headers, {  // Preserve existing headers (including CORS)
               'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
               'X-RateLimit-Remaining': '0',
               'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
               'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-            };
+            });
             return {
               error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
               code: 'RATE_LIMIT_EXCEEDED',
@@ -376,12 +371,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           }
 
           // Add rate limit headers
-          set.headers = {
-            ...set.headers,  // Preserve existing headers (including CORS)
+          Object.assign(set.headers, {  // Preserve existing headers (including CORS)
             'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
             'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
             'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-          };
+          });
 
           // Generate new structured daily reading
           const baziChart = calculateBazi(
@@ -554,13 +548,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
     if (rateLimitResult.limited) {
       set.status = 429;
-      set.headers = {
-        ...set.headers,
+      Object.assign(set.headers, {
         'X-RateLimit-Limit': RATE_LIMITS.chartRegenerate.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
         'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
+      });
       return {
         error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
         code: 'RATE_LIMIT_EXCEEDED',
@@ -701,10 +694,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       if (cachedChart) {
         console.log('[Fortune] GET /chart - Cache hit (not counted toward rate limit) for profile:', profile.id);
         // Return cached data without consuming rate limit
-        set.headers = {
-          ...set.headers,
+        Object.assign(set.headers, {
           'X-Cache-Status': 'HIT',
-        };
+        });
         return cachedChart;
       }
 
@@ -725,10 +717,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           // Skip rate limit for system-initiated expiry (month boundary)
           if (monthBoundaryExpired) {
             console.log('[Fortune] GET /chart - Auto-expiry detected, bypassing rate limit for profile:', profile.id);
-            set.headers = {
-              ...set.headers,
+            Object.assign(set.headers, {
               'X-Cache-Status': 'EXPIRED_MONTHLY',
-            };
+            });
           } else {
             // Rate limit check is inside the promise so no gap between guard check and set
             console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
@@ -736,13 +727,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
             if (rateLimitResult.limited) {
               set.status = 429;
-              set.headers = {
-                ...set.headers,
+              Object.assign(set.headers, {
                 'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
                 'X-RateLimit-Remaining': '0',
                 'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
                 'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-              };
+              });
               return {
                 error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
                 code: 'RATE_LIMIT_EXCEEDED',
@@ -752,13 +742,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             }
 
             // Add rate limit headers for LLM generation
-            set.headers = {
-              ...set.headers,
+            Object.assign(set.headers, {
               'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
               'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
               'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
               'X-Cache-Status': 'MISS',
-            };
+            });
           }
 
           // ---- Step 1: Deterministic calculation + parallel DB fetch ----

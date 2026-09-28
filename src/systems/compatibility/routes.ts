@@ -115,13 +115,12 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         const limitConfig = hourlyResult.limited ? RATE_LIMITS.compatibility : RATE_LIMITS.compatibilityDaily;
         const retryAfter = Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000);
         set.status = 429;
-        set.headers = {
-          ...set.headers,
+        Object.assign(set.headers, {
           'X-RateLimit-Limit': limitConfig.maxRequests.toString(),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
           'Retry-After': retryAfter.toString(),
-        };
+        });
         return {
           error: dailyResult.limited
             ? 'เจ้าส่องดวงครบ 5 คนในวันนี้แล้ว กลับมาใหม่พรุ่งนี้นะ'
@@ -135,13 +134,12 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
 
       // Use the most restrictive remaining count
       const remaining = Math.min(hourlyResult.remaining, dailyResult.remaining);
-      set.headers = {
-        ...set.headers,
+      Object.assign(set.headers, {
         'X-RateLimit-Limit': RATE_LIMITS.compatibilityDaily.maxRequests.toString(),
         'X-RateLimit-Remaining': remaining.toString(),
         'X-RateLimit-Reset': new Date(dailyResult.resetAt).toISOString(),
         'X-DailyLimit-Remaining': dailyResult.remaining.toString(),
-      };
+      });
 
       // A check that fails after this point gives its hourly and daily counts back.
       return refundChecksOnFailure(session.userId, async () => {
