@@ -173,6 +173,19 @@ describe('generateCompatibilityV4', () => {
 });
 
 describe('v4 prompt facts', () => {
+  test('asks the plan to offer relationship care, not a dated checklist', async () => {
+    const prompts: string[] = [];
+    mockModel(() => sections(), { onPrompt: (prompt) => prompts.push(prompt) });
+
+    await generateCompatibilityV4(input);
+
+    const allPrompts = prompts.join('\n');
+    expect(allPrompts).toContain('แม่หมอที่รับฟังเก่งและเข้าใจความสัมพันธ์');
+    expect(allPrompts).toContain('3 โมเมนต์เล็ก ๆ ที่ช่วยให้ความสัมพันธ์ใกล้กันขึ้น');
+    expect(allPrompts).toContain('ห้ามอ้างถึงวัน กำหนดเวลา หรือเดดไลน์');
+    expect(allPrompts).toContain('ไม่อ้างว่าเป็นการบำบัด');
+  });
+
   test('uses personality signals privately, without exposing a type label to the model', async () => {
     const prompts: string[] = [];
     const readerName = 'ฟ้า';
