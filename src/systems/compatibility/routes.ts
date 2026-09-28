@@ -3,7 +3,7 @@ import { db } from '../../lib/db';
 import { normalizeMbtiType } from '../../../lib/astrology';
 import { compatibility, user } from '../../../lib/db';
 import { MBTI_TYPES, RELATIONSHIP_TYPES, type RelationshipType } from '../../../lib/shared';
-import { eq, and, desc, sql, count } from 'drizzle-orm';
+import { eq, and, desc, count } from 'drizzle-orm';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
 import { cache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
@@ -12,6 +12,7 @@ import { generationKey, generationSingleFlight } from '../../lib/generation-sing
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Stored, readerGender } from '../../lib/compatibility-generation';
 import { config } from '../../config';
 import { historyItem, readingResponse, shareResponse } from './reading';
+import { historyCursorBefore } from './history-cursor';
 import { refundChecksOnFailure } from './check-limit';
 import { compatCacheKey, unlockForUser } from './unlock';
 
@@ -272,9 +273,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       if (cursor) {
         try {
           const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString());
-          conditions.push(
-            sql`(${compatibility.createdAt}, ${compatibility.id}) < (${new Date(decoded.createdAt)}, ${decoded.id})`
-          );
+          conditions.push(historyCursorBefore(decoded));
         } catch {
           // Invalid cursor, ignore
         }
