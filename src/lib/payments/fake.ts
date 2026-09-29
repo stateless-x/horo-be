@@ -39,11 +39,12 @@ export function createFakeGateway(now: () => Date = () => new Date()): FakeGatew
       return { status, amountSatang, currency };
     },
     // Unknown refs (memory wiped by a restart) are a no-op, like canceling a canceled charge.
+    // A succeeded charge stays succeeded, as at Stripe, and says so.
     async cancelCharge(providerRef) {
       const charge = charges.get(providerRef);
-      if (!charge) return;
-      if (charge.status === 'succeeded') throw new Error(`Fake charge ${providerRef} already succeeded; it can't be canceled`);
-      charge.status = 'canceled';
+      if (charge?.status === 'succeeded') return { status: 'succeeded' };
+      if (charge) charge.status = 'canceled';
+      return { status: 'canceled' };
     },
     // Accepts a canceled charge too: that models a payment that landed just before the cancel.
     simulate(providerRef, outcome) {

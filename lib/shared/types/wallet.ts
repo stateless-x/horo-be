@@ -115,8 +115,8 @@ export type CheckoutResponse =
       orderId: string;
       status: 'pending';
       payment: 'qr';
-      /** `data` is the PromptPay payload to render; `pngUrl` a ready image, when the provider gives one. */
-      qr: { data: string; pngUrl: string | null };
+      /** `data` is the PromptPay payload to render; `pngUrl` and `svgUrl` ready images, when the provider gives them. */
+      qr: { data: string; pngUrl: string | null; svgUrl: string | null };
       /** ISO date. Horo expires the order after this; a late scan still credits. */
       expiresAt: string;
       amountBaht: number;

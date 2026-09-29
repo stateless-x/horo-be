@@ -3,8 +3,8 @@ import type { Order } from '../wallet';
 /**
  * The payment provider seam (docs/wallet.md, Payments). Horo talks to a
  * provider only through this interface; src/lib/payments/index.ts picks the
- * adapter. Adding Stripe (I3) is one adapter file plus its webhook route,
- * which calls handleProviderEvent (events.ts) and nothing else.
+ * adapter. Stripe is one adapter file (stripe.ts) plus its webhook route
+ * (src/routes/stripe-webhook.ts), which calls handleProviderEvent (events.ts).
  */
 
 export type PaymentProvider = 'stripe' | 'fake';
@@ -36,8 +36,16 @@ export interface PaymentGateway {
   lookupCharge(providerRef: string): Promise<ChargeState>;
   /**
    * Stop the charge from being paid, when Horo expires or replaces its order.
-   * Idempotent: canceling a canceled charge is a no-op. A charge that already
-   * succeeded can't be canceled; the adapter throws, and the webhook pays it.
+   * Idempotent: canceling a canceled charge is a no-op and returns 'canceled'.
+   * A charge that already succeeded can't be canceled: it returns 'succeeded',
+   * and the caller pays the order instead of expiring it (checkout.ts).
    */
-  cancelCharge(providerRef: string): Promise<void>;
+  cancelCharge(providerRef: string): Promise<{ status: 'canceled' | 'succeeded' }>;
+}
+
+/** The provider needs the customer's email for this charge (Stripe PromptPay) and the account has none. */
+export class EmailRequired extends Error {
+  constructor(readonly orderId: string) {
+    super(`Order ${orderId}: the payment provider needs the customer's email, and the account has none`);
+  }
 }

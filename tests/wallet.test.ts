@@ -236,19 +236,16 @@ describe('payment gateway selection', () => {
   });
 
   test('production defaults to stripe; elsewhere the default is fake', () => {
-    expect(selectGateway({ NODE_ENV: 'production' }).provider).toBe('stripe');
+    const live = { secretKey: 'sk_live_x', webhookSecret: 'whsec_x' };
+    const sandbox = { secretKey: 'sk_test_x', webhookSecret: '' };
+    expect(selectGateway({ NODE_ENV: 'production' }, live).provider).toBe('stripe');
     expect(selectGateway({ NODE_ENV: 'development' }).provider).toBe('fake');
     expect(selectGateway({}).provider).toBe('fake');
-    expect(selectGateway({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'stripe' }).provider).toBe('stripe');
+    expect(selectGateway({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'stripe' }, sandbox).provider).toBe('stripe');
   });
 
   test('an unknown provider throws', () => {
     expect(() => selectGateway({ PAYMENT_PROVIDER: 'paypal' })).toThrow('Unknown PAYMENT_PROVIDER');
-  });
-
-  test('the stripe adapter is a stub until I3', async () => {
-    const stripe = selectGateway({ NODE_ENV: 'production' });
-    await expect(stripe.lookupCharge('pi_1')).rejects.toThrow('not implemented (I3)');
   });
 });
 
@@ -271,15 +268,16 @@ describe('fake gateway', () => {
   test('cancel is idempotent, and a payment can still land on a canceled charge', async () => {
     const fake = createFakeGateway();
     await fake.startCharge(order, { email: null });
-    await fake.cancelCharge('fake_o1');
-    await fake.cancelCharge('fake_o1');
-    await fake.cancelCharge('fake_unknown');
+    expect(await fake.cancelCharge('fake_o1')).toEqual({ status: 'canceled' });
+    expect(await fake.cancelCharge('fake_o1')).toEqual({ status: 'canceled' });
+    expect(await fake.cancelCharge('fake_unknown')).toEqual({ status: 'canceled' });
     expect((await fake.lookupCharge('fake_o1')).status).toBe('canceled');
     expect(fake.simulate('fake_o1', 'succeeded')).toEqual({
       eventRef: 'fake_evt_fake_o1_succeeded',
       state: { status: 'succeeded', amountSatang: 4900, currency: 'THB' },
     });
-    await expect(fake.cancelCharge('fake_o1')).rejects.toThrow('already succeeded');
+    expect(await fake.cancelCharge('fake_o1')).toEqual({ status: 'succeeded' });
+    expect((await fake.lookupCharge('fake_o1')).status).toBe('succeeded');
   });
 });
 
@@ -644,7 +642,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
   }
 
   async function fakeOrder(fake: FakeGateway, userId: string, packId: keyof typeof PACKS = 'p49', unlockRef?: string) {
-    return startCheckout({ userId, email: `${userId}@wallet.test`, packId, unlockRef }, { wallet, gateway: fake });
+    return startCheckout({ userId, email: `${userId}@wallet.test`, packId, unlockRef }, paymentsFor(fake).checkout);
   }
 
   /** The fake's webhook for this order, as the provider would send it. */
@@ -770,6 +768,33 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     await handle(webhook(fake, order.providerRef!, 'succeeded'));
     await handle(webhook(fake, order.providerRef!, 'succeeded'));
     expect((await orderRow(order.id)).status).toBe('paid');
+    expect(await wallet.balance(userId)).toBe(49);
+  });
+
+  test('expiry finds the charge already succeeded (webhook not yet in): pays the order instead of expiring it', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { checkout } = paymentsFor(fake);
+    const paid = await fakeOrder(fake, userId, 'p99');
+    const unpaid = await fakeOrder(fake, userId);
+    fake.simulate(paid.providerRef!, 'succeeded'); // the scan landed; no webhook yet
+    const late = new Date(paid.expiresAt!.getTime() + 60_000);
+    expect(await expireStaleOrders(late, checkout)).toContain(unpaid.id);
+    expect(await expireStaleOrders(late, checkout)).not.toContain(paid.id);
+    expect(await orderRow(paid.id)).toMatchObject({ status: 'paid', expiredAt: null });
+    expect(await orderRow(unpaid.id)).toMatchObject({ status: 'expired' });
+    expect((await eventsOf(paid.id)).map((row) => [row.kind, row.eventRef])).toEqual([['succeeded', `lookup:${paid.providerRef}:succeeded`]]);
+    expect(await wallet.balance(userId)).toBe(109);
+  });
+
+  test('a new QR for a row whose old charge already succeeded pays the old order and still starts the new one', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const first = await fakeOrder(fake, userId, 'p49', 'row-paid');
+    fake.simulate(first.providerRef!, 'succeeded');
+    const second = await fakeOrder(fake, userId, 'p49', 'row-paid');
+    expect((await orderRow(first.id)).status).toBe('paid');
+    expect((await orderRow(second.id)).status).toBe('pending');
     expect(await wallet.balance(userId)).toBe(49);
   });
 

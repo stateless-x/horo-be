@@ -1,6 +1,6 @@
 ---
 type: SPEC
-status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29); payment seam with a fake provider, order state machine, payment_events and the ฿399 pack built, the Stripe adapter not built (I2, 2026-09-29)
+status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29); payment seam with a fake provider, order state machine, payment_events and the ฿399 pack built (I2, 2026-09-29); Stripe PromptPay adapter and webhook built, tested against the sandbox, not live (I3, 2026-09-29)
 scope: มู currency: pricing, orders and payments, the append-only ledger, spend/refund/credit rules, wallet routes
 last_reviewed: 2026-09-29
 owner: backend
@@ -27,16 +27,20 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 | `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, canAfford, hasPaid, spendWithin/spend, refundSpend, createOrder/getOrder, the order state machine (markPaidWithin/markPaid, markFailedWithin, attachCharge, expireStale, expireSuperseded, markNeedsReviewWithin), creditOrder, adjust, history/ledger (partner names and purchase baht joined); `LedgerActor`, `insertLedger`, `ledgerBy` |
 | `src/lib/payments/gateway.ts` | `PaymentGateway`: the provider seam (`startCharge`, `lookupCharge`, `cancelCharge`) |
 | `src/lib/payments/index.ts` | `selectGateway`, `paymentGateway`: the one place the adapter is chosen (`PAYMENT_PROVIDER`) |
-| `src/lib/payments/fake.ts`, `stripe.ts` | The fake provider (dev, tests; `simulate`) and the Stripe stub (I3) |
+| `src/lib/payments/fake.ts` | The fake provider (dev, tests; `simulate`) |
+| `src/lib/payments/stripe.ts` | The Stripe PromptPay adapter: `createStripeClient` (key-mode check), `createStripeGateway`, `chargeState`, `StripeCallFailed`, `StripeNoQr` |
+| `src/routes/stripe-webhook.ts` | `POST /webhooks/stripe`: signature check on the raw body, then `handleProviderEvent` |
 | `src/lib/payments/events.ts` | `handleProviderEvent`: every provider notification, recorded then applied |
 | `src/lib/payments/checkout.ts` | `startCheckout`, `refreshOrder` (missed-webhook recovery), `expireStaleOrders` |
 | `src/lib/entitlements.ts` | `checkUnlock` + `chargeUnlockWithin`: the ดวงคู่ unlock seam, charged with delivery |
-| `src/lib/order-fulfilment.ts` | `fulfilPaidOrder`: credit a paid order, then unlock its `unlock_ref` (one-flow purchase) |
+| `src/lib/order-fulfilment.ts` | `fulfilPaidOrder`: credit a paid order, then unlock its `unlock_ref` (one-flow purchase); `fulfilPaidOrderUnlockLater`: the same with the unlock not awaited (the Stripe webhook) |
 | `src/systems/compatibility/unlock.ts` | `dbUnlockStore`, `unlockForUser`: the atomic unlock the route and fulfilment share |
 | `src/routes/wallet.ts` | `/api/wallet` routes and the dev-only grant and pay |
 | `lib/shared/types/wallet.ts` | IDs and response shapes shared with horo-fe (`bun run sync:types`) |
 | `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant and history guards, actor mapping, disabled routes, gateway selection, the fake; the ledger block (actors, adjust refusals, history paging, the order state machine, payment_events, recovery, checkout, dev pay) needs a local Postgres |
 | `tests/compatibility-v4.test.ts` | The unlock route order; the one-flow purchase on a local Postgres |
+| `tests/stripe.test.ts` | The adapter on a fake Stripe client, key-mode and startup checks, the webhook route; the webhook on a local Postgres |
+| `tests/stripe-sandbox.test.ts` | Real calls to the Stripe sandbox; runs only with a `sk_test_` key (Testing) |
 
 **Contents.**
 - Built: Prices and rules · Ledger invariants (with actors) · Operations · The ดวงคู่ unlock · One-flow purchase · Payments · Routes.
@@ -173,13 +177,14 @@ state; `?verify=1` only triggers the ask.**
   per order: the order id is the provider's idempotency key.
 - `lookupCharge(providerRef)` → `{ status: pending | succeeded | failed | canceled, amountSatang, currency }`, the
   currency in ISO upper case.
-- `cancelCharge(providerRef)`: idempotent; canceling a canceled charge is a no-op. A charge that already succeeded
-  can't be canceled, so the adapter throws and the webhook pays it.
+- `cancelCharge(providerRef)` → `{ status: 'canceled' | 'succeeded' }`: idempotent; canceling a canceled charge is a
+  no-op and returns `canceled`. A charge that already succeeded can't be canceled and returns `succeeded`; the expiry
+  then pays that order instead of expiring it (Order states).
 
 `selectGateway` (`src/lib/payments/index.ts`) picks the adapter from `PAYMENT_PROVIDER` = `fake` | `stripe`. The default
 is `fake` outside production and `stripe` in production, where `fake` throws. `src/index.ts` imports it first, so a
-production deploy with `fake` never starts. The Stripe adapter is a stub that throws "not implemented (I3)". I3 adds
-that one adapter file plus a webhook route that calls `handleProviderEvent` and nothing else.
+production deploy with `fake` never starts. With `stripe` it also refuses to start without `STRIPE_SECRET_KEY`, with a
+key of the wrong mode, or (production only) without `STRIPE_WEBHOOK_SECRET` (Stripe PromptPay, below).
 
 The fake (`fake.ts`) keeps charges in memory: `providerRef` is `fake_<orderId>`, the QR data `fake:<orderId>`.
 `simulate(providerRef, 'succeeded' | 'failed')` settles a charge and returns the webhook event
@@ -189,8 +194,8 @@ the cancel. A restart empties the map. Canceling an unknown charge is then a no-
 **QR TTL.** `QR_TTL_MINUTES = 15` (`src/lib/pricing.ts`). The adapter sets `expiresAt` = start + 15 min. It is Horo's
 own timer, because Stripe's PromptPay QR has no expiry of its own. A scan after it still pays (below).
 
-**Customer text.** `describeOrder(order)` in `src/lib/pricing.ts` gives "Horo เติม ฿99 (109 มู)" for the provider's
-payment description (I3).
+**Customer text.** `describeOrder(order)` in `src/lib/pricing.ts` gives "Horo เติม ฿99 (109 มู)", the PaymentIntent's
+description.
 
 ### Order states
 
@@ -204,7 +209,10 @@ Each transition runs in one transaction with the order row locked (`SELECT … F
   never touches a paid order.
 - **pending → expired** (`expireStale`, `expireSuperseded`): only `pending` rows are selected, so a paid order never
   expires. The charge is canceled first, inside the transaction. A webhook for that order waits on the row lock, then
-  finds `expired`, which may still be paid.
+  finds `expired`, which may still be paid. When the cancel answers `succeeded` (the customer paid, the webhook isn't
+  in yet), the order is left `pending`; after the transaction commits, `checkout.ts` asks the provider
+  (`lookupCharge`) and pays it through `handleProviderEvent` with event ref `lookup:<providerRef>:succeeded`, as the
+  missed-webhook recovery does. It can't pay inside, because the transaction holds the order row.
 
 Expiry is lazy. There is no cron: `GET /api/wallet/orders/:id` expires that one order when it is past `expires_at`.
 `expireStaleOrders(now)` (`checkout.ts`) does the same for every stale order, for a future sweep.
@@ -253,18 +261,86 @@ audit).
 A non-pending answer goes through `handleProviderEvent` with event ref `lookup:<providerRef>:<status>` and
 `source: 'lookup'`. `?verify=1` is limited to 1 per 5 s per user (`RATE_LIMITS.orderVerify`); a second ask gets 429.
 
+### Stripe PromptPay
+
+`src/lib/payments/stripe.ts`, SDK `stripe` 18.5.0 pinned to API version `2025-08-27.basil`, `timeout: 8000`,
+`maxNetworkRetries: 2`. Retries are safe because every create carries an idempotency key. Under Bun the SDK loads its
+worker build (fetch, SubtleCrypto), so webhook helpers must be the async ones (`constructEventAsync`,
+`generateTestHeaderStringAsync`).
+
+- **startCharge** creates a PaymentIntent: `amount_satang`, `thb`, `payment_method_types: ['promptpay']`, the billing
+  email, `confirm: true`, `describeOrder`, metadata `{ orderId, packId, userId }`, idempotency key `order:<orderId>`.
+  It reads the QR from `next_action.promptpay_display_qr_code` (`data`, `image_url_png`, `image_url_svg`). No QR throws
+  `StripeNoQr`, and nothing is stored on the order.
+- **The email is required.** PromptPay needs the billing email. The session user's email is used; with none, the
+  adapter throws `EmailRequired` before calling Stripe, and checkout answers 409 `{ error: 'email_required' }`. What the
+  client shows then is an open product question [?].
+- **Expiry.** Stripe returns no expiry time for the PromptPay QR, so `expires_at` is Horo's `QR_TTL_MINUTES` timer and
+  is authoritative. Stripe can still expire the attempt itself: it sends `payment_intent.payment_failed` (last error
+  `payment_intent_payment_attempt_expired`) and the intent goes back to `requires_payment_method`, so the order
+  becomes `failed` (checked in the sandbox with "Expire Test Payment", 2026-09-29).
+- **lookupCharge** maps the status: `succeeded` → succeeded; `requires_payment_method`, `requires_action`,
+  `processing` → pending; `canceled` → canceled; anything else throws. The amount is `amount_received` once succeeded,
+  else `amount`; the currency is upper-cased to match `orders.currency`.
+- **cancelCharge** cancels with `cancellation_reason: 'abandoned'`. On `payment_intent_unexpected_state` it retrieves the
+  intent and decides from its status: `canceled` → a no-op, `succeeded` → returns `succeeded` (Order states), anything
+  else throws. Both cases were checked against the sandbox (2026-09-29): Stripe answers
+  `payment_intent_unexpected_state` for an intent already canceled and for one already succeeded. The cancel runs inside the expiry transaction, so a slow Stripe holds that order row for up to about
+  3 × 8 s.
+- **Logging.** A PaymentIntent carries the customer's email. Log ids and statuses only. Stripe errors leave the adapter
+  as `StripeCallFailed` with Stripe's type, code, request id and HTTP status, never its message or payload.
+
+**The webhook** (`src/routes/stripe-webhook.ts`, `POST /webhooks/stripe`) is mounted only when `STRIPE_WEBHOOK_SECRET` is
+set. It verifies `Stripe-Signature` over the raw body (`request.text()`; no `body` in the handler, as in the Resend
+webhook). It acts on `payment_intent.succeeded`, `payment_intent.payment_failed` and `payment_intent.canceled`, taking
+the state from the event type: a failed PromptPay intent is back to `requires_payment_method`, which a lookup reads as
+pending. Every other type is answered 200 and not recorded. Responses:
+- **400**: bad or missing signature; nothing is read or recorded.
+- **200**: the event is recorded, whatever it meant: paid, failed, a duplicate, `unknown_order`, `excess_payment`,
+  `credit_failed_cap`, and `amount_mismatch` and `illegal_transition` (both recorded, then thrown by
+  `handleProviderEvent`, and caught here). A human resolves those; a retry would change nothing.
+- **500**: anything else, e.g. the database is down. Stripe retries. If the event was already recorded (the credit
+  failed after commit), the retry is a duplicate that runs the idempotent fulfilment again.
+
+The webhook fulfils with `fulfilPaidOrderUnlockLater`: record, mark paid and credit are awaited (fast). The ดวงคู่
+unlock (up to about 20 s of generation) runs after the answer, with its own error log. If it fails, the credit stays
+and the door's own unlock (balance now ≥ price) finishes it. The credit is idempotent per order and the unlock charges
+a row once, so a replay does neither twice. The webhook never calls `adjust`.
+
+**Environment.**
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `PAYMENT_PROVIDER` | all | `stripe` or `fake`; default `fake` outside production, `stripe` in production (`fake` refused there) |
+| `STRIPE_SECRET_KEY` | stripe | `sk_live_…`/`rk_live_…` in production only; `sk_test_…`/`rk_test_…` everywhere else. Anything else, or missing, stops startup |
+| `STRIPE_WEBHOOK_SECRET` | stripe | `whsec_…`. Unset: `/webhooks/stripe` is not mounted; in production with `stripe` it stops startup |
+
+**Local webhook testing.** Run the backend with the local database (`horo-be-dev-localdb`, port 3001; see
+`.claude/launch.json`) and `PAYMENT_PROVIDER=stripe` with the sandbox key. Then:
+
+```bash
+stripe listen --api-key "$STRIPE_SECRET_KEY" --forward-to localhost:3001/webhooks/stripe \
+  --events payment_intent.succeeded,payment_intent.payment_failed,payment_intent.canceled
+```
+
+It prints `Your webhook signing secret is whsec_…`. Put that value in `STRIPE_WEBHOOK_SECRET` in `horo-be/.env.local`
+(or the launch command's env) and restart the backend (`bun --hot` does not reload env). In test mode `qr.data` is a `payments.stripe.com/…/test_payment` URL: open it and press "Authorize Test
+Payment" (or "Expire Test Payment") to send the real event. `stripe events resend <evt_id>` replays one, which must
+come back a duplicate.
+
 ## Routes
 
-All routes need a session.
+All `/api/wallet` routes need a session. `POST /webhooks/stripe` needs a valid Stripe signature instead.
 
 | Route | Returns |
 |---|---|
 | `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows; a ดวงคู่ spend or refund carries `refName`, the partner's name, from one left join on `ref_id`, or null once the reading is gone; each row carries `by` and `amountBaht`) |
 | `GET /api/wallet/history?cursor=&limit=&kind=` | `{ entries: LedgerEntry[], nextCursor }`, the session user's rows only, newest first. `limit` 1–50 (default 20), `cursor` a row id, `kind` one of `topup` (purchase, bonus), `spend`, `refund`, `adjust` (admin_adjust), `welcome`. 400 on an invalid query, 404 while the lock is off |
-| `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'qr', qr: { data, pngUrl }, expiresAt, amountBaht }`; 409 `balance_cap`; 404 while the lock is off. `CheckoutResponse` keeps a `payment: 'unavailable'` variant, which no code path returns today |
+| `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'qr', qr: { data, pngUrl, svgUrl }, expiresAt, amountBaht }` (Stripe fills both image URLs; the fake neither); 409 `balance_cap`; 409 `email_required` (Stripe, account without email); 404 while the lock is off. `CheckoutResponse` keeps a `payment: 'unavailable'` variant, which no code path returns today |
 | `GET /api/wallet/orders/:id?verify=1` | the owner's order: `{ orderId, packId, status, amountSatang, units, createdAt, paidAt, expiresAt, balance }`, after lazy expiry and recovery (Payments); 429 on a second `verify` within 5 s; 404 when not the owner's |
 | `POST /api/wallet/dev/grant { delta, note }` | dev only; see below |
 | `POST /api/wallet/dev/pay { orderId, outcome? }` | dev only: settle the fake charge (`outcome` `succeeded`, the default, or `failed`), then run `handleProviderEvent` on its webhook event. 409 unless `PAYMENT_PROVIDER` is `fake` and the order has a fake charge |
+| `POST /webhooks/stripe` | Stripe only, mounted when `STRIPE_WEBHOOK_SECRET` is set: 400 bad signature, 200 once the event is recorded, 500 on any other failure so Stripe retries (Stripe PromptPay) |
 
 Both dev routes are mounted only outside production (`devGuard`). Each request checks, in order:
 1. production → 404;
@@ -471,10 +547,20 @@ All behind `INTERNAL_API_SECRET`; horo-admin renders them and offers the CSV dow
 
 ## Deferred
 
-- **Stripe PromptPay (I3):** the adapter in `src/lib/payments/stripe.ts` (PaymentIntent with PromptPay, cancel in
-  `requires_action`) and the webhook route that calls `handleProviderEvent`. The unlock inside fulfilment takes up to
-  about 20 s of generation. If it fails, the credit stays and the door's own unlock (balance now ≥ price) finishes it.
-  Whether the webhook answers first and fulfils in the background is I3's call.
+- **Stripe go-live:** set `STRIPE_SECRET_KEY` (live) and `STRIPE_WEBHOOK_SECRET` in Railway before `PAYMENT_PROVIDER`
+  resolves to `stripe` in production; without them the server refuses to start. Register the endpoint
+  `https://<api>/webhooks/stripe` for the three `payment_intent.*` events.
+- **Checkout without an email:** `email_required` (409) needs a product answer and client copy. The order row created
+  before the charge stays `pending` with no charge, as it does after any failed `startCharge`; nothing expires it and
+  nothing can pay it.
+- **Paid twice for one row:** a new checkout for a ดวงคู่ row whose old charge had already succeeded pays the old order
+  and still starts the new one; if both are paid, the second pack stays as spare มู.
+- **Re-scan of a paid QR (known gap).** Stripe's PromptPay doc ("Repeated payments", docs.stripe.com/payments/promptpay)
+  says a second scan of a used QR can take the money again; Stripe reimburses it to Horo's balance and notifies the
+  account, outside the PaymentIntent. No webhook fires, so `payment_events` never sees it. Until Stripe exposes it as an
+  event: an admin reviews Stripe balance reimbursements weekly and records each as an `excess_payment` row through
+  `/internal/…` (T13); the buyer is refunded by PromptPay transfer (T14). The pay step hides the QR as soon as the order
+  is paid.
 - **Excess payments and cap failures (I2b):** the admin route that credits `excess_payment` and resolves
   `needs_review` orders.
 - **Bonus expiry (later ticket):** `expires_at` is stored but not enforced. No `expire` rows are written, and the balance
@@ -490,6 +576,16 @@ bun test                                   # no DB: the ledger block is skipped
 WALLET_TEST_DATABASE_URL="postgresql://dev:$(docker exec local-postgres printenv POSTGRES_PASSWORD)@localhost:5432/horo_dev" \
   bun test tests/wallet.test.ts            # needs the schema pushed to that local DB
 ```
+
+`tests/stripe.test.ts` has the same local-Postgres block for the webhook. Stripe's sandbox, by hand, passing only the
+key (never `--env-file=.env.local`, which holds the production `DATABASE_URL`):
+
+```bash
+STRIPE_SECRET_KEY="$(grep '^STRIPE_SECRET_KEY=' .env.local | cut -d= -f2- | tr -d '"')" bun test tests/stripe-sandbox.test.ts
+```
+
+It creates a ฿49 PromptPay intent, checks the QR, cancels it twice and looks it up; it skips unless the key starts
+with `sk_test_`. Production runs Bun 1.1.38: `bunx bun@1.1.38 test` reproduces it.
 
 The ledger block refuses any database that is not on this machine. It warms the connection pool first, so concurrent
 calls really overlap. With a cold pool, a missing lock goes unnoticed.

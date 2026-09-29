@@ -1,5 +1,5 @@
 import type { PackId } from '../../../lib/shared/types/wallet';
-import { wallet as appWallet, type Order, type Wallet } from '../wallet';
+import { wallet as appWallet, type CancelCharge, type Wallet } from '../wallet';
 import { handleProviderEvent } from './events';
 import type { PaymentGateway } from './gateway';
 import { paymentGateway } from './index';
@@ -22,12 +22,39 @@ const appDeps: CheckoutDeps = { wallet: appWallet, gateway: paymentGateway, hand
  * `orderId` limits it to one order (the lazy expiry on GET /orders/:id);
  * without it, every stale order of this provider (for a future sweep).
  */
-export function expireStaleOrders(now: Date, deps: Pick<CheckoutDeps, 'wallet' | 'gateway'> = appDeps, orderId?: string) {
-  return deps.wallet.expireStale(now, deps.gateway.provider, (order) => cancel(deps.gateway, order), orderId);
+export function expireStaleOrders(now: Date, deps: CheckoutDeps = appDeps, orderId?: string) {
+  return expireCanceling(deps, (cancel) => deps.wallet.expireStale(now, deps.gateway.provider, cancel, orderId));
 }
 
-async function cancel(gateway: PaymentGateway, order: Order) {
-  if (order.providerRef) await gateway.cancelCharge(order.providerRef);
+/**
+ * Runs an expiry with the gateway's cancel. A charge that had already
+ * succeeded can't be canceled, so its order is not expired; once the expiry
+ * has committed (it holds the order row locked), that order is paid from the
+ * provider's answer like any lookup. Returns the expired order ids.
+ */
+async function expireCanceling(deps: CheckoutDeps, expire: (cancel: CancelCharge) => Promise<string[]>) {
+  const succeeded: string[] = [];
+  const expired = await expire(async (order) => {
+    if (!order.providerRef) return true;
+    const { status } = await deps.gateway.cancelCharge(order.providerRef);
+    if (status === 'succeeded') succeeded.push(order.providerRef);
+    return status === 'canceled';
+  });
+  for (const providerRef of succeeded) await applyLookup(deps, providerRef);
+  return expired;
+}
+
+/** Asks the provider about a charge and applies a settled answer through handleProviderEvent. */
+async function applyLookup(deps: CheckoutDeps, providerRef: string) {
+  const state = await deps.gateway.lookupCharge(providerRef);
+  if (state.status === 'pending') return;
+  await deps.handle({
+    provider: deps.gateway.provider,
+    eventRef: `lookup:${providerRef}:${state.status}`,
+    providerRef,
+    state,
+    source: 'lookup',
+  });
 }
 
 /**
@@ -37,11 +64,12 @@ async function cancel(gateway: PaymentGateway, order: Order) {
  */
 export async function startCheckout(
   input: { userId: string; email: string | null; packId: PackId; unlockRef?: string },
-  deps: Pick<CheckoutDeps, 'wallet' | 'gateway'> = appDeps,
+  deps: CheckoutDeps = appDeps,
   now = new Date(),
 ) {
   if (input.unlockRef) {
-    await deps.wallet.expireSuperseded(input.userId, input.unlockRef, now, (order) => cancel(deps.gateway, order));
+    const { userId, unlockRef } = input;
+    await expireCanceling(deps, (cancel) => deps.wallet.expireSuperseded(userId, unlockRef, now, cancel));
   }
   const created = await deps.wallet.createOrder(input.userId, input.packId, input.unlockRef);
   const charge = await deps.gateway.startCharge(created, { email: input.email });
@@ -68,16 +96,7 @@ export async function refreshOrder(
   const due = order.status === 'pending' && order.expiresAt !== null && order.expiresAt <= now;
   const payable = order.status === 'pending' || order.status === 'expired' || order.status === 'failed';
   if (order.providerRef && order.provider === deps.gateway.provider && payable && (opts.verify || due)) {
-    const state = await deps.gateway.lookupCharge(order.providerRef);
-    if (state.status !== 'pending') {
-      await deps.handle({
-        provider: deps.gateway.provider,
-        eventRef: `lookup:${order.providerRef}:${state.status}`,
-        providerRef: order.providerRef,
-        state,
-        source: 'lookup',
-      });
-    }
+    await applyLookup(deps, order.providerRef);
   }
   await expireStaleOrders(now, deps, order.id);
   return deps.wallet.getOrder(userId, orderId);

@@ -95,9 +95,12 @@ export type Order = typeof orders.$inferSelect;
 /** What a provider returned when it started an order's charge (src/lib/payments/gateway.ts). */
 export type AttachedCharge = {
   providerRef: string;
-  qr: { data: string; imagePngUrl: string | null };
+  qr: { data: string; imagePngUrl: string | null; imageSvgUrl: string | null };
   expiresAt: Date;
 };
+
+/** Cancels an order's charge before it expires; false when the charge already succeeded (keep the order pending). */
+export type CancelCharge = (order: Order) => Promise<boolean>;
 
 /**
  * Who caused a ledger row. Every insert takes one (insertLedger), so the
@@ -414,6 +417,7 @@ export function createWallet(db: DbClient) {
         providerRef: charge.providerRef,
         qrData: charge.qr.data,
         qrPngUrl: charge.qr.imagePngUrl,
+        qrSvgUrl: charge.qr.imageSvgUrl,
         expiresAt: charge.expiresAt,
       })
       .where(and(eq(orders.id, orderId), eq(orders.status, 'pending')))
@@ -426,21 +430,25 @@ export function createWallet(db: DbClient) {
    * pending → expired for the orders matching `which`, locked FOR UPDATE. Each
    * order's charge is canceled first (`cancel`), inside the transaction, so a
    * webhook for it waits and then finds it expired, which may still be paid.
-   * A paid order is never expired: only pending rows are selected.
+   * `cancel` returns false when the charge had already succeeded: that order
+   * stays pending for the caller to pay after commit. A paid order is never
+   * expired: only pending rows are selected. Returns the expired order ids.
    */
-  async function expireOrders(which: ReturnType<typeof and>, now: Date, cancel: (order: Order) => Promise<void>) {
+  async function expireOrders(which: ReturnType<typeof and>, now: Date, cancel: CancelCharge) {
     return db.transaction(async (tx) => {
       const due = await tx.select().from(orders).where(and(eq(orders.status, 'pending'), which)).for('update');
+      const expired: string[] = [];
       for (const order of due) {
-        await cancel(order);
+        if (!(await cancel(order))) continue;
         await tx.update(orders).set({ status: 'expired', expiredAt: now }).where(eq(orders.id, order.id));
+        expired.push(order.id);
       }
-      return due.map((order) => order.id);
+      return expired;
     });
   }
 
   /** Pending orders of this provider whose QR is past expires_at, optionally just one order. */
-  function expireStale(now: Date, provider: string, cancel: (order: Order) => Promise<void>, orderId?: string) {
+  function expireStale(now: Date, provider: string, cancel: CancelCharge, orderId?: string) {
     return expireOrders(
       and(
         eq(orders.provider, provider),
@@ -454,7 +462,7 @@ export function createWallet(db: DbClient) {
   }
 
   /** The user's pending orders for this ดวงคู่ row, replaced by a new checkout (a new QR). */
-  function expireSuperseded(userId: string, unlockRef: string, now: Date, cancel: (order: Order) => Promise<void>) {
+  function expireSuperseded(userId: string, unlockRef: string, now: Date, cancel: CancelCharge) {
     return expireOrders(and(eq(orders.userId, userId), eq(orders.unlockRef, unlockRef)), now, cancel);
   }
 

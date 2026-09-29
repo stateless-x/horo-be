@@ -29,6 +29,7 @@ let analyticsRoutes: any;
 let unsubscribeRoutes: any;
 let internalCampaignRoutes: any;
 let resendWebhookRoutes: any;
+let stripeWebhookRoutes: any;
 let walletRoutes: any;
 
 let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
@@ -114,6 +115,15 @@ if (configErrors.length === 0) {
       console.log('[STARTUP] RESEND_WEBHOOK_SECRET not set — Resend webhook route not mounted');
     }
 
+    // Same rule for Stripe: no signing secret, no endpoint. In production with
+    // PAYMENT_PROVIDER=stripe a missing secret already stopped startup (src/lib/payments).
+    if (config.stripe.webhookSecret) {
+      const stripeWebhookModule = await import('./routes/stripe-webhook');
+      stripeWebhookRoutes = stripeWebhookModule.stripeWebhookRoutes();
+    } else {
+      console.log('[STARTUP] STRIPE_WEBHOOK_SECRET not set — Stripe webhook route not mounted');
+    }
+
     // IMPORTANT: Reassign app to capture the chained routes
     // Mount Better Auth handler using .mount() instead of .all()
     // This is the recommended approach per Better Auth Elysia integration docs
@@ -134,6 +144,11 @@ if (configErrors.length === 0) {
     if (resendWebhookRoutes) {
       app = app.use(resendWebhookRoutes);
       console.log('[STARTUP] Resend webhook route mounted at /webhooks/resend');
+    }
+
+    if (stripeWebhookRoutes) {
+      app = app.use(stripeWebhookRoutes);
+      console.log('[STARTUP] Stripe webhook route mounted at /webhooks/stripe');
     }
 
     // Dev-only surfaces. The two debug routes used to be chained above with the

@@ -28,6 +28,7 @@ export const orders = pgTable('orders', {
   expiresAt: timestamp('expires_at'),
   qrData: text('qr_data'),
   qrPngUrl: text('qr_png_url'),
+  qrSvgUrl: text('qr_svg_url'),
   paidAt: timestamp('paid_at'),
   failedAt: timestamp('failed_at'),
   expiredAt: timestamp('expired_at'),

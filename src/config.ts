@@ -74,6 +74,19 @@ export const config = {
   },
 
   /**
+   * Stripe PromptPay (docs/wallet.md, Payments). Used only when
+   * PAYMENT_PROVIDER=stripe; src/lib/payments/index.ts refuses to start
+   * without them there, or with a key of the wrong mode (live outside
+   * production, test in production). Never logged. Must NEVER join
+   * `authRequired` below — see the scar comment on that list.
+   */
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    // Signs Stripe's webhooks ("whsec_..."). When unset, /webhooks/stripe is not mounted (index.ts).
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+  },
+
+  /**
    * ดวงคู่ locked mode (docs/compatibility-response-fix.md, "Locked mode").
    * Off: a new check writes the full report, as before. On: it writes only the
    * free teaser, and the detail is written on unlock. `unlockFree` lets every

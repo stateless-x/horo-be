@@ -7,7 +7,7 @@ import { BALANCE_CAP, PACKS, PRODUCT_PRICES, bonusPercent } from '../lib/pricing
 import { BalanceCapExceeded, InsufficientBalance, wallet as appWallet, type Wallet } from '../lib/wallet';
 import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { paymentGateway } from '../lib/payments';
-import type { PaymentGateway } from '../lib/payments/gateway';
+import { EmailRequired, type PaymentGateway } from '../lib/payments/gateway';
 import type { FakeGateway } from '../lib/payments/fake';
 import { handleProviderEvent } from '../lib/payments/events';
 import { refreshOrder, startCheckout } from '../lib/payments/checkout';
@@ -94,13 +94,13 @@ export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway
       try {
         const order = await startCheckout(
           { userId: session.userId, email: session.email, packId: parsed.data.packId, unlockRef: parsed.data.unlockRef },
-          { wallet, gateway },
+          { wallet, gateway, handle },
         );
         return {
           orderId: order.id,
           status: 'pending',
           payment: 'qr',
-          qr: { data: order.qrData!, pngUrl: order.qrPngUrl },
+          qr: { data: order.qrData!, pngUrl: order.qrPngUrl, svgUrl: order.qrSvgUrl },
           expiresAt: order.expiresAt!.toISOString(),
           amountBaht: order.amountSatang / 100,
         } satisfies CheckoutResponse;
@@ -108,6 +108,11 @@ export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway
         if (error instanceof BalanceCapExceeded) {
           set.status = 409;
           return { error: 'balance_cap', balance: error.balance, cap: error.cap };
+        }
+        // Stripe PromptPay needs the billing email, and this account has none.
+        if (error instanceof EmailRequired) {
+          set.status = 409;
+          return { error: 'email_required' };
         }
         throw error;
       }
