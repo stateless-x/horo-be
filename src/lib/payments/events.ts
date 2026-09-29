@@ -31,7 +31,8 @@ export type PaymentEventKind =
   | 'excess_payment'
   | 'illegal_transition'
   | 'unknown_order'
-  | 'credit_failed_cap';
+  | 'credit_failed_cap'
+  | 'charge_failed';
 
 export type ProviderEvent = {
   provider: PaymentProvider;
@@ -157,4 +158,23 @@ export async function handleProviderEvent(event: ProviderEvent, deps: EventDeps 
     });
     return { outcome: 'paid' as const, duplicate, credited: false, needsReview: true };
   }
+}
+
+/**
+ * startCharge failed (no email, a Stripe error): the order never got a charge,
+ * so it can't be paid. Marks it failed and records why, in one transaction.
+ * The payload holds the error's class only, never its message.
+ */
+export async function recordChargeFailed(
+  orderId: string,
+  provider: PaymentProvider,
+  error: unknown,
+  deps: Pick<EventDeps, 'db' | 'wallet'> = appDeps,
+) {
+  const errorClass = error instanceof Error ? error.constructor.name : typeof error;
+  await deps.db.transaction(async (tx) => {
+    await tx.select({ id: orders.id }).from(orders).where(eq(orders.id, orderId)).for('update');
+    await record(tx, { provider, eventRef: `charge_failed:${orderId}`, orderId, kind: 'charge_failed', payload: { errorClass } });
+    await deps.wallet.markFailedWithin(tx, orderId);
+  });
 }

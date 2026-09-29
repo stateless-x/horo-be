@@ -7,7 +7,7 @@ import { HTTP_SERVER_OPTIONS } from './lib/http-server-options';
 import { paymentGateway } from './lib/payments';
 
 console.log('[STARTUP] Starting Horo API...');
-console.log('[STARTUP] Payment provider:', paymentGateway.provider);
+console.log('[STARTUP] Payment provider:', paymentGateway?.provider ?? 'none (checkout answers unavailable)');
 console.log('[STARTUP] Attempting to listen on port:', config.port);
 console.log('[STARTUP] CORS allowed origins:');
 config.cors.allowedOrigins.forEach(origin => console.log('[STARTUP]   -', origin));
@@ -115,13 +115,13 @@ if (configErrors.length === 0) {
       console.log('[STARTUP] RESEND_WEBHOOK_SECRET not set — Resend webhook route not mounted');
     }
 
-    // Same rule for Stripe: no signing secret, no endpoint. In production with
-    // PAYMENT_PROVIDER=stripe a missing secret already stopped startup (src/lib/payments).
-    if (config.stripe.webhookSecret) {
+    // Mounted only for the Stripe provider with its signing secret: no secret, no endpoint.
+    // In production with PAYMENT_PROVIDER=stripe a missing secret already stopped startup (src/lib/payments).
+    if (paymentGateway?.provider === 'stripe' && config.stripe.webhookSecret) {
       const stripeWebhookModule = await import('./routes/stripe-webhook');
       stripeWebhookRoutes = stripeWebhookModule.stripeWebhookRoutes();
     } else {
-      console.log('[STARTUP] STRIPE_WEBHOOK_SECRET not set — Stripe webhook route not mounted');
+      console.log('[STARTUP] Stripe webhook route not mounted (needs PAYMENT_PROVIDER=stripe and STRIPE_WEBHOOK_SECRET)');
     }
 
     // IMPORTANT: Reassign app to capture the chained routes

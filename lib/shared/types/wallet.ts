@@ -108,7 +108,7 @@ export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;
 /**
  * POST /api/wallet/checkout. `qr`: a PromptPay QR to show until `expiresAt`;
  * poll GET /api/wallet/orders/:id for the result. `unavailable`: no payment
- * provider can take the order.
+ * provider is configured, and no order was created.
  */
 export type CheckoutResponse =
   | {
@@ -122,8 +122,7 @@ export type CheckoutResponse =
       amountBaht: number;
     }
   | {
-      orderId: string;
-      status: 'pending';
+      /** No payment provider is configured (PAYMENT_PROVIDER unset or none); no order is created. */
       payment: 'unavailable';
       message: string;
     };

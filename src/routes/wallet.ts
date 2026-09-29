@@ -9,8 +9,8 @@ import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
 import { paymentGateway } from '../lib/payments';
 import { EmailRequired, type PaymentGateway } from '../lib/payments/gateway';
 import type { FakeGateway } from '../lib/payments/fake';
-import { handleProviderEvent } from '../lib/payments/events';
-import { refreshOrder, startCheckout } from '../lib/payments/checkout';
+import { handleProviderEvent, recordChargeFailed } from '../lib/payments/events';
+import { AlreadyPaid, refreshOrder, startCheckout, type CheckoutDeps } from '../lib/payments/checkout';
 import {
   CheckoutRequestSchema,
   HISTORY_KINDS,
@@ -34,7 +34,14 @@ const HistoryQuerySchema = z.object({
   kind: z.enum(Object.keys(HISTORY_KINDS) as [HistoryKind, ...HistoryKind[]]).optional(),
 });
 
-export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway = paymentGateway, handle = handleProviderEvent) {
+export function walletRoutes(
+  wallet: Wallet = appWallet,
+  gateway: PaymentGateway | null = paymentGateway,
+  handle = handleProviderEvent,
+  chargeFailed: CheckoutDeps['chargeFailed'] = recordChargeFailed,
+) {
+  // Null when PAYMENT_PROVIDER is none: checkout answers `unavailable`, orders are read as stored.
+  const deps: CheckoutDeps | null = gateway ? { wallet, gateway, handle, chargeFailed } : null;
   return new Elysia({ prefix: '/api/wallet' })
     .get('/', async ({ request, set }) => {
       // Nothing is sellable while ดวงคู่ locked mode is off: no wallet, no welcome gift.
@@ -91,10 +98,13 @@ export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway
         set.status = 400;
         return { error: 'Invalid request', detail: parsed.error.message };
       }
+      if (!deps) {
+        return { payment: 'unavailable', message: 'No payment provider is configured' } satisfies CheckoutResponse;
+      }
       try {
         const order = await startCheckout(
           { userId: session.userId, email: session.email, packId: parsed.data.packId, unlockRef: parsed.data.unlockRef },
-          { wallet, gateway, handle },
+          deps,
         );
         return {
           orderId: order.id,
@@ -113,6 +123,11 @@ export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway
         if (error instanceof EmailRequired) {
           set.status = 409;
           return { error: 'email_required' };
+        }
+        // The row's previous order turned out paid (and was fulfilled): no second charge.
+        if (error instanceof AlreadyPaid) {
+          set.status = 409;
+          return { error: 'already_paid', orderId: error.orderId };
         }
         throw error;
       }
@@ -136,7 +151,9 @@ export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway
           return { error: 'Too many requests', retryAfter: Math.ceil((limit.resetAt - Date.now()) / 1000) };
         }
       }
-      const order = await refreshOrder(session.userId, params.id, { verify }, { wallet, gateway, handle });
+      const order = deps
+        ? await refreshOrder(session.userId, params.id, { verify }, deps)
+        : await wallet.getOrder(session.userId, params.id);
       if (!order) {
         set.status = 404;
         return { error: 'Order not found' };
@@ -201,7 +218,7 @@ async function devGuard<T>(schema: z.ZodType<T>, request: Request, body: unknown
  *   handleProviderEvent, the path the real webhook takes: record, transition,
  *   credit, unlock unlock_ref.
  */
-export function walletDevRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway = paymentGateway, handle = handleProviderEvent) {
+export function walletDevRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway | null = paymentGateway, handle = handleProviderEvent) {
   return new Elysia({ prefix: '/api/wallet/dev' })
     .post('/grant', async ({ request, body, set }) => {
       const guard = await devGuard(DevGrantSchema, request, body, set);
@@ -220,9 +237,9 @@ export function walletDevRoutes(wallet: Wallet = appWallet, gateway: PaymentGate
     .post('/pay', async ({ request, body, set }) => {
       const guard = await devGuard(DevPaySchema, request, body, set);
       if ('refusal' in guard) return guard.refusal;
-      if (gateway.provider !== 'fake') {
+      if (gateway?.provider !== 'fake') {
         set.status = 409;
-        return { error: `dev pay needs PAYMENT_PROVIDER=fake, not ${gateway.provider}` };
+        return { error: `dev pay needs PAYMENT_PROVIDER=fake, not ${gateway?.provider ?? 'none'}` };
       }
       const order = await wallet.getOrder(guard.userId, guard.input.orderId);
       if (!order) {

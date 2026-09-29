@@ -427,24 +427,27 @@ export function createWallet(db: DbClient) {
   }
 
   /**
-   * pending → expired for the orders matching `which`, locked FOR UPDATE. Each
-   * order's charge is canceled first (`cancel`), inside the transaction, so a
-   * webhook for it waits and then finds it expired, which may still be paid.
-   * `cancel` returns false when the charge had already succeeded: that order
-   * stays pending for the caller to pay after commit. A paid order is never
-   * expired: only pending rows are selected. Returns the expired order ids.
+   * pending → expired for the orders matching `which`. Each order's charge is
+   * canceled first (`cancel`), holding no lock, so a slow provider never holds
+   * an order row. Then one UPDATE expires the ones whose cancel went through,
+   * only if they are still pending: a webhook that paid or failed the order in
+   * between wins. `cancel` returns false when the charge had already
+   * succeeded: that order stays pending for the caller to pay. A paid order is
+   * never expired. Returns the expired order ids.
    */
   async function expireOrders(which: ReturnType<typeof and>, now: Date, cancel: CancelCharge) {
-    return db.transaction(async (tx) => {
-      const due = await tx.select().from(orders).where(and(eq(orders.status, 'pending'), which)).for('update');
-      const expired: string[] = [];
-      for (const order of due) {
-        if (!(await cancel(order))) continue;
-        await tx.update(orders).set({ status: 'expired', expiredAt: now }).where(eq(orders.id, order.id));
-        expired.push(order.id);
-      }
-      return expired;
-    });
+    const due = await db.select().from(orders).where(and(eq(orders.status, 'pending'), which));
+    const canceled: string[] = [];
+    for (const order of due) {
+      if (await cancel(order)) canceled.push(order.id);
+    }
+    if (canceled.length === 0) return [];
+    const expired = await db
+      .update(orders)
+      .set({ status: 'expired', expiredAt: now })
+      .where(and(inArray(orders.id, canceled), eq(orders.status, 'pending')))
+      .returning({ id: orders.id });
+    return expired.map((order) => order.id);
   }
 
   /** Pending orders of this provider whose QR is past expires_at, optionally just one order. */

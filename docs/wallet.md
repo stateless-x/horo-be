@@ -1,6 +1,6 @@
 ---
 type: SPEC
-status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29); payment seam with a fake provider, order state machine, payment_events and the ฿399 pack built (I2, 2026-09-29); Stripe PromptPay adapter and webhook built, tested against the sandbox, not live (I3, 2026-09-29)
+status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29); payment seam with a fake provider, order state machine, payment_events and the ฿399 pack built (I2, 2026-09-29); Stripe PromptPay adapter and webhook built, tested against the sandbox, not live (I3, 2026-09-29); PAYMENT_PROVIDER defaults to none, failed charges and already-paid rows handled, cancel outside the row lock (I3b)
 scope: มู currency: pricing, orders and payments, the append-only ledger, spend/refund/credit rules, wallet routes
 last_reviewed: 2026-09-29
 owner: backend
@@ -181,10 +181,12 @@ state; `?verify=1` only triggers the ask.**
   no-op and returns `canceled`. A charge that already succeeded can't be canceled and returns `succeeded`; the expiry
   then pays that order instead of expiring it (Order states).
 
-`selectGateway` (`src/lib/payments/index.ts`) picks the adapter from `PAYMENT_PROVIDER` = `fake` | `stripe`. The default
-is `fake` outside production and `stripe` in production, where `fake` throws. `src/index.ts` imports it first, so a
-production deploy with `fake` never starts. With `stripe` it also refuses to start without `STRIPE_SECRET_KEY`, with a
-key of the wrong mode, or (production only) without `STRIPE_WEBHOOK_SECRET` (Stripe PromptPay, below).
+`selectGateway` (`src/lib/payments/index.ts`) picks the adapter from `PAYMENT_PROVIDER` = `none` | `stripe` | `fake`.
+Unset means `none`, everywhere: no gateway is built, checkout answers `{ payment: 'unavailable' }` without creating an
+order, `/webhooks/stripe` is not mounted, `GET /orders/:id` reads the order as stored, and everything else runs.
+Payments not being configured never stops the API. `stripe` refuses to start without `STRIPE_SECRET_KEY`, with a key of
+the wrong mode, or (production only) without `STRIPE_WEBHOOK_SECRET` (Stripe PromptPay, below). `fake` is refused in
+production. `src/index.ts` imports it first and logs the active provider.
 
 The fake (`fake.ts`) keeps charges in memory: `providerRef` is `fake_<orderId>`, the QR data `fake:<orderId>`.
 `simulate(providerRef, 'succeeded' | 'failed')` settles a charge and returns the webhook event
@@ -192,7 +194,7 @@ The fake (`fake.ts`) keeps charges in memory: `providerRef` is `fake_<orderId>`,
 the cancel. A restart empties the map. Canceling an unknown charge is then a no-op, but looking it up throws.
 
 **QR TTL.** `QR_TTL_MINUTES = 15` (`src/lib/pricing.ts`). The adapter sets `expiresAt` = start + 15 min. It is Horo's
-own timer, because Stripe's PromptPay QR has no expiry of its own. A scan after it still pays (below).
+own timer, because Stripe returns no expiry time for the PromptPay QR. A scan after it still pays (below).
 
 **Customer text.** `describeOrder(order)` in `src/lib/pricing.ts` gives "Horo เติม ฿99 (109 มู)", the PaymentIntent's
 description.
@@ -201,24 +203,30 @@ description.
 
 `pending` → `failed` | `expired` | `paid`; `failed` → `paid`; `expired` → `paid`. `paid` and `refunded` are terminal.
 
-Each transition runs in one transaction with the order row locked (`SELECT … FOR UPDATE`).
+Each transition except expiry runs in one transaction with the order row locked (`SELECT … FOR UPDATE`).
 - **→ paid** (`markPaidWithin`) from `pending`, `failed` or `expired`, once the provider confirms the amount. A late
   scan after Horo's timer, or a success after a failure, must still credit. From `paid` it is a no-op
   (`{ marked: false }`). From `refunded` it throws `IllegalOrderTransition`.
 - **pending → failed** (`markFailedWithin`) on a failed or canceled charge. Other states are left alone. A failure
   never touches a paid order.
-- **pending → expired** (`expireStale`, `expireSuperseded`): only `pending` rows are selected, so a paid order never
-  expires. The charge is canceled first, inside the transaction. A webhook for that order waits on the row lock, then
-  finds `expired`, which may still be paid. When the cancel answers `succeeded` (the customer paid, the webhook isn't
-  in yet), the order is left `pending`; after the transaction commits, `checkout.ts` asks the provider
-  (`lookupCharge`) and pays it through `handleProviderEvent` with event ref `lookup:<providerRef>:succeeded`, as the
-  missed-webhook recovery does. It can't pay inside, because the transaction holds the order row.
+- **pending → expired** (`expireStale`, `expireSuperseded`): the charge is canceled first, holding no lock, so a slow
+  provider never holds an order row. Then one `UPDATE … WHERE status = 'pending'` expires the orders whose cancel went
+  through. A webhook that paid or failed the order in between wins, and a paid order is never expired. An expired order
+  may still be paid by a late webhook. When the cancel answers `succeeded` (the customer paid, the webhook isn't in
+  yet), the order is not expired: `checkout.ts` asks the provider (`lookupCharge`) and pays and fulfils it through
+  `handleProviderEvent` with event ref `lookup:<providerRef>:succeeded`, as the missed-webhook recovery does.
+- **pending → failed on a charge that never started** (`recordChargeFailed`): when `startCharge` throws
+  (`EmailRequired`, a Stripe error), `startCheckout` marks the new order `failed` and records a `charge_failed` event
+  (event ref `charge_failed:<orderId>`, payload `{ errorClass }` only), then rethrows. No pending order without a charge
+  is left behind.
 
 Expiry is lazy. There is no cron: `GET /api/wallet/orders/:id` expires that one order when it is past `expires_at`.
 `expireStaleOrders(now)` (`checkout.ts`) does the same for every stale order, for a future sweep.
 
 **A new QR for the same row.** A checkout with an `unlockRef` first expires the user's pending orders for that row,
-canceling each charge. A late payment on the old order still credits its pack.
+canceling each charge. A late payment on the old order still credits its pack. If an old charge had already
+succeeded, that order is paid and fulfilled (credit, then unlock the row) and the checkout answers 409
+`{ error: 'already_paid', orderId }` with no new order or charge.
 
 ### payment_events
 
@@ -285,8 +293,8 @@ worker build (fetch, SubtleCrypto), so webhook helpers must be the async ones (`
 - **cancelCharge** cancels with `cancellation_reason: 'abandoned'`. On `payment_intent_unexpected_state` it retrieves the
   intent and decides from its status: `canceled` → a no-op, `succeeded` → returns `succeeded` (Order states), anything
   else throws. Both cases were checked against the sandbox (2026-09-29): Stripe answers
-  `payment_intent_unexpected_state` for an intent already canceled and for one already succeeded. The cancel runs inside the expiry transaction, so a slow Stripe holds that order row for up to about
-  3 × 8 s.
+  `payment_intent_unexpected_state` for an intent already canceled and for one already succeeded. The cancel runs
+  before the expiry touches the order, holding no lock.
 - **Logging.** A PaymentIntent carries the customer's email. Log ids and statuses only. Stripe errors leave the adapter
   as `StripeCallFailed` with Stripe's type, code, request id and HTTP status, never its message or payload.
 
@@ -311,7 +319,7 @@ a row once, so a replay does neither twice. The webhook never calls `adjust`.
 
 | Variable | Where | Meaning |
 |---|---|---|
-| `PAYMENT_PROVIDER` | all | `stripe` or `fake`; default `fake` outside production, `stripe` in production (`fake` refused there) |
+| `PAYMENT_PROVIDER` | all | `none` (the default when unset), `stripe` or `fake` (refused in production). `none`: checkout answers `unavailable`, no webhook route |
 | `STRIPE_SECRET_KEY` | stripe | `sk_live_…`/`rk_live_…` in production only; `sk_test_…`/`rk_test_…` everywhere else. Anything else, or missing, stops startup |
 | `STRIPE_WEBHOOK_SECRET` | stripe | `whsec_…`. Unset: `/webhooks/stripe` is not mounted; in production with `stripe` it stops startup |
 
@@ -336,7 +344,7 @@ All `/api/wallet` routes need a session. `POST /webhooks/stripe` needs a valid S
 |---|---|
 | `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows; a ดวงคู่ spend or refund carries `refName`, the partner's name, from one left join on `ref_id`, or null once the reading is gone; each row carries `by` and `amountBaht`) |
 | `GET /api/wallet/history?cursor=&limit=&kind=` | `{ entries: LedgerEntry[], nextCursor }`, the session user's rows only, newest first. `limit` 1–50 (default 20), `cursor` a row id, `kind` one of `topup` (purchase, bonus), `spend`, `refund`, `adjust` (admin_adjust), `welcome`. 400 on an invalid query, 404 while the lock is off |
-| `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'qr', qr: { data, pngUrl, svgUrl }, expiresAt, amountBaht }` (Stripe fills both image URLs; the fake neither); 409 `balance_cap`; 409 `email_required` (Stripe, account without email); 404 while the lock is off. `CheckoutResponse` keeps a `payment: 'unavailable'` variant, which no code path returns today |
+| `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'qr', qr: { data, pngUrl, svgUrl }, expiresAt, amountBaht }` (Stripe fills both image URLs; the fake neither); 409 `balance_cap`; 409 `email_required` (Stripe, account without email; the order is marked failed); 409 `already_paid` `{ orderId }` (the row's previous charge had succeeded; that order is now paid and fulfilled); 404 while the lock is off. With `PAYMENT_PROVIDER` none: `{ payment: 'unavailable', message }` and no order |
 | `GET /api/wallet/orders/:id?verify=1` | the owner's order: `{ orderId, packId, status, amountSatang, units, createdAt, paidAt, expiresAt, balance }`, after lazy expiry and recovery (Payments); 429 on a second `verify` within 5 s; 404 when not the owner's |
 | `POST /api/wallet/dev/grant { delta, note }` | dev only; see below |
 | `POST /api/wallet/dev/pay { orderId, outcome? }` | dev only: settle the fake charge (`outcome` `succeeded`, the default, or `failed`), then run `handleProviderEvent` on its webhook event. 409 unless `PAYMENT_PROVIDER` is `fake` and the order has a fake charge |
@@ -547,14 +555,11 @@ All behind `INTERNAL_API_SECRET`; horo-admin renders them and offers the CSV dow
 
 ## Deferred
 
-- **Stripe go-live:** set `STRIPE_SECRET_KEY` (live) and `STRIPE_WEBHOOK_SECRET` in Railway before `PAYMENT_PROVIDER`
-  resolves to `stripe` in production; without them the server refuses to start. Register the endpoint
-  `https://<api>/webhooks/stripe` for the three `payment_intent.*` events.
-- **Checkout without an email:** `email_required` (409) needs a product answer and client copy. The order row created
-  before the charge stays `pending` with no charge, as it does after any failed `startCharge`; nothing expires it and
-  nothing can pay it.
-- **Paid twice for one row:** a new checkout for a ดวงคู่ row whose old charge had already succeeded pays the old order
-  and still starts the new one; if both are paid, the second pack stays as spare มู.
+- **Stripe go-live:** set `STRIPE_SECRET_KEY` (live) and `STRIPE_WEBHOOK_SECRET` in Railway, then
+  `PAYMENT_PROVIDER=stripe`; with the variable set and a secret missing, the server refuses to start. Register the
+  endpoint `https://<api>/webhooks/stripe` for the three `payment_intent.*` events.
+- **Users without an account email can't top up (known limitation):** checkout answers 409 `email_required`, because
+  Stripe PromptPay needs the billing email, and the settings page has no email field yet.
 - **Re-scan of a paid QR (known gap).** Stripe's PromptPay doc ("Repeated payments", docs.stripe.com/payments/promptpay)
   says a second scan of a used QR can take the money again; Stripe reimburses it to Horo's balance and notifies the
   account, outside the PaymentIntent. No webhook fires, so `payment_events` never sees it. Until Stripe exposes it as an

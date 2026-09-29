@@ -154,7 +154,7 @@ describe('stripe adapter', () => {
   });
 
   test('production with stripe and no webhook secret refuses to start', () => {
-    expect(() => selectGateway({ NODE_ENV: 'production' }, { secretKey: 'sk_live_x', webhookSecret: '' })).toThrow('STRIPE_WEBHOOK_SECRET');
+    expect(() => selectGateway({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'stripe' }, { secretKey: 'sk_live_x', webhookSecret: '' })).toThrow('STRIPE_WEBHOOK_SECRET');
     expect(selectGateway({ PAYMENT_PROVIDER: 'stripe' }, { secretKey: 'sk_test_x', webhookSecret: '' }).provider).toBe('stripe');
   });
 });
