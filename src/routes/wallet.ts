@@ -3,9 +3,14 @@ import { z } from 'zod';
 import { config } from '../config';
 import { validateSessionFromRequest } from '../lib/session';
 import { isLocalDatabaseUrl } from '../lib/dev-regenerate';
-import { BALANCE_CAP, PACKS, PRODUCT_PRICES } from '../lib/pricing';
+import { BALANCE_CAP, PACKS, PRODUCT_PRICES, bonusPercent } from '../lib/pricing';
 import { BalanceCapExceeded, InsufficientBalance, wallet as appWallet, type Wallet } from '../lib/wallet';
-import { fulfilPaidOrder } from '../lib/order-fulfilment';
+import { checkRateLimit, RATE_LIMITS } from '../lib/rate-limit';
+import { paymentGateway } from '../lib/payments';
+import type { PaymentGateway } from '../lib/payments/gateway';
+import type { FakeGateway } from '../lib/payments/fake';
+import { handleProviderEvent } from '../lib/payments/events';
+import { refreshOrder, startCheckout } from '../lib/payments/checkout';
 import {
   CheckoutRequestSchema,
   HISTORY_KINDS,
@@ -19,19 +24,9 @@ import {
 
 /**
  * มู wallet routes (docs/wallet.md). Session required on every route.
- * Payment is not wired yet: checkout records a pending order and says so.
+ * Checkout starts a PromptPay charge through the payment gateway
+ * (src/lib/payments); only the provider changes an order's state.
  */
-
-type Order = NonNullable<Awaited<ReturnType<Wallet['getOrder']>>>;
-
-/**
- * Seam for the PromptPay charge (monetization T5): creates the provider charge
- * for a pending order and returns what the client needs to pay. Until the
- * provider exists there is nothing to start.
- */
-async function startPayment(_order: Order): Promise<Pick<CheckoutResponse, 'payment' | 'message'>> {
-  return { payment: 'unavailable', message: 'ยังเติมมูไม่ได้ตอนนี้ ระบบจ่ายเงินด้วย PromptPay กำลังจะเปิด' };
-}
 
 const HistoryQuerySchema = z.object({
   cursor: z.string().uuid().optional(),
@@ -39,7 +34,7 @@ const HistoryQuerySchema = z.object({
   kind: z.enum(Object.keys(HISTORY_KINDS) as [HistoryKind, ...HistoryKind[]]).optional(),
 });
 
-export function walletRoutes(wallet: Wallet = appWallet) {
+export function walletRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway = paymentGateway, handle = handleProviderEvent) {
   return new Elysia({ prefix: '/api/wallet' })
     .get('/', async ({ request, set }) => {
       // Nothing is sellable while ดวงคู่ locked mode is off: no wallet, no welcome gift.
@@ -56,7 +51,7 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         enabled: true,
         balance,
         cap: BALANCE_CAP,
-        packs: Object.values(PACKS),
+        packs: Object.values(PACKS).map((pack) => ({ ...pack, bonusPercent: bonusPercent(pack) })),
         prices: PRODUCT_PRICES,
         ledger,
       } satisfies WalletResponse;
@@ -97,8 +92,18 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         return { error: 'Invalid request', detail: parsed.error.message };
       }
       try {
-        const order = await wallet.createOrder(session.userId, parsed.data.packId, parsed.data.unlockRef);
-        return { orderId: order.id, status: 'pending', ...(await startPayment(order)) } satisfies CheckoutResponse;
+        const order = await startCheckout(
+          { userId: session.userId, email: session.email, packId: parsed.data.packId, unlockRef: parsed.data.unlockRef },
+          { wallet, gateway },
+        );
+        return {
+          orderId: order.id,
+          status: 'pending',
+          payment: 'qr',
+          qr: { data: order.qrData!, pngUrl: order.qrPngUrl },
+          expiresAt: order.expiresAt!.toISOString(),
+          amountBaht: order.amountSatang / 100,
+        } satisfies CheckoutResponse;
       } catch (error) {
         if (error instanceof BalanceCapExceeded) {
           set.status = 409;
@@ -107,7 +112,7 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         throw error;
       }
     })
-    .get('/orders/:id', async ({ request, params, set }) => {
+    .get('/orders/:id', async ({ request, params, query, set }) => {
       const session = await validateSessionFromRequest(request);
       if (!session) {
         set.status = 401;
@@ -117,7 +122,16 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         set.status = 404;
         return { error: 'Order not found' };
       }
-      const order = await wallet.getOrder(session.userId, params.id);
+      // `?verify=1` asks the provider now (a missed webhook); at most once per 5 s per user.
+      const verify = query.verify === '1';
+      if (verify) {
+        const limit = await checkRateLimit(session.userId, RATE_LIMITS.orderVerify);
+        if (limit.limited) {
+          set.status = 429;
+          return { error: 'Too many requests', retryAfter: Math.ceil((limit.resetAt - Date.now()) / 1000) };
+        }
+      }
+      const order = await refreshOrder(session.userId, params.id, { verify }, { wallet, gateway, handle });
       if (!order) {
         set.status = 404;
         return { error: 'Order not found' };
@@ -130,6 +144,8 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         units: order.unitsBase + order.unitsBonus,
         createdAt: order.createdAt.toISOString(),
         paidAt: order.paidAt?.toISOString() ?? null,
+        expiresAt: order.expiresAt?.toISOString() ?? null,
+        balance: await wallet.balance(session.userId),
       } satisfies OrderStatusResponse;
     });
 }
@@ -139,7 +155,10 @@ const DevGrantSchema = z.object({
   note: z.string().min(1).max(200),
 });
 
-const DevPaySchema = z.object({ orderId: z.string().uuid() });
+const DevPaySchema = z.object({
+  orderId: z.string().uuid(),
+  outcome: z.enum(['succeeded', 'failed']).optional(), // default: succeeded
+});
 
 type Set = { status?: number | string };
 
@@ -172,11 +191,12 @@ async function devGuard<T>(schema: z.ZodType<T>, request: Request, body: unknown
  * Dev and test only, mounted from index.ts only outside production and
  * re-checked per request (devGuard).
  * - grant: add or remove มู on the signed-in user.
- * - pay: stand-in for the T5 webhook. Marks the user's pending order paid and
- *   fulfils it, so the one-flow purchase (credit, then unlock unlock_ref) runs
- *   end to end before a payment provider exists.
+ * - pay: the customer paying (or failing to) on the fake provider. It settles
+ *   the fake charge, then sends the provider's event through
+ *   handleProviderEvent, the path the real webhook takes: record, transition,
+ *   credit, unlock unlock_ref.
  */
-export function walletDevRoutes(wallet: Wallet = appWallet, fulfil = fulfilPaidOrder) {
+export function walletDevRoutes(wallet: Wallet = appWallet, gateway: PaymentGateway = paymentGateway, handle = handleProviderEvent) {
   return new Elysia({ prefix: '/api/wallet/dev' })
     .post('/grant', async ({ request, body, set }) => {
       const guard = await devGuard(DevGrantSchema, request, body, set);
@@ -195,20 +215,20 @@ export function walletDevRoutes(wallet: Wallet = appWallet, fulfil = fulfilPaidO
     .post('/pay', async ({ request, body, set }) => {
       const guard = await devGuard(DevPaySchema, request, body, set);
       if ('refusal' in guard) return guard.refusal;
+      if (gateway.provider !== 'fake') {
+        set.status = 409;
+        return { error: `dev pay needs PAYMENT_PROVIDER=fake, not ${gateway.provider}` };
+      }
       const order = await wallet.getOrder(guard.userId, guard.input.orderId);
       if (!order) {
         set.status = 404;
         return { error: 'Order not found' };
       }
-      await wallet.markPaid(order.id);
-      try {
-        return await fulfil(order.id, { type: 'dev', label: `dev: pay ${order.id}` });
-      } catch (error) {
-        if (error instanceof BalanceCapExceeded) {
-          set.status = 409;
-          return { error: error.message };
-        }
-        throw error;
+      if (order.provider !== 'fake' || !order.providerRef) {
+        set.status = 409;
+        return { error: 'Order has no fake charge' };
       }
+      const { eventRef, state } = (gateway as FakeGateway).simulate(order.providerRef, guard.input.outcome ?? 'succeeded');
+      return handle({ provider: 'fake', eventRef, providerRef: order.providerRef, state, source: 'webhook' });
     });
 }

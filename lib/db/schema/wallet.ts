@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, timestamp, integer, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, integer, boolean, jsonb, unique, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { user } from './users';
 
 /**
@@ -20,12 +20,20 @@ export const orders = pgTable('orders', {
   unitsBase: integer('units_base').notNull(),
   unitsBonus: integer('units_bonus').notNull(),
   status: varchar('status', { length: 16 }).notNull().default('pending'), // OrderStatus
-  provider: varchar('provider', { length: 16 }).notNull(), // 'stripe' | 'manual'
+  provider: varchar('provider', { length: 16 }).notNull(), // 'stripe' | 'fake' | 'manual'; set to the gateway's when its charge starts
   providerRef: text('provider_ref').unique(), // the provider's payment id; null until a charge exists
   // One-flow purchase: the compatibility row to unlock once this order is paid and credited. Null for a plain top-up.
   unlockRef: text('unlock_ref'),
+  // The charge (docs/wallet.md, Payments): the QR to show until expires_at. Null until a charge exists.
+  expiresAt: timestamp('expires_at'),
+  qrData: text('qr_data'),
+  qrPngUrl: text('qr_png_url'),
   paidAt: timestamp('paid_at'),
+  failedAt: timestamp('failed_at'),
+  expiredAt: timestamp('expired_at'),
   refundedAt: timestamp('refunded_at'),
+  // Paid but not credited automatically (e.g. the credit would pass the cap): the admin page lists these.
+  needsReview: boolean('needs_review').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   userIdx: index('orders_user_idx').on(table.userId, table.createdAt),
@@ -67,4 +75,26 @@ export const walletLedger = pgTable('wallet_ledger', {
   spendRefundIdx: uniqueIndex('wallet_ledger_spend_refund_idx')
     .on(table.userId, table.productId, table.refId)
     .where(sql`kind = 'refund' and ref_id is not null`),
+}));
+
+/**
+ * Every notification from a payment provider, recorded before it changes
+ * anything. unique(provider, event_ref) is the webhook idempotency guarantee:
+ * a replayed event inserts nothing and changes no order. Append-only.
+ * kind: the charge state ('succeeded', 'failed', 'canceled', 'pending') or why
+ * it was held back ('amount_mismatch', 'excess_payment', 'illegal_transition',
+ * 'unknown_order', 'credit_failed_cap'). PaymentEventKind in src/lib/payments/events.ts.
+ */
+export const paymentEvents = pgTable('payment_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  provider: varchar('provider', { length: 16 }).notNull(),
+  eventRef: text('event_ref').notNull(),
+  orderId: uuid('order_id').references(() => orders.id), // null when no order matches the charge
+  kind: varchar('kind', { length: 32 }).notNull(),
+  payload: jsonb('payload'), // what the provider reported: status, amount, currency (and the expected amount on a mismatch)
+  payloadHash: text('payload_hash'), // sha256 of the payload
+  receivedAt: timestamp('received_at').defaultNow().notNull(),
+}, (table) => ({
+  eventUnique: unique('payment_events_provider_event_ref_unique').on(table.provider, table.eventRef),
+  orderIdx: index('payment_events_order_idx').on(table.orderId),
 }));

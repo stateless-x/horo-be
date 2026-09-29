@@ -3,8 +3,11 @@ import { cors } from '@elysiajs/cors';
 import { config, configErrors, llmConfigErrors } from './config';
 import { getRedisClient } from './lib/redis';
 import { HTTP_SERVER_OPTIONS } from './lib/http-server-options';
+// Chosen at import: PAYMENT_PROVIDER=fake in production throws here and the server never starts.
+import { paymentGateway } from './lib/payments';
 
 console.log('[STARTUP] Starting Horo API...');
+console.log('[STARTUP] Payment provider:', paymentGateway.provider);
 console.log('[STARTUP] Attempting to listen on port:', config.port);
 console.log('[STARTUP] CORS allowed origins:');
 config.cors.allowedOrigins.forEach(origin => console.log('[STARTUP]   -', origin));
@@ -212,7 +215,7 @@ if (configErrors.length === 0) {
               : 'No rate limit found',
           };
         });
-      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*, relock/compatibility), /api/wallet/dev/grant, /api/debug/session, /api/debug/reset-rate-limit');
+      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*, relock/compatibility), /api/wallet/dev/grant, /api/wallet/dev/pay, /api/debug/session, /api/debug/reset-rate-limit');
     }
 
     console.log('[STARTUP] Auth and routes loaded successfully');

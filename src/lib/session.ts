@@ -9,6 +9,8 @@ import { auth } from './auth';
 
 export interface ValidatedSession {
   userId: string;
+  /** The account email, handed to the payment provider as the customer. */
+  email: string | null;
   expiresAt: Date;
 }
 
@@ -60,6 +62,7 @@ export async function validateSessionFromRequest(request: Request): Promise<Vali
     console.log('[Session] Validated user:', result.user.id);
     return {
       userId: result.user.id,
+      email: result.user.email ?? null,
       expiresAt: result.session.expiresAt,
     };
   } catch (error) {

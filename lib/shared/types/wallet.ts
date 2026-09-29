@@ -12,7 +12,7 @@ export const PRODUCT_IDS = ['compat_unlock', 'month_pass', 'year_reading', 'wall
 export type ProductId = (typeof PRODUCT_IDS)[number];
 
 /** Packs sold for baht. */
-export const PACK_IDS = ['p49', 'p99', 'p199'] as const;
+export const PACK_IDS = ['p49', 'p99', 'p199', 'p399'] as const;
 export type PackId = (typeof PACK_IDS)[number];
 
 /** Why a ledger row exists. The ledger is append-only; a correction is a new row. */
@@ -52,6 +52,11 @@ export interface WalletPack {
   bonus: number;
 }
 
+/** A pack as GET /api/wallet offers it: with the bonus as a whole percent of the base, rounded down (the chip). */
+export interface WalletPackOffer extends WalletPack {
+  bonusPercent: number;
+}
+
 export interface LedgerEntry {
   id: string;
   delta: number;
@@ -80,7 +85,7 @@ export interface WalletState {
   enabled: true;
   balance: number;
   cap: number;
-  packs: WalletPack[];
+  packs: WalletPackOffer[];
   prices: Record<ProductId, number>;
   /** The newest 20 rows, newest first. */
   ledger: LedgerEntry[];
@@ -100,13 +105,28 @@ export const CheckoutRequestSchema = z.object({
 });
 export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;
 
-/** POST /api/wallet/checkout. `payment` is 'unavailable' until the PromptPay provider is wired (monetization T5). */
-export interface CheckoutResponse {
-  orderId: string;
-  status: 'pending';
-  payment: 'unavailable';
-  message: string;
-}
+/**
+ * POST /api/wallet/checkout. `qr`: a PromptPay QR to show until `expiresAt`;
+ * poll GET /api/wallet/orders/:id for the result. `unavailable`: no payment
+ * provider can take the order.
+ */
+export type CheckoutResponse =
+  | {
+      orderId: string;
+      status: 'pending';
+      payment: 'qr';
+      /** `data` is the PromptPay payload to render; `pngUrl` a ready image, when the provider gives one. */
+      qr: { data: string; pngUrl: string | null };
+      /** ISO date. Horo expires the order after this; a late scan still credits. */
+      expiresAt: string;
+      amountBaht: number;
+    }
+  | {
+      orderId: string;
+      status: 'pending';
+      payment: 'unavailable';
+      message: string;
+    };
 
 /** GET /api/wallet/orders/:id */
 export interface OrderStatusResponse {
@@ -118,6 +138,10 @@ export interface OrderStatusResponse {
   units: number;
   createdAt: string;
   paidAt: string | null;
+  /** ISO date the QR stops being offered; null before a charge exists. */
+  expiresAt: string | null;
+  /** The owner's มู balance now, so a paid order can show the new total. */
+  balance: number;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { db as appDb } from './db';
 import { compatibility, orders, walletLedger, type DbClient } from '../../lib/db';
 import {
@@ -74,6 +74,30 @@ export class OrderNotPaid extends Error {
     super(`Order ${orderId} is ${status}, not paid`);
   }
 }
+
+/**
+ * An order transition the state machine forbids: paid only from pending,
+ * failed or expired; refunded is terminal (docs/wallet.md, Payments).
+ */
+export class IllegalOrderTransition extends Error {
+  constructor(
+    readonly orderId: string,
+    readonly from: string,
+    readonly to: string,
+  ) {
+    super(`Order ${orderId}: ${from} → ${to} is not allowed`);
+  }
+}
+
+/** An order row. */
+export type Order = typeof orders.$inferSelect;
+
+/** What a provider returned when it started an order's charge (src/lib/payments/gateway.ts). */
+export type AttachedCharge = {
+  providerRef: string;
+  qr: { data: string; imagePngUrl: string | null };
+  expiresAt: Date;
+};
 
 /**
  * Who caused a ledger row. Every insert takes one (insertLedger), so the
@@ -341,16 +365,97 @@ export function createWallet(db: DbClient) {
   }
 
   /**
-   * Marks a pending order paid. The provider's webhook calls this (T5); a
-   * replay, or an order in any other state, changes nothing.
+   * The order state machine (docs/wallet.md, Payments). Each transition runs
+   * with the order row locked (SELECT … FOR UPDATE).
+   *
+   * → paid from pending, failed or expired: the provider confirmed the money,
+   * and a late scan after Horo's timer or a failure must still credit. From
+   * paid it is a no-op ({ marked: false }); from refunded it throws
+   * IllegalOrderTransition. The caller checks the amount first
+   * (src/lib/payments/events.ts) and records the event in the same transaction.
    */
+  async function markPaidWithin(tx: WalletTx, orderId: string, now = new Date()) {
+    const [order] = await tx.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).for('update');
+    if (!order) throw new Error(`Order ${orderId} not found`);
+    if (order.status === 'paid') return { marked: false };
+    if (order.status === 'refunded') throw new IllegalOrderTransition(orderId, order.status, 'paid');
+    await tx.update(orders).set({ status: 'paid', paidAt: now }).where(eq(orders.id, orderId));
+    return { marked: true };
+  }
+
+  /** markPaidWithin in a transaction of its own. */
   async function markPaid(orderId: string) {
-    const updated = await db
+    return db.transaction((tx) => markPaidWithin(tx, orderId));
+  }
+
+  /** pending → failed. Any other state is left alone: paid is terminal, and a failure after expiry changes nothing. */
+  async function markFailedWithin(tx: WalletTx, orderId: string, now = new Date()) {
+    const [order] = await tx.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).for('update');
+    if (!order) throw new Error(`Order ${orderId} not found`);
+    if (order.status !== 'pending') return { marked: false };
+    await tx.update(orders).set({ status: 'failed', failedAt: now }).where(eq(orders.id, orderId));
+    return { marked: true };
+  }
+
+  /** Flags a paid order the webhook could not credit, for the admin page. */
+  async function markNeedsReviewWithin(tx: WalletTx, orderId: string) {
+    await tx.update(orders).set({ needsReview: true }).where(eq(orders.id, orderId));
+  }
+
+  /**
+   * Stores the provider's charge on a pending order: provider, providerRef, the
+   * QR and when Horo stops offering it.
+   */
+  async function attachCharge(orderId: string, provider: string, charge: AttachedCharge): Promise<Order> {
+    const [order] = await db
       .update(orders)
-      .set({ status: 'paid', paidAt: new Date() })
+      .set({
+        provider,
+        providerRef: charge.providerRef,
+        qrData: charge.qr.data,
+        qrPngUrl: charge.qr.imagePngUrl,
+        expiresAt: charge.expiresAt,
+      })
       .where(and(eq(orders.id, orderId), eq(orders.status, 'pending')))
-      .returning({ id: orders.id });
-    return { marked: updated.length > 0 };
+      .returning();
+    if (!order) throw new Error(`Order ${orderId} is no longer pending; its charge was not stored`);
+    return order;
+  }
+
+  /**
+   * pending → expired for the orders matching `which`, locked FOR UPDATE. Each
+   * order's charge is canceled first (`cancel`), inside the transaction, so a
+   * webhook for it waits and then finds it expired, which may still be paid.
+   * A paid order is never expired: only pending rows are selected.
+   */
+  async function expireOrders(which: ReturnType<typeof and>, now: Date, cancel: (order: Order) => Promise<void>) {
+    return db.transaction(async (tx) => {
+      const due = await tx.select().from(orders).where(and(eq(orders.status, 'pending'), which)).for('update');
+      for (const order of due) {
+        await cancel(order);
+        await tx.update(orders).set({ status: 'expired', expiredAt: now }).where(eq(orders.id, order.id));
+      }
+      return due.map((order) => order.id);
+    });
+  }
+
+  /** Pending orders of this provider whose QR is past expires_at, optionally just one order. */
+  function expireStale(now: Date, provider: string, cancel: (order: Order) => Promise<void>, orderId?: string) {
+    return expireOrders(
+      and(
+        eq(orders.provider, provider),
+        isNotNull(orders.expiresAt),
+        lte(orders.expiresAt, now),
+        orderId ? eq(orders.id, orderId) : undefined,
+      ),
+      now,
+      cancel,
+    );
+  }
+
+  /** The user's pending orders for this ดวงคู่ row, replaced by a new checkout (a new QR). */
+  function expireSuperseded(userId: string, unlockRef: string, now: Date, cancel: (order: Order) => Promise<void>) {
+    return expireOrders(and(eq(orders.userId, userId), eq(orders.unlockRef, unlockRef)), now, cancel);
   }
 
   /**
@@ -391,7 +496,11 @@ export function createWallet(db: DbClient) {
     return (await history(userId, { limit })).entries;
   }
 
-  return { balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder, markPaid, creditOrder, adjust, history, ledger };
+  return {
+    balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder,
+    markPaidWithin, markPaid, markFailedWithin, markNeedsReviewWithin, attachCharge, expireStale, expireSuperseded,
+    creditOrder, adjust, history, ledger,
+  };
 }
 
 export type Wallet = ReturnType<typeof createWallet>;

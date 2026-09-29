@@ -1,11 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { asc, eq, inArray, sql } from 'drizzle-orm';
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { and, asc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { config } from '../src/config';
 import { chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
 import { isLocalDatabaseUrl } from '../src/lib/dev-regenerate';
-import { BALANCE_CAP, PACKS, PRODUCT_PRICES, WELCOME_GIFT, packAmountSatang } from '../src/lib/pricing';
+import { BALANCE_CAP, PACKS, PRODUCT_PRICES, QR_TTL_MINUTES, WELCOME_GIFT, bonusPercent, describeOrder, packAmountSatang } from '../src/lib/pricing';
 import {
   BalanceCapExceeded,
+  IllegalOrderTransition,
   InsufficientBalance,
   InvalidAdjustment,
   OrderNotPaid,
@@ -15,7 +16,13 @@ import {
   type Wallet,
 } from '../src/lib/wallet';
 import { walletDevRoutes, walletRoutes } from '../src/routes/wallet';
-import { birthProfiles, compatibility, createDbClient, orders, walletLedger, user, type DbClient } from '../lib/db';
+import * as session from '../src/lib/session';
+import { fulfilPaidOrder } from '../src/lib/order-fulfilment';
+import { selectGateway } from '../src/lib/payments';
+import { createFakeGateway, type FakeGateway } from '../src/lib/payments/fake';
+import { PaymentAmountMismatch, handleProviderEvent, type EventDeps, type ProviderEvent } from '../src/lib/payments/events';
+import { expireStaleOrders, refreshOrder, startCheckout, type CheckoutDeps } from '../src/lib/payments/checkout';
+import { birthProfiles, compatibility, createDbClient, orders, paymentEvents, walletLedger, user, type DbClient } from '../lib/db';
 
 /**
  * The มู ledger (docs/wallet.md).
@@ -29,16 +36,31 @@ import { birthProfiles, compatibility, createDbClient, orders, walletLedger, use
  */
 
 describe('pricing', () => {
-  test('packs: 49 → 49, 99 → 109, 199 → 229; bonus on the bigger packs only', () => {
+  test('packs: 49 → 49, 99 → 109, 199 → 229, 399 → 479; bonus on the bigger packs only', () => {
     expect(Object.values(PACKS).map((pack) => [pack.priceBaht, pack.base + pack.bonus])).toEqual([
       [49, 49],
       [99, 109],
       [199, 229],
+      [399, 479],
     ]);
     for (const pack of Object.values(PACKS)) {
       expect(pack.base).toBe(pack.priceBaht); // 1 มู = ฿1 for the base units
       expect(packAmountSatang(pack)).toBe(pack.priceBaht * 100);
     }
+  });
+
+  test('bonusPercent is the bonus over the base, floored: 0, 10, 15, 20', () => {
+    // 10/99, 30/199 and 80/399 are each a little over the whole percent.
+    expect(Object.values(PACKS).map(bonusPercent)).toEqual([0, 10, 15, 20]);
+  });
+
+  test('every pack fits under the balance cap from an empty wallet', () => {
+    for (const pack of Object.values(PACKS)) expect(pack.base + pack.bonus).toBeLessThanOrEqual(BALANCE_CAP);
+  });
+
+  test('describeOrder names the baht and the มู credited', () => {
+    expect(describeOrder({ amountSatang: packAmountSatang(PACKS.p99), unitsBase: 99, unitsBonus: 10 })).toBe('Horo เติม ฿99 (109 มู)');
+    expect(describeOrder({ amountSatang: 39_900, unitsBase: 399, unitsBonus: 80 })).toBe('Horo เติม ฿399 (479 มู)');
   });
 
   test('the welcome gift is exactly one ดวงคู่ unlock', () => {
@@ -208,6 +230,59 @@ describe('POST /api/wallet/dev/grant guards', () => {
   });
 });
 
+describe('payment gateway selection', () => {
+  test('production refuses PAYMENT_PROVIDER=fake', () => {
+    expect(() => selectGateway({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'fake' })).toThrow('refused in production');
+  });
+
+  test('production defaults to stripe; elsewhere the default is fake', () => {
+    expect(selectGateway({ NODE_ENV: 'production' }).provider).toBe('stripe');
+    expect(selectGateway({ NODE_ENV: 'development' }).provider).toBe('fake');
+    expect(selectGateway({}).provider).toBe('fake');
+    expect(selectGateway({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'stripe' }).provider).toBe('stripe');
+  });
+
+  test('an unknown provider throws', () => {
+    expect(() => selectGateway({ PAYMENT_PROVIDER: 'paypal' })).toThrow('Unknown PAYMENT_PROVIDER');
+  });
+
+  test('the stripe adapter is a stub until I3', async () => {
+    const stripe = selectGateway({ NODE_ENV: 'production' });
+    await expect(stripe.lookupCharge('pi_1')).rejects.toThrow('not implemented (I3)');
+  });
+});
+
+describe('fake gateway', () => {
+  const order = { id: 'o1', amountSatang: 4900, currency: 'THB' } as Parameters<FakeGateway['startCharge']>[0];
+
+  test('startCharge is idempotent per order and expires QR_TTL_MINUTES from now', async () => {
+    const at = new Date('2026-09-29T10:00:00Z');
+    const fake = createFakeGateway(() => at);
+    const first = await fake.startCharge(order, { email: null });
+    expect(first).toEqual({
+      providerRef: 'fake_o1',
+      qr: { data: 'fake:o1', imagePngUrl: null, imageSvgUrl: null },
+      expiresAt: new Date(at.getTime() + QR_TTL_MINUTES * 60_000),
+    });
+    expect(await fake.startCharge(order, { email: null })).toEqual(first);
+    expect(await fake.lookupCharge('fake_o1')).toEqual({ status: 'pending', amountSatang: 4900, currency: 'THB' });
+  });
+
+  test('cancel is idempotent, and a payment can still land on a canceled charge', async () => {
+    const fake = createFakeGateway();
+    await fake.startCharge(order, { email: null });
+    await fake.cancelCharge('fake_o1');
+    await fake.cancelCharge('fake_o1');
+    await fake.cancelCharge('fake_unknown');
+    expect((await fake.lookupCharge('fake_o1')).status).toBe('canceled');
+    expect(fake.simulate('fake_o1', 'succeeded')).toEqual({
+      eventRef: 'fake_evt_fake_o1_succeeded',
+      state: { status: 'succeeded', amountSatang: 4900, currency: 'THB' },
+    });
+    await expect(fake.cancelCharge('fake_o1')).rejects.toThrow('already succeeded');
+  });
+});
+
 const TEST_DB_URL = process.env.WALLET_TEST_DATABASE_URL;
 
 const DEV = { type: 'dev', label: 'dev: test' } as const;
@@ -257,7 +332,9 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
 
   afterAll(async () => {
     if (!db || userIds.length === 0) return;
-    // Test cleanup only: the app never deletes ledger rows.
+    // Test cleanup only: the app never deletes ledger or payment event rows.
+    const testOrders = db.select({ id: orders.id }).from(orders).where(inArray(orders.userId, userIds));
+    await db.delete(paymentEvents).where(or(inArray(paymentEvents.orderId, testOrders), like(paymentEvents.eventRef, `${run}%`)));
     await db.delete(walletLedger).where(inArray(walletLedger.userId, userIds));
     await db.delete(orders).where(inArray(orders.userId, userIds));
     const profiles = await db.select({ id: birthProfiles.id }).from(birthProfiles).where(inArray(birthProfiles.userId, userIds));
@@ -545,5 +622,352 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
       expect(json).not.toContain('actorLabel');
     }
     expect((await wallet.ledger(userId, 20))[0]).toMatchObject({ kind: 'admin_adjust', by: 'team', note: 'goodwill' });
+  });
+
+  // ---- Payments (docs/wallet.md, Payments): the gateway seam, the order state machine, payment_events.
+
+  /** Unlocks the fulfilment asked for (one-flow orders only). */
+  function paymentsFor(fake: FakeGateway) {
+    const unlocks: string[] = [];
+    const events: EventDeps = {
+      db,
+      wallet,
+      fulfil: (orderId, actor) =>
+        fulfilPaidOrder(orderId, actor, {
+          wallet,
+          unlock: async (_userId, rowId) => (unlocks.push(rowId), { status: 200 }),
+        }),
+    };
+    const handle = (event: ProviderEvent) => handleProviderEvent(event, events);
+    const checkout: CheckoutDeps = { wallet, gateway: fake, handle };
+    return { unlocks, events, handle, checkout };
+  }
+
+  async function fakeOrder(fake: FakeGateway, userId: string, packId: keyof typeof PACKS = 'p49', unlockRef?: string) {
+    return startCheckout({ userId, email: `${userId}@wallet.test`, packId, unlockRef }, { wallet, gateway: fake });
+  }
+
+  /** The fake's webhook for this order, as the provider would send it. */
+  function webhook(fake: FakeGateway, providerRef: string, outcome: 'succeeded' | 'failed'): ProviderEvent {
+    const { eventRef, state } = fake.simulate(providerRef, outcome);
+    return { provider: 'fake', eventRef, providerRef, state, source: 'webhook' };
+  }
+
+  async function orderRow(orderId: string) {
+    const [row] = await db.select().from(orders).where(eq(orders.id, orderId));
+    return row;
+  }
+
+  async function eventsOf(orderId: string) {
+    return db.select().from(paymentEvents).where(eq(paymentEvents.orderId, orderId)).orderBy(asc(paymentEvents.receivedAt));
+  }
+
+  async function creditRows(userId: string) {
+    return db
+      .select({ kind: walletLedger.kind, delta: walletLedger.delta, label: walletLedger.actorLabel })
+      .from(walletLedger)
+      .where(and(eq(walletLedger.userId, userId), inArray(walletLedger.kind, ['purchase', 'bonus', 'admin_adjust'])));
+  }
+
+  function signedInAs(userId: string) {
+    return spyOn(session, 'validateSessionFromRequest').mockResolvedValue({
+      userId,
+      email: `${userId}@wallet.test`,
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+  }
+
+  test('checkout returns the fake QR and its expiry, and stores the charge on the order', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const REAL = config.compat;
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const spy = signedInAs(userId);
+    try {
+      const before = Date.now();
+      const response = await walletRoutes(wallet, fake, handle).handle(
+        new Request('http://localhost/api/wallet/checkout', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ packId: 'p99' }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        status: 'pending',
+        payment: 'qr',
+        qr: { data: `fake:${body.orderId}`, pngUrl: null },
+        amountBaht: 99,
+      });
+      const ttl = Date.parse(body.expiresAt) - before;
+      expect(ttl).toBeGreaterThanOrEqual(QR_TTL_MINUTES * 60_000 - 1000);
+      expect(ttl).toBeLessThanOrEqual(QR_TTL_MINUTES * 60_000 + 5000);
+      expect(await orderRow(body.orderId)).toMatchObject({
+        status: 'pending',
+        provider: 'fake',
+        providerRef: `fake_${body.orderId}`,
+        qrData: `fake:${body.orderId}`,
+      });
+
+      const wallet404 = await walletRoutes(wallet, fake, handle).handle(new Request('http://localhost/api/wallet/'));
+      const state = await wallet404.json();
+      expect(state.packs.map((pack: { id: string; bonusPercent: number }) => [pack.id, pack.bonusPercent])).toEqual([
+        ['p49', 0],
+        ['p99', 10],
+        ['p199', 15],
+        ['p399', 20],
+      ]);
+    } finally {
+      spy.mockRestore();
+      config.compat = REAL;
+    }
+  });
+
+  test('pending → paid credits once; concurrent and replayed duplicates are no-ops', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId, 'p99');
+    const event = webhook(fake, order.providerRef!, 'succeeded');
+    const results = await Promise.all([handle(event), handle(event), handle(event)]);
+    await handle(event);
+    expect(results.filter((result) => !result.duplicate)).toHaveLength(1);
+    expect(await wallet.balance(userId)).toBe(109);
+    expect((await orderRow(order.id)).status).toBe('paid');
+    expect((await eventsOf(order.id)).map((row) => [row.kind, row.eventRef])).toEqual([['succeeded', event.eventRef]]);
+    // The webhook path labels the credit with the provider's event id.
+    expect((await creditRows(userId)).map((row) => row.label)).toEqual([`fake:${event.eventRef}`, `fake:${event.eventRef}`]);
+  });
+
+  test('pending → failed, then failed → paid when the provider confirms: credits exactly once', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId);
+    expect(await handle(webhook(fake, order.providerRef!, 'failed'))).toMatchObject({ outcome: 'failed' });
+    expect((await orderRow(order.id)).failedAt).not.toBeNull();
+    const paid = webhook(fake, order.providerRef!, 'succeeded');
+    await Promise.all([handle(paid), handle(paid)]);
+    expect((await orderRow(order.id)).status).toBe('paid');
+    expect(await wallet.balance(userId)).toBe(49);
+  });
+
+  test('expiry cancels the charge; a late payment on the expired order still credits once', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle, checkout } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId);
+    const early = new Date(order.expiresAt!.getTime() - 1000);
+    expect(await expireStaleOrders(early, checkout)).not.toContain(order.id);
+    const late = new Date(order.expiresAt!.getTime() + 1000);
+    expect(await expireStaleOrders(late, checkout, order.id)).toEqual([order.id]);
+    expect(await orderRow(order.id)).toMatchObject({ status: 'expired' });
+    expect((await fake.lookupCharge(order.providerRef!)).status).toBe('canceled');
+
+    // The scan landed before the cancel: the provider reports success anyway.
+    await handle(webhook(fake, order.providerRef!, 'succeeded'));
+    await handle(webhook(fake, order.providerRef!, 'succeeded'));
+    expect((await orderRow(order.id)).status).toBe('paid');
+    expect(await wallet.balance(userId)).toBe(49);
+  });
+
+  test('paid is terminal: it never expires or fails, and markPaid again is a no-op', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle, checkout } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId);
+    await handle(webhook(fake, order.providerRef!, 'succeeded'));
+    expect(await expireStaleOrders(new Date(Date.now() + 86_400_000), checkout, order.id)).toEqual([]);
+    await handle({ provider: 'fake', eventRef: `${run}-late-fail`, providerRef: order.providerRef!, source: 'webhook', state: { status: 'failed', amountSatang: 4900, currency: 'THB' } });
+    expect(await wallet.markPaid(order.id)).toEqual({ marked: false });
+    expect(await orderRow(order.id)).toMatchObject({ status: 'paid', expiredAt: null, failedAt: null });
+    expect(await wallet.balance(userId)).toBe(49);
+  });
+
+  test('refunded is terminal: a success event throws IllegalOrderTransition, is recorded, and credits nothing', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId);
+    await db.update(orders).set({ status: 'refunded', refundedAt: new Date() }).where(eq(orders.id, order.id));
+    const event = webhook(fake, order.providerRef!, 'succeeded');
+    await expect(handle(event)).rejects.toBeInstanceOf(IllegalOrderTransition);
+    await expect(wallet.markPaid(order.id)).rejects.toBeInstanceOf(IllegalOrderTransition);
+    expect((await eventsOf(order.id)).map((row) => row.kind)).toEqual(['illegal_transition']);
+    expect((await orderRow(order.id)).status).toBe('refunded');
+    expect(await wallet.balance(userId)).toBe(0);
+  });
+
+  test('a short amount or another currency never credits, and is recorded as amount_mismatch', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId, 'p99');
+    const base = { provider: 'fake', providerRef: order.providerRef!, source: 'webhook' } as const;
+    await expect(
+      handle({ ...base, eventRef: `${run}-short`, state: { status: 'succeeded', amountSatang: 4900, currency: 'THB' } }),
+    ).rejects.toBeInstanceOf(PaymentAmountMismatch);
+    await expect(
+      handle({ ...base, eventRef: `${run}-usd`, state: { status: 'succeeded', amountSatang: 9900, currency: 'USD' } }),
+    ).rejects.toBeInstanceOf(PaymentAmountMismatch);
+    const recorded = await eventsOf(order.id);
+    expect(recorded.map((row) => row.kind)).toEqual(['amount_mismatch', 'amount_mismatch']);
+    expect(recorded[0].payload).toMatchObject({ amountSatang: 4900, expectedAmountSatang: 9900 });
+    expect((await orderRow(order.id)).status).toBe('pending');
+    expect(await wallet.balance(userId)).toBe(0);
+  });
+
+  test('an excess payment pays the order, credits only the pack, and leaves the excess recorded for an admin', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId, 'p49');
+    await handle({
+      provider: 'fake',
+      eventRef: `${run}-excess`,
+      providerRef: order.providerRef!,
+      source: 'webhook',
+      state: { status: 'succeeded', amountSatang: 9800, currency: 'THB' },
+    });
+    expect((await orderRow(order.id)).status).toBe('paid');
+    expect(await wallet.balance(userId)).toBe(49);
+    expect((await creditRows(userId)).map((row) => row.kind)).toEqual(['purchase']); // no admin_adjust
+    const [event] = await eventsOf(order.id);
+    expect(event).toMatchObject({ kind: 'excess_payment', payload: { amountSatang: 9800, expectedAmountSatang: 4900 } });
+  });
+
+  test('a paid order the cap refuses to credit stays paid, is flagged needs_review, and is recorded', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    await wallet.adjust(userId, BALANCE_CAP - 100, 'near the cap', DEV);
+    const order = await fakeOrder(fake, userId, 'p49');
+    await wallet.adjust(userId, 60, 'more', DEV);
+    const event = webhook(fake, order.providerRef!, 'succeeded');
+    expect(await handle(event)).toMatchObject({ outcome: 'paid', credited: false, needsReview: true });
+    expect(await handle(event)).toMatchObject({ outcome: 'paid', duplicate: true, needsReview: true });
+    expect(await orderRow(order.id)).toMatchObject({ status: 'paid', needsReview: true });
+    expect((await creditRows(userId)).filter((row) => row.kind === 'purchase')).toHaveLength(0);
+    expect((await eventsOf(order.id)).map((row) => row.kind)).toEqual(['succeeded', 'credit_failed_cap']);
+    expect(await wallet.balance(userId)).toBe(BALANCE_CAP - 40);
+  });
+
+  test('an event for no known charge is recorded as unknown_order and changes nothing', async () => {
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const event: ProviderEvent = {
+      provider: 'fake',
+      eventRef: `${run}-unknown`,
+      providerRef: `fake_${run}_nothing`,
+      source: 'webhook',
+      state: { status: 'succeeded', amountSatang: 4900, currency: 'THB' },
+    };
+    expect(await handle(event)).toEqual({ outcome: 'unknown_order', duplicate: false });
+    expect(await handle(event)).toEqual({ outcome: 'unknown_order', duplicate: true });
+  });
+
+  test('missed webhook: GET /orders/:id?verify=1 asks the provider and credits, labelled with the charge id', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId, 'p99');
+    fake.simulate(order.providerRef!, 'succeeded'); // paid at the provider; the webhook never arrives
+    const spy = signedInAs(userId);
+    try {
+      const get = (query: string) =>
+        walletRoutes(wallet, fake, handle).handle(new Request(`http://localhost/api/wallet/orders/${order.id}${query}`));
+      const response = await get('?verify=1');
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ orderId: order.id, status: 'paid', balance: 109, units: 109 });
+      expect((await get('?verify=1')).status).toBe(429); // one provider lookup per 5 s
+      expect(await (await get('')).json()).toMatchObject({ status: 'paid', balance: 109 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await creditRows(userId)).map((row) => row.label)).toEqual([`fake:${order.providerRef}`, `fake:${order.providerRef}`]);
+  });
+
+  test('missed webhook after the QR ran out: the lazy check asks the provider before expiring', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { checkout } = paymentsFor(fake);
+    const paidLate = await fakeOrder(fake, userId);
+    const unpaid = await fakeOrder(fake, userId);
+    fake.simulate(paidLate.providerRef!, 'succeeded');
+    const after = new Date(paidLate.expiresAt!.getTime() + 60_000);
+    expect(await refreshOrder(userId, paidLate.id, { verify: false, now: after }, checkout)).toMatchObject({ status: 'paid' });
+    expect(await refreshOrder(userId, unpaid.id, { verify: false, now: after }, checkout)).toMatchObject({ status: 'expired' });
+    expect((await fake.lookupCharge(unpaid.providerRef!)).status).toBe('canceled');
+    expect(await refreshOrder('someone-else', unpaid.id, { verify: true }, checkout)).toBeNull();
+    expect(await wallet.balance(userId)).toBe(49);
+  });
+
+  test('a webhook and a lookup racing on one order credit once', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle, checkout } = paymentsFor(fake);
+    const order = await fakeOrder(fake, userId, 'p199');
+    const event = webhook(fake, order.providerRef!, 'succeeded');
+    const lookup = () => refreshOrder(userId, order.id, { verify: true }, checkout);
+    await Promise.all([handle(event), lookup(), handle(event), lookup(), handle(event), lookup()]);
+    expect(await wallet.balance(userId)).toBe(229);
+  });
+
+  test('a new QR for the same ดวงคู่ row cancels and expires the old order; a late payment on it still credits once', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle, unlocks } = paymentsFor(fake);
+    const first = await fakeOrder(fake, userId, 'p49', 'row-s');
+    const other = await fakeOrder(fake, userId, 'p49', 'row-other');
+    const second = await fakeOrder(fake, userId, 'p49', 'row-s');
+    expect(await orderRow(first.id)).toMatchObject({ status: 'expired' });
+    expect((await fake.lookupCharge(first.providerRef!)).status).toBe('canceled');
+    expect((await orderRow(other.id)).status).toBe('pending');
+    expect((await orderRow(second.id)).status).toBe('pending');
+
+    await handle(webhook(fake, first.providerRef!, 'succeeded'));
+    await handle(webhook(fake, first.providerRef!, 'succeeded'));
+    expect((await orderRow(first.id)).status).toBe('paid');
+    expect(await wallet.balance(userId)).toBe(49);
+    expect(unlocks).toEqual(['row-s', 'row-s']); // the unlock itself charges a row once
+  });
+
+  test('dev pay settles the fake charge and goes through handleProviderEvent', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { events } = paymentsFor(fake);
+    const seen: ProviderEvent[] = [];
+    const handle = (event: ProviderEvent) => (seen.push(event), handleProviderEvent(event, events));
+    const paid = await fakeOrder(fake, userId, 'p99');
+    const refused = await fakeOrder(fake, userId, 'p49');
+    const REAL_ENV = config.env;
+    const REAL_DB = config.database.url;
+    config.env = 'development';
+    config.database.url = TEST_DB_URL!;
+    const spy = signedInAs(userId);
+    try {
+      const pay = (body: object) =>
+        walletDevRoutes(wallet, fake, handle).handle(
+          new Request('http://localhost/api/wallet/dev/pay', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          }),
+        );
+      expect(await (await pay({ orderId: paid.id })).json()).toMatchObject({ outcome: 'paid', credited: true, balance: 109 });
+      expect(await (await pay({ orderId: refused.id, outcome: 'failed' })).json()).toMatchObject({ outcome: 'failed' });
+    } finally {
+      spy.mockRestore();
+      config.env = REAL_ENV;
+      config.database.url = REAL_DB;
+    }
+    expect(seen.map((event) => [event.source, event.eventRef])).toEqual([
+      ['webhook', `fake_evt_${paid.providerRef}_succeeded`],
+      ['webhook', `fake_evt_${refused.providerRef}_failed`],
+    ]);
+    expect((await orderRow(refused.id)).status).toBe('failed');
+    expect(await wallet.balance(userId)).toBe(109);
   });
 });
