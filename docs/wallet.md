@@ -477,7 +477,9 @@ planned:
     สิทธิ์ / ปรับยอด.
 - **User history route:** built for `wallet_ledger` rows (Routes). Still planned: merging `pass_uses` into it once
   passes exist, and a newest-5 preview on `GET /api/wallet` (today it returns 20).
-  - The page renders an admin row (`by: 'team'`) as "ปรับยอดโดยทีมงาน" plus the note. It never shows which admin.
+  - The page renders an admin row (`by: 'team'`) as "ปรับยอดโดยทีมงาน" with the date and amount only (owner decision
+    2026-09-29). The note (reason) and the admin are never sent to the user: `note` is null on `admin_adjust` and
+    `refund` rows in user responses. To build with the admin routes.
 - **Admin** (horo-admin, T13):
   - Per user: the same merged history, plus actor type, admin email and the order's provider id.
   - Admin action log: every row with `actor_type = 'admin'`, filterable by admin, date and kind.
