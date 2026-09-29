@@ -1,10 +1,10 @@
 ---
 type: SPEC
-status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; payment (Stripe PromptPay) not built (2026-09-27)
+status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; payment (Stripe PromptPay) not built (2026-09-27); product passes and the audit trail planned, not built (2026-09-29)
 scope: มู currency: pricing, orders, the append-only ledger, spend/refund/credit rules, wallet routes
-last_reviewed: 2026-09-27
+last_reviewed: 2026-09-29
 owner: backend
-decision_log: ~/product-decisions/horo/2026-09-27-monetize.md ("Credit-model run")
+decision_log: ~/product-decisions/horo/2026-09-27-monetize.md ("Credit-model run"); product passes: ~/product-decisions/horo/2026-09-29-monetize.md
 ---
 
 # มู wallet
@@ -29,6 +29,11 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 | `lib/shared/types/wallet.ts` | IDs and response shapes shared with horo-fe (`bun run sync:types`) |
 | `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant guards, disabled routes; the ledger block needs a local Postgres |
 | `tests/compatibility-v4.test.ts` | The unlock route order; the one-flow purchase on a local Postgres |
+
+**Contents.**
+- Built: Prices and rules · Ledger invariants · Operations · The ดวงคู่ unlock · One-flow purchase · Routes.
+- Planned: Product passes (T15) · Audit trail and per-user wallet and history pages (T16).
+- Deferred · Testing.
 
 ## Prices and rules
 
@@ -99,7 +104,7 @@ The unlock pays atomically with delivery. The seam is in `src/lib/entitlements.t
 ## One-flow purchase
 
 When the balance is short of the price, the door does not ask for a top-up and then a second tap:
-1. The primary button reads "ปลดล็อก ฿49". It posts `POST /api/wallet/checkout { packId, unlockRef: rowId }`, using the
+1. The primary button reads "เปิดคำตอบทั้งหมด · 49 มู (฿49)" (`unlockLabel`, `horo-fe/src/features/compatibility/report/report-door.tsx`, checked 2026-09-29). A baht-first label ("… · ฿49") for users short of the price is proposed but not decided (decision log 2026-09-29). It posts `POST /api/wallet/checkout { packId, unlockRef: rowId }`, using the
    cheapest pack that covers the shortfall (`smallestPackCovering`, `horo-fe/src/features/wallet/wallet-copy.ts`).
 2. The order stores `unlock_ref`, an additive column on `orders`.
 3. Once paid, `fulfilPaidOrder(orderId)` runs `creditOrder`, then `unlockForUser(order.user, unlock_ref)`. That is the
@@ -134,6 +139,169 @@ Both dev routes are mounted only outside production (`devGuard`). Each request c
 4. an invalid body → 400.
 
 The grant writes an `admin_adjust` row noted `dev: …`.
+
+## Product passes (planned, not built)
+
+Owner decision 2026-09-29: a promo like "ดวงคู่ 3 คน ราคา 2" is sold as a **product pass**. It is bought with มู and
+holds a count of uses for one product. Buying singles never adds up to a pass: three ฿49 unlocks are 147 มู.
+Nothing in this section exists in code yet. When it is built, move the rules into the sections above.
+
+**Proposed defaults. The owner has not confirmed these numbers yet.**
+
+| Pass | Product | Uses | Price | Expires |
+|---|---|---|---|---|
+| `compat_pass_3` | `compat_unlock` | 3 | 98 มู | 180 days after purchase |
+
+Only one pass type per product at a time.
+
+**Scope.** A pass is the one allowed exception to "one unit". It is counted uses of one product, bought with มู only,
+never sold for baht directly, never transferable, and never converted back to มู except by the refund below.
+`product_passes` (a count of uses) is separate from the planned `entitlements` table (a time scope, month pass and
+year reading, T9 and T10). Don't merge them.
+
+### Tables (additive)
+
+```
+product_passes  id uuid pk · user_id · pass_id ('compat_pass_3') · product_id ('compat_unlock')
+                uses_total int · spend_ledger_id (the −98 spend row) · expires_at · created_at
+
+pass_uses       id uuid pk · pass_row_id → product_passes.id · user_id · product_id · ref_id · created_at
+                unique (user_id, product_id, ref_id)
+```
+
+- Uses left = `uses_total − count(pass_uses)`. Nothing is ever updated.
+- The unique index is on the thing unlocked, not on the pass. So one row can't be opened by two passes.
+- Pass prices live in `src/lib/pricing.ts` beside `PRODUCT_PRICES` (e.g. `PASSES`). `ProductId` and
+  `SpendableProductId` gain `compat_pass_3`, the product id the buy-pass spend carries.
+
+### Buying a pass
+
+In one transaction under the per-user advisory lock:
+1. `spendWithin(tx, user, 'compat_pass_3', passRowId)`.
+2. Insert the `product_passes` row.
+3. If the buyer is at a locked door, insert the first `pass_uses` row for that row.
+
+The existing spend index already makes the buy idempotent per pass row.
+
+### Unlocking with a pass
+
+Changes to `src/lib/entitlements.ts`:
+- **`hasPaid`** also returns true when a `pass_uses` row exists for (user, product, ref). This stops a row opened by a
+  pass from later being charged 49 มู, and the reverse.
+- **`checkUnlock`** returns ok when the user holds a live pass for the product (not expired, not refunded, uses left).
+  It checks this before `canAfford`.
+- **`chargeUnlockWithin`**, under the same lock and in the caller's transaction, does this:
+  - A live pass exists: insert a `pass_uses` row and charge 0 มู. When several passes are live, take the one that
+    expires first.
+  - Otherwise: `spendWithin` at the full price, as today.
+
+  A failed generation or patch rolls the use back exactly as it rolls back a spend.
+
+### One-flow purchase of a pass (open design point)
+
+`orders` records `pack_id` and `unlock_ref`. Today `fulfilPaidOrder` always spends the single price on `unlock_ref`.
+Buying "ชุด 3 คน" by QR from a short balance needs one more additive column saying what to buy after the credit
+(e.g. `buy_product`). It also needs a fulfilment branch: credit the pack, buy the pass, then use it on `unlock_ref`.
+This will be decided when the pass is built.
+
+### Refunds (proposed; owner to confirm)
+
+- **Baht orders** (pack purchases) follow T14: a full refund within 7 days, by PromptPay transfer.
+- **A pass** is refunded on the มู side, unused uses only:
+  - The amount is `floor(price ÷ uses_total) × unused`, so 32 มู per unused ดวงคู่ use.
+  - It is written as one `refund` row on (`compat_pass_3`, passRowId). The existing refund index allows exactly one.
+  - The refund closes the pass. Rows it already unlocked stay unlocked.
+- `refundSpend` can't do this, because it writes the full price. The pass refund needs its own operation.
+- Expired passes are not refunded. The expiry date is shown wherever the pass is shown.
+
+### Routes and UI
+
+- **`GET /api/wallet`** gains `passes: [{ id, passId, productId, usesLeft, expiresAt }]`. Pass uses never appear in
+  `wallet_ledger`, so the wallet page needs this list. The buy-pass spend does appear in the ledger.
+- **The door** offers "เปิดคนนี้ · 49 มู" and "ชุด 3 คน · 98 มู". With a live pass it offers
+  "ใช้สิทธิ์ (เหลือ N คน)" instead.
+
+### Keep or kill
+
+If fewer than ~10% of ดวงคู่ purchases are passes after 30 orders, retire the pass and rely on the pack bonus.
+
+## Audit trail: who did what (planned, not built)
+
+Owner request 2026-09-29: every change to a balance must show what happened and who did it. That covers baht paid,
+มู credited, มู spent, passes used, and credits or refunds made by an admin (which admin).
+
+### Actor on every row
+
+Additive columns on `wallet_ledger`, and the same three on `product_passes`:
+
+```
+actor_type   varchar  'user' | 'system' | 'admin' | 'dev'   not null
+actor_id     text     user.id for 'user'; admin."user".id for 'admin'; null for 'system'/'dev'
+actor_label  text     snapshot at write time: the admin's email, 'stripe:<event id>', or 'dev: …'
+```
+
+Who writes which kind:
+
+| Kind | actor_type | actor_id / label |
+|---|---|---|
+| `purchase`, `bonus` | `system` | label `stripe:<event id>` (the webhook), or `admin` when an admin marks a slip paid by hand |
+| `welcome` | `system` | none |
+| `spend`, pass buy | `user` | the buyer |
+| `refund` of a spend or pass | `admin` (T13) or `system` (automatic, e.g. a failed delivery) | admin id and email |
+| `admin_adjust` | `admin` | admin id and email; `note` required (the reason) |
+| dev grant | `dev` | label `dev: …` |
+
+- **No foreign key to `admin."user"`.** horo-be doesn't own that schema, and `drizzle-kit push` here must never touch
+  it. `actor_label` keeps the email readable even if the admin is later removed or renamed.
+- **`adjust(userId, delta, note)` becomes `adjust(userId, delta, note, actor)`.** An admin adjustment without a note
+  or without an admin actor is refused.
+- **Pass uses** (`pass_uses`) are always done by the user. Their actor is `user_id`, which is already on the row.
+- **Orders** keep their status timestamps (`paid_at`, `refunded_at`). The ledger row written when an order is paid or
+  refunded carries the actor, so "who marked this paid" is a ledger query, not a new order column.
+
+**Rollout.** `wallet_ledger` exists only on `feat/monetization-prep` and has never been pushed to production, so the
+columns can go in as `not null` before merge. Local rows are backfilled from their kind:
+- `admin_adjust` rows noted `dev: …` → `dev`;
+- `spend` → `user`;
+- everything else → `system`.
+
+After production has rows, any further column must be nullable or have a default. See CLAUDE.md, destructive changes.
+
+### History views
+
+- **Every user has two pages of their own** (owner request 2026-09-29), both behind the session and showing only that
+  user's rows:
+  - **Wallet page, `/dashboard/wallet`** (exists): the balance, live passes with uses left and expiry, the top-up packs,
+    and the newest 5 history rows with a "ดูประวัติทั้งหมด" link.
+  - **History page, `/dashboard/wallet/history`** (new): the full history, paginated, with a filter for เติมมู / ใช้มู /
+    สิทธิ์ / ปรับยอด.
+- **User history route** (`GET /api/wallet/history?cursor=&kind=`, paginated, newest first): one list merging
+  `wallet_ledger` rows and `pass_uses`. The user id comes from the session, never from a parameter.
+  - Each row carries its kind, ±มู, baht (for purchases, from the order), what it was for (partner name for ดวงคู่),
+    and the date.
+  - An admin row reads "ปรับยอดโดยทีมงาน" plus the note. It never shows which admin.
+  - `GET /api/wallet` returns a newest-5 preview for the wallet page.
+- **Admin** (horo-admin, T13):
+  - Per user: the same merged history, plus actor type, admin email and the order's provider id.
+  - Admin action log: every row with `actor_type = 'admin'`, filterable by admin, date and kind.
+
+### How horo-admin writes (decided 2026-09-29: a private horo-be route)
+
+horo-admin shares the database but doesn't run horo-be code. **The owner chose (a):** every admin wallet write goes
+through a private horo-be route, so the per-user advisory lock, the cap and the balance checks stay in one place.
+horo-admin never inserts into `wallet_ledger`, `orders` or `product_passes` directly. Reading them for its pages is
+fine.
+
+- **Routes** (not mounted on the public API surface, server to server only):
+  - `POST /internal/wallet/adjust { userId, delta, note, admin: { id, email } }`
+  - `POST /internal/wallet/refund-spend { userId, productId, refId, note, admin }`
+  - `POST /internal/wallet/refund-pass { passRowId, note, admin }`
+  - `POST /internal/orders/mark-paid { orderId, note, admin }` (manual slip fallback)
+- **Auth:** a shared secret header (`INTERNAL_API_SECRET`, in both Railway services), compared in constant time, and
+  refused in production when the secret is unset. horo-admin checks the admin's role (`admin` / `super_admin`) before
+  calling. horo-be trusts the `admin` block only behind the secret, and writes it as `actor_type = 'admin'`,
+  `actor_id`, `actor_label`.
+- **Every request needs a non-empty `note`.** Missing it returns 400.
 
 ## Deferred
 
