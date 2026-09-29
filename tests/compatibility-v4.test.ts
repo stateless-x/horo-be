@@ -834,6 +834,8 @@ describe('locked mode (teaser-first)', () => {
     expect('analysis' in reading).toBe(false);
     expect(Object.keys(reading.structuredContent ?? {}).sort()).toEqual(['archetype', 'contentVersion', 'cover', 'dimensions', 'generatedOn', 'people', 'readingMinutes']);
     const responses = { reading, share: shareResponse(lockedRow), history: historyItem(lockedRow) };
+    expect(responses.history.locked).toBe(true);
+    expect('analysis' in responses.history).toBe(false);
     for (const [route, response] of Object.entries(responses)) {
       const json = JSON.stringify(response);
       for (const paid of paidStrings(content, full)) {
@@ -848,6 +850,7 @@ describe('locked mode (teaser-first)', () => {
     const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
     const reading = readingResponse(row(JSON.stringify(stored)));
     expect(reading.locked).toBe(false);
+    expect(historyItem(row(JSON.stringify(stored))).locked).toBe(false);
     expect(reading.structuredContent).toEqual(fullContent(stored));
     const json = JSON.stringify(reading);
     expect('analysis' in reading).toBe(false);

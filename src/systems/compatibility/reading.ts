@@ -101,7 +101,7 @@ export function shareResponse(row: CompatibilityRow) {
 }
 
 /** One history list entry: names, score and elements, never reading text. */
-export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | 'partnerBirthDate' | 'relationshipType' | 'score' | 'userElement' | 'partnerElement' | 'createdAt'>) {
+export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | 'partnerBirthDate' | 'relationshipType' | 'score' | 'userElement' | 'partnerElement' | 'createdAt' | 'analysis'>) {
   return {
     id: row.id,
     partnerName: row.partnerName,
@@ -110,6 +110,7 @@ export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | '
     score: row.score,
     userElement: row.userElement,
     partnerElement: row.partnerElement,
+    locked: lockedStored(row.analysis) !== null,
     createdAt: row.createdAt.toISOString(),
   };
 }

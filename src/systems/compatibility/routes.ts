@@ -289,6 +289,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           score: compatibility.score,
           userElement: compatibility.userElement,
           partnerElement: compatibility.partnerElement,
+          analysis: compatibility.analysis,
           createdAt: compatibility.createdAt,
         })
         .from(compatibility)
