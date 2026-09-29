@@ -8,9 +8,12 @@ import { BalanceCapExceeded, InsufficientBalance, wallet as appWallet, type Wall
 import { fulfilPaidOrder } from '../lib/order-fulfilment';
 import {
   CheckoutRequestSchema,
+  HISTORY_KINDS,
   type CheckoutResponse,
+  type HistoryKind,
   type OrderStatusResponse,
   type PackId,
+  type WalletHistoryResponse,
   type WalletResponse,
 } from '../../lib/shared/types/wallet';
 
@@ -29,6 +32,12 @@ type Order = NonNullable<Awaited<ReturnType<Wallet['getOrder']>>>;
 async function startPayment(_order: Order): Promise<Pick<CheckoutResponse, 'payment' | 'message'>> {
   return { payment: 'unavailable', message: 'ยังเติมมูไม่ได้ตอนนี้ ระบบจ่ายเงินด้วย PromptPay กำลังจะเปิด' };
 }
+
+const HistoryQuerySchema = z.object({
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  kind: z.enum(Object.keys(HISTORY_KINDS) as [HistoryKind, ...HistoryKind[]]).optional(),
+});
 
 export function walletRoutes(wallet: Wallet = appWallet) {
   return new Elysia({ prefix: '/api/wallet' })
@@ -51,6 +60,26 @@ export function walletRoutes(wallet: Wallet = appWallet) {
         prices: PRODUCT_PRICES,
         ledger,
       } satisfies WalletResponse;
+    })
+    .get('/history', async ({ request, query, set }) => {
+      if (!config.compat.lockEnabled) {
+        set.status = 404;
+        return { error: 'Wallet not enabled' };
+      }
+      const session = await validateSessionFromRequest(request);
+      if (!session) {
+        set.status = 401;
+        return { error: 'Not authenticated' };
+      }
+      // `?cursor=` (an empty param) means absent, so a client can always send all three.
+      const present = Object.fromEntries(Object.entries(query).filter(([, value]) => value !== ''));
+      const parsed = HistoryQuerySchema.safeParse(present);
+      if (!parsed.success) {
+        set.status = 400;
+        return { error: 'Invalid request', detail: parsed.error.message };
+      }
+      // The user comes only from the session, never from the query.
+      return (await wallet.history(session.userId, parsed.data)) satisfies WalletHistoryResponse;
     })
     .post('/checkout', async ({ request, body, set }) => {
       if (!config.compat.lockEnabled) {
@@ -153,7 +182,8 @@ export function walletDevRoutes(wallet: Wallet = appWallet, fulfil = fulfilPaidO
       const guard = await devGuard(DevGrantSchema, request, body, set);
       if ('refusal' in guard) return guard.refusal;
       try {
-        return await wallet.adjust(guard.userId, guard.input.delta, `dev: ${guard.input.note}`);
+        const note = `dev: ${guard.input.note}`;
+        return await wallet.adjust(guard.userId, guard.input.delta, note, { type: 'dev', label: note });
       } catch (error) {
         if (error instanceof BalanceCapExceeded || error instanceof InsufficientBalance) {
           set.status = 409;
@@ -172,7 +202,7 @@ export function walletDevRoutes(wallet: Wallet = appWallet, fulfil = fulfilPaidO
       }
       await wallet.markPaid(order.id);
       try {
-        return await fulfil(order.id);
+        return await fulfil(order.id, { type: 'dev', label: `dev: pay ${order.id}` });
       } catch (error) {
         if (error instanceof BalanceCapExceeded) {
           set.status = 409;

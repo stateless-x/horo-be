@@ -50,6 +50,10 @@ export const walletLedger = pgTable('wallet_ledger', {
   refId: text('ref_id'), // what was bought, e.g. the compatibility row id
   note: text('note'),
   expiresAt: timestamp('expires_at'), // bonus rows only
+  // Who caused the row (ActorType). No FK: an admin's id is admin."user".id, a schema horo-be never references.
+  actorType: varchar('actor_type', { length: 8 }).notNull(),
+  actorId: text('actor_id'), // user.id for 'user', admin."user".id for 'admin', else null
+  actorLabel: text('actor_label'), // snapshot: the admin's email, 'stripe:<event id>', or 'dev: …'
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   userIdx: index('wallet_ledger_user_idx').on(table.userId, table.createdAt),

@@ -956,12 +956,12 @@ describe('locked mode (teaser-first)', () => {
         };
 
         const counter = countingModel();
-        expect(await fulfilPaidOrder(order.id, deps)).toEqual({ credited: true, balance: 49, unlockStatus: 200 });
+        expect(await fulfilPaidOrder(order.id, { type: 'system' }, deps)).toEqual({ credited: true, balance: 49, unlockStatus: 200 });
         expect(counter.calls).toBe(3);
         expect(readingResponse(state.row).locked).toBe(false);
 
         // A replayed webhook: no second credit, no second charge, no model call.
-        expect(await fulfilPaidOrder(order.id, deps)).toEqual({ credited: false, balance: 0, unlockStatus: 200 });
+        expect(await fulfilPaidOrder(order.id, { type: 'system' }, deps)).toEqual({ credited: false, balance: 0, unlockStatus: 200 });
         expect(counter.calls).toBe(3);
         const rows = await testWallet.ledger(userId, 10);
         expect(rows.filter((entry) => entry.kind === 'spend' && entry.refId === 'row-1')).toHaveLength(1);

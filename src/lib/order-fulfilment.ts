@@ -1,4 +1,4 @@
-import { wallet as appWallet, type Wallet } from './wallet';
+import { wallet as appWallet, type LedgerActor, type Wallet } from './wallet';
 import { unlockForUser } from '../systems/compatibility/unlock';
 import type { UnlockResult } from '../systems/compatibility/reading';
 
@@ -8,15 +8,17 @@ import type { UnlockResult } from '../systems/compatibility/reading';
  * one-flow purchase ("ปลดล็อก ฿49" in the ดวงคู่ door), run the same atomic
  * unlock the route runs on the row stored in `unlock_ref`. Replays are safe:
  * the credit is idempotent per order and the unlock charges a row once.
+ * `actor` confirmed the payment and is recorded on the credit rows.
  */
 export async function fulfilPaidOrder(
   orderId: string,
+  actor: LedgerActor,
   deps: {
     wallet: Pick<Wallet, 'creditOrder'>;
     unlock: (userId: string, rowId: string) => Promise<Pick<UnlockResult, 'status'>>;
   } = { wallet: appWallet, unlock: unlockForUser },
 ) {
-  const credit = await deps.wallet.creditOrder(orderId);
+  const credit = await deps.wallet.creditOrder(orderId, actor);
   const unlock = credit.unlockRef ? await deps.unlock(credit.userId, credit.unlockRef) : null;
   return { credited: credit.credited, balance: credit.balance, unlockStatus: unlock?.status ?? null };
 }

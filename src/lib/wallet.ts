@@ -1,7 +1,16 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db as appDb } from './db';
 import { compatibility, orders, walletLedger, type DbClient } from '../../lib/db';
-import type { LedgerEntry, LedgerKind, PackId, ProductId } from '../../lib/shared/types/wallet';
+import {
+  HISTORY_KINDS,
+  type ActorType,
+  type HistoryKind,
+  type LedgerBy,
+  type LedgerEntry,
+  type LedgerKind,
+  type PackId,
+  type ProductId,
+} from '../../lib/shared/types/wallet';
 import {
   BALANCE_CAP,
   BONUS_TTL_DAYS,
@@ -66,10 +75,54 @@ export class OrderNotPaid extends Error {
   }
 }
 
+/**
+ * Who caused a ledger row. Every insert takes one (insertLedger), so the
+ * audit trail can't be skipped. 'system' labels e.g. 'stripe:<event id>'.
+ */
+export type LedgerActor =
+  | { type: 'user'; id: string }
+  | { type: 'system'; label?: string }
+  | { type: 'admin'; id: string; email: string }
+  | { type: 'dev'; label: string };
+
+/** A refund of a spend is made by an admin (T13) or automatically by the system. */
+export type RefundActor = Extract<LedgerActor, { type: 'admin' | 'system' }>;
+
+/** adjust refused: no reason given, or the actor is not an admin or dev. */
+export class InvalidAdjustment extends Error {}
+
+function actorColumns(actor: LedgerActor) {
+  switch (actor.type) {
+    case 'user':
+      return { actorType: actor.type, actorId: actor.id, actorLabel: null };
+    case 'system':
+      return { actorType: actor.type, actorId: null, actorLabel: actor.label ?? null };
+    case 'admin':
+      return { actorType: actor.type, actorId: actor.id, actorLabel: actor.email };
+    case 'dev':
+      return { actorType: actor.type, actorId: null, actorLabel: actor.label };
+  }
+}
+
+/** What a user is shown as the cause of a row. Admin identity never reaches the user. */
+export function ledgerBy(actorType: ActorType): LedgerBy {
+  if (actorType === 'user') return 'you';
+  if (actorType === 'admin') return 'team';
+  return 'horo';
+}
+
 /** A transaction on the app database, e.g. the one that also writes what was bought. */
 export type WalletTx = Parameters<Parameters<DbClient['transaction']>[0]>[0];
 type Tx = WalletTx;
 type Reader = DbClient | Tx;
+
+type LedgerRow = Omit<typeof walletLedger.$inferInsert, 'actorType' | 'actorId' | 'actorLabel'>;
+
+/** The one way to write a ledger row: every row records its actor. */
+function insertLedger(writer: Reader, rows: LedgerRow | LedgerRow[], actor: LedgerActor) {
+  const who = actorColumns(actor);
+  return writer.insert(walletLedger).values((Array.isArray(rows) ? rows : [rows]).map((row) => ({ ...row, ...who })));
+}
 
 async function sumBalance(reader: Reader, userId: string): Promise<number> {
   const [row] = await reader
@@ -84,7 +137,7 @@ async function lockUser(tx: Tx, userId: string): Promise<void> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
 }
 
-function toEntry(row: typeof walletLedger.$inferSelect, refName: string | null): LedgerEntry {
+function toEntry(row: typeof walletLedger.$inferSelect, refName: string | null, amountSatang: number | null): LedgerEntry {
   return {
     id: row.id,
     delta: row.delta,
@@ -95,6 +148,8 @@ function toEntry(row: typeof walletLedger.$inferSelect, refName: string | null):
     note: row.note,
     expiresAt: row.expiresAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+    by: ledgerBy(row.actorType as ActorType),
+    amountBaht: amountSatang === null ? null : amountSatang / 100,
   };
 }
 
@@ -103,9 +158,7 @@ export function createWallet(db: DbClient) {
 
   /** Grants WELCOME_GIFT once per account; later calls and concurrent first touches insert nothing. */
   async function ensureWelcome(userId: string): Promise<void> {
-    await db
-      .insert(walletLedger)
-      .values({ userId, delta: WELCOME_GIFT, kind: 'welcome', note: 'ของขวัญต้อนรับ' })
+    await insertLedger(db, { userId, delta: WELCOME_GIFT, kind: 'welcome', note: 'ของขวัญต้อนรับ' }, { type: 'system' })
       .onConflictDoNothing();
   }
 
@@ -143,7 +196,7 @@ export function createWallet(db: DbClient) {
     if (prior.length > 0) return { charged: false as const, balance: current };
     if (current < price) throw new InsufficientBalance(current, price);
 
-    await tx.insert(walletLedger).values({ userId, delta: -price, kind: 'spend', productId, refId });
+    await insertLedger(tx, { userId, delta: -price, kind: 'spend', productId, refId }, { type: 'user', id: userId });
     return { charged: true as const, balance: current - price };
   }
 
@@ -175,7 +228,7 @@ export function createWallet(db: DbClient) {
    * Gives a spend's price back. At most once per spend; the thing can't be
    * charged again afterwards (see SpendRefunded).
    */
-  async function refundSpend(userId: string, productId: SpendableProductId, refId: string, note: string) {
+  async function refundSpend(userId: string, productId: SpendableProductId, refId: string, note: string, actor: RefundActor) {
     return db.transaction(async (tx) => {
       await lockUser(tx, userId);
       const [spent] = await tx
@@ -190,9 +243,7 @@ export function createWallet(db: DbClient) {
           ),
         );
       if (!spent) throw new Error(`No spend to refund for ${productId}/${refId}`);
-      const inserted = await tx
-        .insert(walletLedger)
-        .values({ userId, delta: -spent.delta, kind: 'refund', productId, refId, note })
+      const inserted = await insertLedger(tx, { userId, delta: -spent.delta, kind: 'refund', productId, refId, note }, actor)
         .onConflictDoNothing()
         .returning({ id: walletLedger.id });
       return { refunded: inserted.length > 0, balance: await sumBalance(tx, userId) };
@@ -236,9 +287,11 @@ export function createWallet(db: DbClient) {
   /**
    * Credits a paid order's base and bonus. Idempotent: a replayed webhook
    * credits nothing the second time. A credit past the cap is refused, and the
-   * paid order then needs a manual refund (T13).
+   * paid order then needs a manual refund (T13). `actor` is whoever confirmed
+   * the payment: the webhook ({ type: 'system', label: 'stripe:<event id>' }),
+   * an admin, or dev.
    */
-  async function creditOrder(orderId: string) {
+  async function creditOrder(orderId: string, actor: LedgerActor) {
     return db.transaction(async (tx) => {
       const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
       if (!order) throw new Error(`Order ${orderId} not found`);
@@ -257,27 +310,32 @@ export function createWallet(db: DbClient) {
       const credit = order.unitsBase + order.unitsBonus;
       if (current + credit > BALANCE_CAP) throw new BalanceCapExceeded(current, credit);
 
-      const rows: (typeof walletLedger.$inferInsert)[] = [
+      const rows: LedgerRow[] = [
         { userId: order.userId, delta: order.unitsBase, kind: 'purchase', orderId },
       ];
       if (order.unitsBonus > 0) {
         const expiresAt = new Date(Date.now() + BONUS_TTL_DAYS * 24 * 60 * 60 * 1000);
         rows.push({ userId: order.userId, delta: order.unitsBonus, kind: 'bonus', orderId, expiresAt });
       }
-      await tx.insert(walletLedger).values(rows);
+      await insertLedger(tx, rows, actor);
       return { credited: true as const, balance: current + credit, ...who };
     });
   }
 
-  /** Admin or dev correction. Never takes the balance below 0 or above the cap. */
-  async function adjust(userId: string, delta: number, note: string) {
+  /**
+   * Admin or dev correction. Never takes the balance below 0 or above the cap.
+   * `note` is the reason and is required; the actor must be an admin or dev.
+   */
+  async function adjust(userId: string, delta: number, note: string, actor: LedgerActor) {
     if (!Number.isInteger(delta) || delta === 0) throw new Error(`adjust needs a non-zero integer, got ${delta}`);
+    if (note.trim() === '') throw new InvalidAdjustment('adjust needs a note (the reason)');
+    if (actor.type !== 'admin' && actor.type !== 'dev') throw new InvalidAdjustment(`adjust refused for actor ${actor.type}`);
     return db.transaction(async (tx) => {
       await lockUser(tx, userId);
       const current = await sumBalance(tx, userId);
       if (current + delta > BALANCE_CAP) throw new BalanceCapExceeded(current, delta);
       if (current + delta < 0) throw new InsufficientBalance(current, -delta);
-      await tx.insert(walletLedger).values({ userId, delta, kind: 'admin_adjust', note });
+      await insertLedger(tx, { userId, delta, kind: 'admin_adjust', note }, actor);
       return { balance: current + delta };
     });
   }
@@ -295,22 +353,45 @@ export function createWallet(db: DbClient) {
     return { marked: updated.length > 0 };
   }
 
-  /** The newest rows first, each ดวงคู่ spend or refund named by its partner (one join, no per-row query). */
-  async function ledger(userId: string, limit: number): Promise<LedgerEntry[]> {
+  /**
+   * One page of the user's rows, newest first, keyset on (created_at, id).
+   * `cursor` is the id of the last row of the previous page; the comparison
+   * reads that row's created_at in SQL, so microsecond ties don't skip rows, and
+   * another user's row id matches nothing. A ดวงคู่ spend or refund is named by
+   * its partner, a purchase carries its order's price (one query, no per-row lookup).
+   */
+  async function history(userId: string, opts: { limit: number; cursor?: string; kind?: HistoryKind }) {
+    const conditions = [eq(walletLedger.userId, userId)];
+    if (opts.kind) conditions.push(inArray(walletLedger.kind, [...HISTORY_KINDS[opts.kind]]));
+    if (opts.cursor) {
+      conditions.push(
+        sql`(${walletLedger.createdAt}, ${walletLedger.id}) < (select c.created_at, c.id from wallet_ledger c where c.id = ${opts.cursor} and c.user_id = ${userId})`,
+      );
+    }
     const rows = await db
-      .select({ row: walletLedger, refName: compatibility.partnerName })
+      .select({ row: walletLedger, refName: compatibility.partnerName, amountSatang: orders.amountSatang })
       .from(walletLedger)
       .leftJoin(
         compatibility,
         and(eq(walletLedger.productId, 'compat_unlock'), sql`${compatibility.id}::text = ${walletLedger.refId}`),
       )
-      .where(eq(walletLedger.userId, userId))
+      .leftJoin(orders, and(eq(walletLedger.kind, 'purchase'), eq(orders.id, walletLedger.orderId)))
+      .where(and(...conditions))
       .orderBy(desc(walletLedger.createdAt), desc(walletLedger.id))
-      .limit(limit);
-    return rows.map(({ row, refName }) => toEntry(row, refName));
+      .limit(opts.limit + 1);
+    const page = rows.slice(0, opts.limit);
+    return {
+      entries: page.map(({ row, refName, amountSatang }) => toEntry(row, refName, amountSatang)),
+      nextCursor: rows.length > opts.limit ? page[page.length - 1].row.id : null,
+    };
   }
 
-  return { balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder, markPaid, creditOrder, adjust, ledger };
+  /** The newest rows first (the first page of `history`). */
+  async function ledger(userId: string, limit: number): Promise<LedgerEntry[]> {
+    return (await history(userId, { limit })).entries;
+  }
+
+  return { balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder, markPaid, creditOrder, adjust, history, ledger };
 }
 
 export type Wallet = ReturnType<typeof createWallet>;

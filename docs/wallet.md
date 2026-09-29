@@ -1,6 +1,6 @@
 ---
 type: SPEC
-status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; payment (Stripe PromptPay) not built (2026-09-27); product passes and the audit trail planned, not built (2026-09-29)
+status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; payment (Stripe PromptPay) not built (2026-09-27); ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29)
 scope: มู currency: pricing, orders, the append-only ledger, spend/refund/credit rules, wallet routes
 last_reviewed: 2026-09-29
 owner: backend
@@ -21,18 +21,18 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 |---|---|
 | `src/lib/pricing.ts` | The only place prices live: products, packs, welcome gift, cap, bonus TTL |
 | `lib/db/schema/wallet.ts` | `orders`, `wallet_ledger` and their indexes (additive) |
-| `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, canAfford, hasPaid, spendWithin/spend, refundSpend, createOrder/getOrder/markPaid, creditOrder, adjust, ledger (partner names joined) |
+| `src/lib/wallet.ts` | `createWallet(db)`: balance, welcome, canAfford, hasPaid, spendWithin/spend, refundSpend, createOrder/getOrder/markPaid, creditOrder, adjust, history/ledger (partner names and purchase baht joined); `LedgerActor`, `insertLedger`, `ledgerBy` |
 | `src/lib/entitlements.ts` | `checkUnlock` + `chargeUnlockWithin`: the ดวงคู่ unlock seam, charged with delivery |
 | `src/lib/order-fulfilment.ts` | `fulfilPaidOrder`: credit a paid order, then unlock its `unlock_ref` (one-flow purchase) |
 | `src/systems/compatibility/unlock.ts` | `dbUnlockStore`, `unlockForUser`: the atomic unlock the route and fulfilment share |
 | `src/routes/wallet.ts` | `/api/wallet` routes and the dev-only grant and pay |
 | `lib/shared/types/wallet.ts` | IDs and response shapes shared with horo-fe (`bun run sync:types`) |
-| `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant guards, disabled routes; the ledger block needs a local Postgres |
+| `tests/wallet.test.ts` | Pricing, 402 mapping, dev-grant and history guards, actor mapping, disabled routes; the ledger block (actors, adjust refusals, history paging) needs a local Postgres |
 | `tests/compatibility-v4.test.ts` | The unlock route order; the one-flow purchase on a local Postgres |
 
 **Contents.**
-- Built: Prices and rules · Ledger invariants · Operations · The ดวงคู่ unlock · One-flow purchase · Routes.
-- Planned: Product passes (T15) · Audit trail and per-user wallet and history pages (T16).
+- Built: Prices and rules · Ledger invariants (with actors) · Operations · The ดวงคู่ unlock · One-flow purchase · Routes.
+- Planned: Product passes (T15) · The rest of the audit trail: history page, admin views, admin writes (T16).
 - Deferred · Testing.
 
 ## Prices and rules
@@ -52,6 +52,25 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 `wallet_ledger` is append-only: the app never updates or deletes a row. Balance = `SUM(delta)`. A correction is a
 new row.
 
+**Every row records who caused it** (owner request 2026-09-29):
+
+```
+actor_type   varchar(8) not null  'user' | 'system' | 'admin' | 'dev'   (ACTOR_TYPES)
+actor_id     text                 user.id for 'user'; admin."user".id for 'admin'; null for 'system'/'dev'
+actor_label  text                 snapshot at write time: the admin's email, 'stripe:<event id>', or 'dev: …'
+```
+
+- Every insert goes through `insertLedger(writer, rows, actor: LedgerActor)` in `src/lib/wallet.ts`, and the
+  `not null` column makes a raw insert without an actor a type error too.
+- **No foreign key to `admin."user"`.** horo-be doesn't own that schema, and `drizzle-kit push` here must never touch
+  it. `actor_label` keeps the email readable even if the admin is later removed or renamed.
+- Users never see `actor_id` or `actor_label`. `LedgerEntry.by` is all they get: `user` → `you`, `system` and `dev` →
+  `horo`, `admin` → `team` (`ledgerBy`).
+- **Rollout.** `wallet_ledger` has never been pushed to production, so the column went in as `not null` before merge.
+  Local rows were backfilled from their kind: `admin_adjust` noted `dev…` → `dev` (label = note), `spend` → `user`
+  (id = user_id), everything else → `system`. After production has rows, any further column must be nullable or have
+  a default. See CLAUDE.md, destructive changes.
+
 Every write that depends on the balance runs in one transaction holding
 `pg_advisory_xact_lock(hashtext(user_id))`, re-reads the balance, and only then inserts. So concurrent calls for one
 user are serialized, and the balance never goes below 0 or above the cap.
@@ -67,19 +86,27 @@ Partial unique indexes back the idempotency, independent of the lock:
 
 ## Operations
 
+Actor per operation: `ensureWelcome` → `system`; `spendWithin`/`spend` → the spending user; the rest take the actor
+from their caller.
+
 - `spendWithin(tx, user, product, refId)`: charges once per (user, product, refId) inside the caller's transaction,
   under the advisory lock. A repeat call returns `charged: false` and costs nothing. Below the price it throws
   `InsufficientBalance { balance, price }`. `spend(...)` is the same in a transaction of its own.
 - `canAfford(user, price)`: a read-only pre-check with no lock. `spendWithin` re-checks under the lock.
-- `refundSpend(user, product, refId, note)`: a `+price` row of kind `refund`, at most once. **Refund is terminal:** a
+- `refundSpend(user, product, refId, note, actor)`: `actor` is `system` (automatic) or `admin` (T13). A `+price` row of kind `refund`, at most once. **Refund is terminal:** a
   later `spend` on that thing throws `SpendRefunded`. The spend index allows one spend per thing, and treating a refunded
   spend as paid would give a free unlock with the credit back.
 - `createOrder(user, packId)`: a `pending` order (`provider = 'stripe'`). Throws `BalanceCapExceeded` if the pack would
   pass the cap.
-- `creditOrder(orderId)`: only for `status = 'paid'` (else `OrderNotPaid`). Writes a `purchase` row, plus a `bonus` row
+- `creditOrder(orderId, actor)`: the purchase and bonus rows carry `actor`, whoever confirmed the payment. The T5 webhook
+  passes `{ type: 'system', label: 'stripe:<event id>' }`; the dev pay route passes `dev`. Only for `status = 'paid'` (else `OrderNotPaid`). Writes a `purchase` row, plus a `bonus` row
   with `expires_at` when the pack has bonus. Idempotent. A credit past the cap throws `BalanceCapExceeded`. The order
   is paid, so it then needs a manual refund (T13).
-- `adjust(user, delta, note)`: `admin_adjust`, never below 0 or above the cap.
+- `adjust(user, delta, note, actor)`: `admin_adjust`, never below 0 or above the cap. Throws `InvalidAdjustment`
+  when `note` (the reason) is empty after trim or the actor is not `admin` or `dev`.
+- `history(user, { limit, cursor?, kind? })`: one page, newest first, keyset on `(created_at, id)`. `cursor` is the
+  last row's id; SQL reads that row's `created_at`, so rows sharing a microsecond are never skipped, and another
+  user's id matches nothing. Purchase rows carry `amountBaht` from their order. `ledger(user, limit)` is its first page.
 
 ## The ดวงคู่ unlock
 
@@ -108,14 +135,15 @@ When the balance is short of the price, the door does not ask for a top-up and t
    cheapest pack that covers the shortfall (`smallestPackCovering`, `horo-fe/src/features/wallet/wallet-copy.ts`).
 2. The order stores `unlock_ref`, an additive column on `orders`.
 3. Once paid, `fulfilPaidOrder(orderId)` runs `creditOrder`, then `unlockForUser(order.user, unlock_ref)`. That is the
-   same atomic unlock the route runs, owner-only and charged once per row.
+   same atomic unlock the route runs, owner-only and charged once per row. `fulfilPaidOrder(orderId, actor)` passes
+   the actor to `creditOrder`.
 4. A replayed webhook credits nothing and charges nothing. The row is already unlocked.
 
 "ซื้อแพ็กคุ้มกว่า" under the button opens the pack sheet. At or above the price the door still spends:
 "ใช้ 49 มู ปลดล็อก (มี N มู)".
 
 Until T5 the checkout answers `payment: 'unavailable'`, and the door ends at "PromptPay เร็ว ๆ นี้". The T5 webhook must
-call `wallet.markPaid(orderId)`, then `fulfilPaidOrder(orderId)`. To try the flow locally, use the dev stand-in
+call `wallet.markPaid(orderId)`, then `fulfilPaidOrder(orderId, { type: 'system', label: 'stripe:<event id>' })`. To try the flow locally, use the dev stand-in
 `POST /api/wallet/dev/pay { orderId }`. It marks the signed-in user's own pending order paid and fulfils it.
 
 ## Routes
@@ -124,7 +152,8 @@ All routes need a session.
 
 | Route | Returns |
 |---|---|
-| `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows; a ดวงคู่ spend or refund carries `refName`, the partner's name, from one left join on `ref_id`, or null once the reading is gone) |
+| `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows; a ดวงคู่ spend or refund carries `refName`, the partner's name, from one left join on `ref_id`, or null once the reading is gone; each row carries `by` and `amountBaht`) |
+| `GET /api/wallet/history?cursor=&limit=&kind=` | `{ entries: LedgerEntry[], nextCursor }`, the session user's rows only, newest first. `limit` 1–50 (default 20), `cursor` a row id, `kind` one of `topup` (purchase, bonus), `spend`, `refund`, `adjust` (admin_adjust), `welcome`. 400 on an invalid query, 404 while the lock is off |
 | `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'unavailable', message }`; 409 `balance_cap`; 404 while the lock is off |
 | `GET /api/wallet/orders/:id` | the owner's order status; 404 otherwise |
 | `POST /api/wallet/dev/grant { delta, note }` | dev only; see below |
@@ -138,7 +167,8 @@ Both dev routes are mounted only outside production (`devGuard`). Each request c
 3. no session → 401;
 4. an invalid body → 400.
 
-The grant writes an `admin_adjust` row noted `dev: …`.
+The grant writes an `admin_adjust` row noted `dev: …`, actor `dev` with the same label. The pay route credits with
+actor `dev`, label `dev: pay <orderId>`.
 
 ## Product passes (planned, not built)
 
@@ -225,47 +255,17 @@ This will be decided when the pass is built.
 
 If fewer than ~10% of ดวงคู่ purchases are passes after 30 orders, retire the pass and rely on the pack bonus.
 
-## Audit trail: who did what (planned, not built)
+## Audit trail: the rest (planned, not built)
 
-Owner request 2026-09-29: every change to a balance must show what happened and who did it. That covers baht paid,
-มู credited, มู spent, passes used, and credits or refunds made by an admin (which admin).
+Owner request 2026-09-29: every change to a balance must show what happened and who did it. The ledger actor columns,
+`adjust`'s note and actor rule, and `GET /api/wallet/history` are built (Ledger invariants, Operations, Routes). Still
+planned:
 
-### Actor on every row
-
-Additive columns on `wallet_ledger`, and the same three on `product_passes`:
-
-```
-actor_type   varchar  'user' | 'system' | 'admin' | 'dev'   not null
-actor_id     text     user.id for 'user'; admin."user".id for 'admin'; null for 'system'/'dev'
-actor_label  text     snapshot at write time: the admin's email, 'stripe:<event id>', or 'dev: …'
-```
-
-Who writes which kind:
-
-| Kind | actor_type | actor_id / label |
-|---|---|---|
-| `purchase`, `bonus` | `system` | label `stripe:<event id>` (the webhook), or `admin` when an admin marks a slip paid by hand |
-| `welcome` | `system` | none |
-| `spend`, pass buy | `user` | the buyer |
-| `refund` of a spend or pass | `admin` (T13) or `system` (automatic, e.g. a failed delivery) | admin id and email |
-| `admin_adjust` | `admin` | admin id and email; `note` required (the reason) |
-| dev grant | `dev` | label `dev: …` |
-
-- **No foreign key to `admin."user"`.** horo-be doesn't own that schema, and `drizzle-kit push` here must never touch
-  it. `actor_label` keeps the email readable even if the admin is later removed or renamed.
-- **`adjust(userId, delta, note)` becomes `adjust(userId, delta, note, actor)`.** An admin adjustment without a note
-  or without an admin actor is refused.
-- **Pass uses** (`pass_uses`) are always done by the user. Their actor is `user_id`, which is already on the row.
+- **`product_passes`** gets the same three actor columns when passes are built. **Pass uses** (`pass_uses`) are always
+  done by the user; their actor is `user_id`, already on the row.
+- **Manual slip paid by an admin:** `creditOrder` with an `admin` actor, through the internal route below.
 - **Orders** keep their status timestamps (`paid_at`, `refunded_at`). The ledger row written when an order is paid or
   refunded carries the actor, so "who marked this paid" is a ledger query, not a new order column.
-
-**Rollout.** `wallet_ledger` exists only on `feat/monetization-prep` and has never been pushed to production, so the
-columns can go in as `not null` before merge. Local rows are backfilled from their kind:
-- `admin_adjust` rows noted `dev: …` → `dev`;
-- `spend` → `user`;
-- everything else → `system`.
-
-After production has rows, any further column must be nullable or have a default. See CLAUDE.md, destructive changes.
 
 ### History views
 
@@ -275,12 +275,9 @@ After production has rows, any further column must be nullable or have a default
     and the newest 5 history rows with a "ดูประวัติทั้งหมด" link.
   - **History page, `/dashboard/wallet/history`** (new): the full history, paginated, with a filter for เติมมู / ใช้มู /
     สิทธิ์ / ปรับยอด.
-- **User history route** (`GET /api/wallet/history?cursor=&kind=`, paginated, newest first): one list merging
-  `wallet_ledger` rows and `pass_uses`. The user id comes from the session, never from a parameter.
-  - Each row carries its kind, ±มู, baht (for purchases, from the order), what it was for (partner name for ดวงคู่),
-    and the date.
-  - An admin row reads "ปรับยอดโดยทีมงาน" plus the note. It never shows which admin.
-  - `GET /api/wallet` returns a newest-5 preview for the wallet page.
+- **User history route:** built for `wallet_ledger` rows (Routes). Still planned: merging `pass_uses` into it once
+  passes exist, and a newest-5 preview on `GET /api/wallet` (today it returns 20).
+  - The page renders an admin row (`by: 'team'`) as "ปรับยอดโดยทีมงาน" plus the note. It never shows which admin.
 - **Admin** (horo-admin, T13):
   - Per user: the same merged history, plus actor type, admin email and the order's provider id.
   - Admin action log: every row with `actor_type = 'admin'`, filterable by admin, date and kind.

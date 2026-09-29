@@ -19,6 +19,26 @@ export type PackId = (typeof PACK_IDS)[number];
 export const LEDGER_KINDS = ['purchase', 'bonus', 'welcome', 'spend', 'refund', 'admin_adjust', 'expire'] as const;
 export type LedgerKind = (typeof LEDGER_KINDS)[number];
 
+/**
+ * Who caused a ledger row. 'admin' rows also store the admin's id and email,
+ * which never leave the backend; users see only `LedgerBy`.
+ */
+export const ACTOR_TYPES = ['user', 'system', 'admin', 'dev'] as const;
+export type ActorType = (typeof ACTOR_TYPES)[number];
+
+/** Who a user is shown as the cause of a row: themselves, Horo (system and dev), or the team (an admin). */
+export type LedgerBy = 'you' | 'horo' | 'team';
+
+/** GET /api/wallet/history `kind` filter groups. */
+export const HISTORY_KINDS = {
+  topup: ['purchase', 'bonus'],
+  spend: ['spend'],
+  refund: ['refund'],
+  adjust: ['admin_adjust'],
+  welcome: ['welcome'],
+} as const satisfies Record<string, readonly LedgerKind[]>;
+export type HistoryKind = keyof typeof HISTORY_KINDS;
+
 export const ORDER_STATUSES = ['pending', 'paid', 'failed', 'expired', 'refunded'] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
@@ -44,6 +64,10 @@ export interface LedgerEntry {
   /** ISO date; set on bonus rows only. */
   expiresAt: string | null;
   createdAt: string;
+  /** Who caused the row, as the user sees it. Never the admin's identity. */
+  by: LedgerBy;
+  /** Purchase rows: the baht paid for the order, for "฿99 → +99 มู". Null on every other kind. */
+  amountBaht: number | null;
 }
 
 /**
@@ -60,6 +84,12 @@ export interface WalletState {
   prices: Record<ProductId, number>;
   /** The newest 20 rows, newest first. */
   ledger: LedgerEntry[];
+}
+
+/** GET /api/wallet/history. Newest first; pass `nextCursor` back as `cursor` for the next page. */
+export interface WalletHistoryResponse {
+  entries: LedgerEntry[];
+  nextCursor: string | null;
 }
 
 /** POST /api/wallet/checkout body. */

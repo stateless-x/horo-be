@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { inArray, sql } from 'drizzle-orm';
+import { asc, eq, inArray, sql } from 'drizzle-orm';
 import { config } from '../src/config';
 import { chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
 import { isLocalDatabaseUrl } from '../src/lib/dev-regenerate';
@@ -7,9 +7,11 @@ import { BALANCE_CAP, PACKS, PRODUCT_PRICES, WELCOME_GIFT, packAmountSatang } fr
 import {
   BalanceCapExceeded,
   InsufficientBalance,
+  InvalidAdjustment,
   OrderNotPaid,
   SpendRefunded,
   createWallet,
+  ledgerBy,
   type Wallet,
 } from '../src/lib/wallet';
 import { walletDevRoutes, walletRoutes } from '../src/routes/wallet';
@@ -148,6 +150,34 @@ describe('wallet routes while nothing is sellable', () => {
   });
 });
 
+describe('GET /api/wallet/history guards', () => {
+  const REAL = config.compat;
+  afterEach(() => {
+    config.compat = REAL;
+  });
+
+  const history = () => walletRoutes().handle(new Request('http://localhost/api/wallet/history?limit=5'));
+
+  test('404 while locked mode is off, before any session work', async () => {
+    config.compat = { lockEnabled: false, unlockFree: false };
+    expect((await history()).status).toBe(404);
+  });
+
+  test('401 without a session', async () => {
+    config.compat = { lockEnabled: true, unlockFree: false };
+    expect((await history()).status).toBe(401);
+  });
+});
+
+describe('ledger actor shown to the user', () => {
+  test('user → you, system and dev → horo, admin → team', () => {
+    expect(ledgerBy('user')).toBe('you');
+    expect(ledgerBy('system')).toBe('horo');
+    expect(ledgerBy('dev')).toBe('horo');
+    expect(ledgerBy('admin')).toBe('team');
+  });
+});
+
 describe('POST /api/wallet/dev/grant guards', () => {
   const REAL_ENV = config.env;
   const REAL_DB = config.database.url;
@@ -179,6 +209,11 @@ describe('POST /api/wallet/dev/grant guards', () => {
 });
 
 const TEST_DB_URL = process.env.WALLET_TEST_DATABASE_URL;
+
+const DEV = { type: 'dev', label: 'dev: test' } as const;
+const SYSTEM = { type: 'system' } as const;
+/** Actor columns for a raw insert, so it reaches the unique index instead of failing NOT NULL. */
+const RAW_ACTOR = { actorType: 'system' } as const;
 
 describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
   let db: DbClient;
@@ -238,7 +273,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     await Promise.all(Array.from({ length: 6 }, () => wallet.ensureWelcome(userId)));
     await wallet.ensureWelcome(userId);
     expect(await wallet.balance(userId)).toBe(WELCOME_GIFT);
-    expect(await rawInsertFails({ userId, delta: WELCOME_GIFT, kind: 'welcome' })).toBe('23505');
+    expect(await rawInsertFails({ ...RAW_ACTOR, userId, delta: WELCOME_GIFT, kind: 'welcome' })).toBe('23505');
   });
 
   test('concurrent spends on different rows: exactly one succeeds, the balance never goes negative', async () => {
@@ -259,7 +294,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
 
   test('two concurrent spends on the same row charge once, and a retry is free', async () => {
     const userId = await newUser();
-    await wallet.adjust(userId, 100, 'test funds');
+    await wallet.adjust(userId, 100, 'test funds', DEV);
     const [a, b] = await Promise.all([
       wallet.spend(userId, 'compat_unlock', 'row-same'),
       wallet.spend(userId, 'compat_unlock', 'row-same'),
@@ -268,7 +303,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     expect((await wallet.spend(userId, 'compat_unlock', 'row-same')).charged).toBe(false);
     expect(await wallet.balance(userId)).toBe(51);
     expect(
-      await rawInsertFails({ userId, delta: -49, kind: 'spend', productId: 'compat_unlock', refId: 'row-same' }),
+      await rawInsertFails({ ...RAW_ACTOR, userId, delta: -49, kind: 'spend', productId: 'compat_unlock', refId: 'row-same' }),
     ).toBe('23505');
   });
 
@@ -303,7 +338,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     await wallet.spend(userId, 'compat_unlock', 'row-p');
     expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-p')).toBe(true);
     expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-other')).toBe(false);
-    await wallet.refundSpend(userId, 'compat_unlock', 'row-p', 'test');
+    await wallet.refundSpend(userId, 'compat_unlock', 'row-p', 'test', SYSTEM);
     expect(await wallet.hasPaid(userId, 'compat_unlock', 'row-p')).toBe(false);
   });
 
@@ -314,8 +349,8 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     expect(await wallet.balance(userId)).toBe(0);
 
     const [first, second] = await Promise.all([
-      wallet.refundSpend(userId, 'compat_unlock', 'row-r', 'generation failed'),
-      wallet.refundSpend(userId, 'compat_unlock', 'row-r', 'generation failed'),
+      wallet.refundSpend(userId, 'compat_unlock', 'row-r', 'generation failed', SYSTEM),
+      wallet.refundSpend(userId, 'compat_unlock', 'row-r', 'generation failed', SYSTEM),
     ]);
     expect([first.refunded, second.refunded].sort()).toEqual([false, true]);
     expect(await wallet.balance(userId)).toBe(49);
@@ -328,8 +363,8 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
   test('a replayed creditOrder credits once, with the bonus expiring in 180 days', async () => {
     const userId = await newUser();
     const order = await paidOrder(userId, 'p99');
-    const results = await Promise.all([wallet.creditOrder(order.id), wallet.creditOrder(order.id)]);
-    await wallet.creditOrder(order.id);
+    const results = await Promise.all([wallet.creditOrder(order.id, SYSTEM), wallet.creditOrder(order.id, SYSTEM)]);
+    await wallet.creditOrder(order.id, SYSTEM);
     expect(results.filter((result) => result.credited)).toHaveLength(1);
     expect(await wallet.balance(userId)).toBe(109);
 
@@ -340,32 +375,32 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     const days = (Date.parse(bonus!.expiresAt!) - Date.now()) / 86_400_000;
     expect(days).toBeGreaterThan(179.9);
     expect(days).toBeLessThan(180.1);
-    expect(await rawInsertFails({ userId, delta: 99, kind: 'purchase', orderId: order.id })).toBe('23505');
+    expect(await rawInsertFails({ ...RAW_ACTOR, userId, delta: 99, kind: 'purchase', orderId: order.id })).toBe('23505');
   });
 
   test('creditOrder refuses an order that is not paid', async () => {
     const userId = await newUser();
     const order = await wallet.createOrder(userId, 'p49');
     expect(order.status).toBe('pending');
-    await expect(wallet.creditOrder(order.id)).rejects.toBeInstanceOf(OrderNotPaid);
+    await expect(wallet.creditOrder(order.id, SYSTEM)).rejects.toBeInstanceOf(OrderNotPaid);
     expect(await wallet.balance(userId)).toBe(0);
   });
 
   test('the balance cap is enforced at checkout and on credit', async () => {
     const userId = await newUser();
-    await wallet.adjust(userId, BALANCE_CAP - 100, 'near the cap');
+    await wallet.adjust(userId, BALANCE_CAP - 100, 'near the cap', DEV);
     // A pending p49 fits (1949 ≤ 2000); p199 (+229) would not.
     await expect(wallet.createOrder(userId, 'p199')).rejects.toBeInstanceOf(BalanceCapExceeded);
     const order = await paidOrder(userId, 'p49');
-    await wallet.adjust(userId, 60, 'more');
-    await expect(wallet.creditOrder(order.id)).rejects.toBeInstanceOf(BalanceCapExceeded);
-    await expect(wallet.adjust(userId, 100, 'over')).rejects.toBeInstanceOf(BalanceCapExceeded);
+    await wallet.adjust(userId, 60, 'more', DEV);
+    await expect(wallet.creditOrder(order.id, SYSTEM)).rejects.toBeInstanceOf(BalanceCapExceeded);
+    await expect(wallet.adjust(userId, 100, 'over', DEV)).rejects.toBeInstanceOf(BalanceCapExceeded);
     expect(await wallet.balance(userId)).toBe(BALANCE_CAP - 40);
   });
 
   test('adjust never takes the balance below zero', async () => {
     const userId = await newUser();
-    await expect(wallet.adjust(userId, -1, 'overdraw')).rejects.toBeInstanceOf(InsufficientBalance);
+    await expect(wallet.adjust(userId, -1, 'overdraw', DEV)).rejects.toBeInstanceOf(InsufficientBalance);
     expect(await wallet.balance(userId)).toBe(0);
   });
 
@@ -379,7 +414,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
       .insert(compatibility)
       .values({ profileAId: profile.id, partnerName: 'ต้น', partnerBirthDate: '1997-01-01', relationshipType: 'romantic', score: 60, analysis: '{}' })
       .returning({ id: compatibility.id });
-    await wallet.adjust(userId, 98, 'test funds');
+    await wallet.adjust(userId, 98, 'test funds', DEV);
     await wallet.spend(userId, 'compat_unlock', pair.id);
     await wallet.spend(userId, 'compat_unlock', crypto.randomUUID()); // a row that no longer exists
     const [gone, named] = await wallet.ledger(userId, 10);
@@ -397,5 +432,118 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
       ['welcome', 49],
     ]);
     expect(rows[0]).toMatchObject({ productId: 'compat_unlock', refId: 'row-l' });
+  });
+  /** The actor columns as stored, oldest first. */
+  async function actorsOf(userId: string) {
+    return db
+      .select({ kind: walletLedger.kind, type: walletLedger.actorType, id: walletLedger.actorId, label: walletLedger.actorLabel })
+      .from(walletLedger)
+      .where(eq(walletLedger.userId, userId))
+      .orderBy(asc(walletLedger.createdAt), asc(walletLedger.kind));
+  }
+
+  test('every insert path records its actor', async () => {
+    const userId = await newUser();
+    await wallet.ensureWelcome(userId); // system
+    await wallet.spend(userId, 'compat_unlock', 'row-a'); // the spending user
+    await wallet.refundSpend(userId, 'compat_unlock', 'row-a', 'generation failed', { type: 'admin', id: 'adm-1', email: 'a@team.test' });
+    const order = await paidOrder(userId, 'p99');
+    await wallet.creditOrder(order.id, { type: 'system', label: 'stripe:evt_1' });
+    await wallet.adjust(userId, 5, 'dev: test', { type: 'dev', label: 'dev: test' });
+    await wallet.adjust(userId, -5, 'goodwill undo', { type: 'admin', id: 'adm-2', email: 'b@team.test' });
+    const rows = await actorsOf(userId);
+    const byKind = Object.fromEntries(rows.map((row) => [`${row.kind}:${row.label ?? ''}`, [row.type, row.id, row.label]]));
+    expect(byKind).toEqual({
+      'welcome:': ['system', null, null],
+      'spend:': ['user', userId, null],
+      'refund:a@team.test': ['admin', 'adm-1', 'a@team.test'],
+      'purchase:stripe:evt_1': ['system', null, 'stripe:evt_1'],
+      'bonus:stripe:evt_1': ['system', null, 'stripe:evt_1'],
+      'admin_adjust:dev: test': ['dev', null, 'dev: test'],
+      'admin_adjust:b@team.test': ['admin', 'adm-2', 'b@team.test'],
+    });
+  });
+
+  test('adjust refuses an empty note and a non-admin, non-dev actor, writing nothing', async () => {
+    const userId = await newUser();
+    const admin = { type: 'admin', id: 'adm-1', email: 'a@team.test' } as const;
+    await expect(wallet.adjust(userId, 10, '   ', admin)).rejects.toBeInstanceOf(InvalidAdjustment);
+    await expect(wallet.adjust(userId, 10, 'reason', { type: 'user', id: userId })).rejects.toBeInstanceOf(InvalidAdjustment);
+    await expect(wallet.adjust(userId, 10, 'reason', { type: 'system' })).rejects.toBeInstanceOf(InvalidAdjustment);
+    expect(await actorsOf(userId)).toEqual([]);
+  });
+
+  test('history pages without gaps or duplicates, across rows sharing one microsecond', async () => {
+    const userId = await newUser();
+    // Seven rows at one timestamp that is not millisecond-aligned, then three later ones.
+    const tied = sql`'2026-01-01 00:00:00.123456'::timestamp`;
+    await db.insert(walletLedger).values(
+      Array.from({ length: 7 }, (_, index) => ({ ...RAW_ACTOR, userId, delta: 1, kind: 'admin_adjust', note: `tie ${index}`, createdAt: tied })),
+    );
+    await wallet.adjust(userId, 1, 'later 1', DEV);
+    await wallet.adjust(userId, 1, 'later 2', DEV);
+    await wallet.adjust(userId, 1, 'later 3', DEV);
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await wallet.history(userId, { limit: 3, cursor });
+      seen.push(...page.entries.map((entry) => entry.id));
+      cursor = page.nextCursor ?? undefined;
+      pages += 1;
+    } while (cursor && pages < 10);
+    const all = (await wallet.history(userId, { limit: 50 })).entries.map((entry) => entry.id);
+    expect(all).toHaveLength(10);
+    expect(seen).toEqual(all);
+    expect(pages).toBe(4); // 3 + 3 + 3 + 1, and the last page says there is no next one
+  });
+
+  test('the kind filter returns only its group; a purchase carries its baht', async () => {
+    const userId = await newUser();
+    await wallet.ensureWelcome(userId);
+    await wallet.spend(userId, 'compat_unlock', 'row-k');
+    await wallet.creditOrder((await paidOrder(userId, 'p99')).id, SYSTEM);
+    await wallet.adjust(userId, 1, 'dev: k', DEV);
+    const kinds = async (kind: Parameters<Wallet['history']>[1]['kind']) =>
+      (await wallet.history(userId, { limit: 50, kind })).entries.map((entry) => entry.kind).sort();
+    expect(await kinds('topup')).toEqual(['bonus', 'purchase']);
+    expect(await kinds('spend')).toEqual(['spend']);
+    expect(await kinds('refund')).toEqual([]);
+    expect(await kinds('adjust')).toEqual(['admin_adjust']);
+    expect(await kinds('welcome')).toEqual(['welcome']);
+    const topups = (await wallet.history(userId, { limit: 50, kind: 'topup' })).entries;
+    expect(topups.find((entry) => entry.kind === 'purchase')).toMatchObject({ delta: 99, amountBaht: 99, by: 'horo' });
+    expect(topups.find((entry) => entry.kind === 'bonus')?.amountBaht).toBeNull();
+  });
+
+  test('a user sees only their own rows, even with another user\'s row id as the cursor', async () => {
+    const alice = await newUser();
+    const bob = await newUser();
+    await wallet.ensureWelcome(alice);
+    await wallet.adjust(alice, 1, 'dev: a', DEV);
+    await wallet.ensureWelcome(bob);
+    const aliceRows = (await wallet.history(alice, { limit: 50 })).entries;
+    const bobRows = (await wallet.history(bob, { limit: 50 })).entries;
+    expect(aliceRows).toHaveLength(2);
+    expect(bobRows).toHaveLength(1);
+    expect(bobRows.some((entry) => aliceRows.some((row) => row.id === entry.id))).toBe(false);
+    expect((await wallet.history(bob, { limit: 50, cursor: aliceRows[0].id })).entries).toEqual([]);
+  });
+
+  test('no history or ledger output carries an admin\'s id or email', async () => {
+    const userId = await newUser();
+    const adminId = `admin-secret-${run}`;
+    const adminEmail = `boss-${run}@team.test`;
+    await wallet.adjust(userId, 10, 'goodwill', { type: 'admin', id: adminId, email: adminEmail });
+    const outputs = [await wallet.history(userId, { limit: 50 }), await wallet.ledger(userId, 20)];
+    for (const output of outputs) {
+      const json = JSON.stringify(output);
+      expect(json).not.toContain(adminId);
+      expect(json).not.toContain(adminEmail);
+      expect(json).not.toContain('actorId');
+      expect(json).not.toContain('actorLabel');
+    }
+    expect((await wallet.ledger(userId, 20))[0]).toMatchObject({ kind: 'admin_adjust', by: 'team', note: 'goodwill' });
   });
 });
