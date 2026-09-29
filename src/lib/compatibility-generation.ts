@@ -90,7 +90,7 @@ function foreignTokenIn(text: string): string | null {
  */
 
 export interface CompatibilityReaderInput {
-  /** Display name used only to make the generated reading feel personal. */
+  /** Display name for report chrome and history; never supplied to the model. */
   name?: string | null;
   birthDate: Date;
   birthHour?: number;
@@ -126,7 +126,10 @@ export type CompatibilityCharts = ReturnType<typeof calculateCompatibilityCharts
 function promptPeople(reader: CompatibilityReaderInput, partner: CompatibilityPartnerInput, charts: CompatibilityCharts) {
   return {
     person1: {
-      name: reader.name?.trim() || 'คุณ',
+      // A profile name can be playful, private, or confusing in a long reading.
+      // The model always addresses the reader as คุณ; the other person's entered
+      // name remains available for specific, grounded relational advice.
+      name: 'คุณ',
       gender: reader.gender,
       birthDate: reader.birthDate,
       baziChart: charts.readerBazi,

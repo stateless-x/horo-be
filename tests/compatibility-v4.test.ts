@@ -232,11 +232,27 @@ describe('v4 prompt facts', () => {
     await generateCompatibilityV4({ ...input, reader: { ...input.reader, name: readerName } });
 
     const allPrompts = prompts.join('\n');
-    expect(allPrompts).toContain(`${readerName}เป็นคนที่มักจะ`);
+    expect(allPrompts).toContain('คุณเป็นคนที่มักจะ');
     expect(allPrompts).toContain(`${name}เป็นคนที่มักจะ`);
+    expect(allPrompts).not.toContain(readerName);
     expect(allPrompts).not.toContain(fixture.reader.mbti);
     expect(allPrompts).not.toContain(fixture.partner.mbti);
     expect(allPrompts).not.toContain('MBTI');
+  });
+
+  test('addresses the reader as คุณ while retaining the target name in every relationship context', async () => {
+    const readerName = 'ชื่อเล่นแปลกมาก';
+    for (const relationshipType of ['romantic', 'talking', 'friend', 'boss', 'coworker', 'family'] as const) {
+      const prompts: string[] = [];
+      mockModel(() => sections(), { onPrompt: (prompt) => prompts.push(prompt) });
+
+      await generateCompatibilityV4({ ...input, relationshipType, reader: { ...input.reader, name: readerName } });
+
+      const allPrompts = prompts.join('\n');
+      expect(allPrompts).toContain('เรียกผู้อ่านว่า “คุณ” เท่านั้น');
+      expect(allPrompts).toContain(name);
+      expect(allPrompts).not.toContain(readerName);
+    }
   });
 
   test('uses astrology alone when neither person supplied personality data', async () => {
