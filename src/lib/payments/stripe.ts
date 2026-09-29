@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { QR_TTL_MINUTES, describeOrder } from '../pricing';
+import { describeOrder, qrTtlMinutes } from '../pricing';
 import { EmailRequired, type ChargeState, type PaymentGateway } from './gateway';
 
 /**
@@ -115,7 +115,7 @@ export function createStripeGateway(client: StripeClient, now: () => Date = () =
         providerRef: pi.id,
         qr: { data: qr.data, imagePngUrl: qr.image_url_png, imageSvgUrl: qr.image_url_svg },
         // Stripe's PromptPay QR has no expiry; this is Horo's own timer.
-        expiresAt: new Date(now().getTime() + QR_TTL_MINUTES * 60_000),
+        expiresAt: new Date(now().getTime() + qrTtlMinutes * 60_000),
       };
     },
 

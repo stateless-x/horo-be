@@ -51,6 +51,20 @@ export const CURRENCY = 'THB';
  */
 export const QR_TTL_MINUTES = 15;
 
+/**
+ * The QR TTL in effect. Outside production, env QR_TTL_MINUTES (a positive
+ * number, e.g. 1 to watch the countdown reach 0) overrides the constant; a
+ * value that isn't one stops startup. Production always uses QR_TTL_MINUTES.
+ */
+export function resolveQrTtlMinutes(env: { NODE_ENV?: string; QR_TTL_MINUTES?: string }): number {
+  if (env.NODE_ENV === 'production' || !env.QR_TTL_MINUTES) return QR_TTL_MINUTES;
+  const minutes = Number(env.QR_TTL_MINUTES);
+  if (!Number.isFinite(minutes) || minutes <= 0) throw new Error(`QR_TTL_MINUTES must be a positive number of minutes, got "${env.QR_TTL_MINUTES}"`);
+  return minutes;
+}
+
+export const qrTtlMinutes = resolveQrTtlMinutes(process.env);
+
 /** A pack's price in satang, the unit orders store. */
 export function packAmountSatang(pack: WalletPack): number {
   return pack.priceBaht * 100;

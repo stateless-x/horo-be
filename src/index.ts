@@ -5,9 +5,11 @@ import { getRedisClient } from './lib/redis';
 import { HTTP_SERVER_OPTIONS } from './lib/http-server-options';
 // Chosen at import: PAYMENT_PROVIDER=fake in production throws here and the server never starts.
 import { paymentGateway } from './lib/payments';
+import { qrTtlMinutes } from './lib/pricing';
 
 console.log('[STARTUP] Starting Horo API...');
 console.log('[STARTUP] Payment provider:', paymentGateway?.provider ?? 'none (checkout answers unavailable)');
+console.log('[STARTUP] QR TTL minutes:', qrTtlMinutes);
 console.log('[STARTUP] Attempting to listen on port:', config.port);
 console.log('[STARTUP] CORS allowed origins:');
 config.cors.allowedOrigins.forEach(origin => console.log('[STARTUP]   -', origin));

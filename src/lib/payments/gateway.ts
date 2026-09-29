@@ -13,7 +13,7 @@ export type ChargeStarted = {
   /** The provider's id for this charge (Stripe: the PaymentIntent id). Stored as orders.provider_ref. */
   providerRef: string;
   qr: { data: string; imagePngUrl: string | null; imageSvgUrl: string | null };
-  /** When Horo stops offering the QR (now + QR_TTL_MINUTES). */
+  /** When Horo stops offering the QR (now + qrTtlMinutes, src/lib/pricing.ts). */
   expiresAt: Date;
 };
 

@@ -102,6 +102,8 @@ export const CheckoutRequestSchema = z.object({
   packId: z.enum(PACK_IDS),
   /** One-flow purchase: the ดวงคู่ row to unlock as soon as this order is paid. */
   unlockRef: z.string().uuid().optional(),
+  /** "ขอ QR ใหม่": the user's pending order whose QR this one replaces; its charge is canceled first. */
+  replaceOrderId: z.string().uuid().optional(),
 });
 export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;
 

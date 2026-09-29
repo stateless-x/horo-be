@@ -24,6 +24,20 @@ export class AlreadyPaid extends Error {
   }
 }
 
+/** `replaceOrderId` names no order of this user. */
+export class ReplacedOrderNotFound extends Error {
+  constructor(readonly orderId: string) {
+    super(`Order ${orderId} not found for this user`);
+  }
+}
+
+/** `replaceOrderId` names an order that is no longer pending (expired, failed or refunded). */
+export class ReplacedOrderNotPending extends Error {
+  constructor(readonly orderId: string, readonly status: string) {
+    super(`Order ${orderId} is ${status}, not pending; it can't be replaced`);
+  }
+}
+
 /** The app's deps, or null when no payment provider is configured. */
 export function appCheckoutDeps(gateway: PaymentGateway | null = paymentGateway): CheckoutDeps | null {
   if (!gateway) return null;
@@ -83,10 +97,11 @@ async function applyLookup(deps: CheckoutDeps, providerRef: string) {
  * then the error is rethrown.
  */
 export async function startCheckout(
-  input: { userId: string; email: string | null; packId: PackId; unlockRef?: string },
+  input: { userId: string; email: string | null; packId: PackId; unlockRef?: string; replaceOrderId?: string },
   deps: CheckoutDeps,
   now = new Date(),
 ) {
+  if (input.replaceOrderId) await replaceOrder(input.userId, input.replaceOrderId, now, deps);
   if (input.unlockRef) {
     const { userId, unlockRef } = input;
     const { paid } = await expireCanceling(deps, (cancel) => deps.wallet.expireSuperseded(userId, unlockRef, now, cancel));
@@ -101,6 +116,24 @@ export async function startCheckout(
     throw error;
   }
   return deps.wallet.attachCharge(created.id, deps.gateway.provider, charge);
+}
+
+/**
+ * "ขอ QR ใหม่": cancel the charge of the user's pending order this checkout
+ * replaces, then expire it, the same cancel-first path as expiry. If its
+ * charge had already succeeded (or a webhook paid it meanwhile), it is paid
+ * and fulfilled and the checkout throws AlreadyPaid instead of starting a
+ * second charge. Only the named order is replaced: another pending order of
+ * the user (a second tab) is left alone.
+ */
+async function replaceOrder(userId: string, orderId: string, now: Date, deps: CheckoutDeps) {
+  const old = await deps.wallet.getOrder(userId, orderId);
+  if (!old) throw new ReplacedOrderNotFound(orderId);
+  if (old.status === 'paid') throw new AlreadyPaid(orderId);
+  if (old.status !== 'pending') throw new ReplacedOrderNotPending(orderId, old.status);
+  await expireCanceling(deps, (cancel) => deps.wallet.expireReplaced(userId, orderId, now, cancel));
+  const after = await deps.wallet.getOrder(userId, orderId);
+  if (after?.status === 'paid') throw new AlreadyPaid(orderId);
 }
 
 /**

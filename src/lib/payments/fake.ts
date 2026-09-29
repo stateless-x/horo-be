@@ -1,4 +1,4 @@
-import { QR_TTL_MINUTES } from '../pricing';
+import { qrTtlMinutes } from '../pricing';
 import type { ChargeState, PaymentGateway } from './gateway';
 
 /**
@@ -29,7 +29,7 @@ export function createFakeGateway(now: () => Date = () => new Date()): FakeGatew
         status: 'pending' as const,
         amountSatang: order.amountSatang,
         currency: order.currency,
-        expiresAt: new Date(now().getTime() + QR_TTL_MINUTES * 60_000),
+        expiresAt: new Date(now().getTime() + qrTtlMinutes * 60_000),
       };
       charges.set(providerRef, charge);
       return { providerRef, qr: { data: `fake:${order.id}`, imagePngUrl: null, imageSvgUrl: null }, expiresAt: charge.expiresAt };

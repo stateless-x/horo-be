@@ -464,6 +464,11 @@ export function createWallet(db: DbClient) {
     );
   }
 
+  /** One pending order of this user, replaced by a new checkout ("ขอ QR ใหม่"). */
+  function expireReplaced(userId: string, orderId: string, now: Date, cancel: CancelCharge) {
+    return expireOrders(and(eq(orders.userId, userId), eq(orders.id, orderId)), now, cancel);
+  }
+
   /** The user's pending orders for this ดวงคู่ row, replaced by a new checkout (a new QR). */
   function expireSuperseded(userId: string, unlockRef: string, now: Date, cancel: CancelCharge) {
     return expireOrders(and(eq(orders.userId, userId), eq(orders.unlockRef, unlockRef)), now, cancel);
@@ -509,7 +514,7 @@ export function createWallet(db: DbClient) {
 
   return {
     balance, ensureWelcome, canAfford, hasPaid, spendWithin, spend, refundSpend, createOrder, getOrder,
-    markPaidWithin, markPaid, markFailedWithin, markNeedsReviewWithin, attachCharge, expireStale, expireSuperseded,
+    markPaidWithin, markPaid, markFailedWithin, markNeedsReviewWithin, attachCharge, expireStale, expireSuperseded, expireReplaced,
     creditOrder, adjust, history, ledger,
   };
 }

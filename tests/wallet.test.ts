@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { config } from '../src/config';
 import { chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
 import { isLocalDatabaseUrl } from '../src/lib/dev-regenerate';
-import { BALANCE_CAP, PACKS, PRODUCT_PRICES, QR_TTL_MINUTES, WELCOME_GIFT, bonusPercent, describeOrder, packAmountSatang } from '../src/lib/pricing';
+import { BALANCE_CAP, PACKS, PRODUCT_PRICES, QR_TTL_MINUTES, WELCOME_GIFT, bonusPercent, describeOrder, packAmountSatang, resolveQrTtlMinutes } from '../src/lib/pricing';
 import {
   BalanceCapExceeded,
   IllegalOrderTransition,
@@ -62,6 +62,14 @@ describe('pricing', () => {
   test('describeOrder names the baht and the มู credited', () => {
     expect(describeOrder({ amountSatang: packAmountSatang(PACKS.p99), unitsBase: 99, unitsBonus: 10 })).toBe('Horo เติม ฿99 (109 มู)');
     expect(describeOrder({ amountSatang: 39_900, unitsBase: 399, unitsBonus: 80 })).toBe('Horo เติม ฿399 (479 มู)');
+  });
+
+  test('QR TTL: env overrides outside production only; a bad value refuses', () => {
+    expect(resolveQrTtlMinutes({})).toBe(QR_TTL_MINUTES);
+    expect(resolveQrTtlMinutes({ NODE_ENV: 'development', QR_TTL_MINUTES: '1' })).toBe(1);
+    expect(resolveQrTtlMinutes({ NODE_ENV: 'production', QR_TTL_MINUTES: '1' })).toBe(QR_TTL_MINUTES);
+    expect(() => resolveQrTtlMinutes({ QR_TTL_MINUTES: '0' })).toThrow('positive');
+    expect(() => resolveQrTtlMinutes({ QR_TTL_MINUTES: 'soon' })).toThrow('positive');
   });
 
   test('the welcome gift is exactly one ดวงคู่ unlock', () => {
@@ -855,6 +863,85 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     const mine = await db.select().from(orders).where(eq(orders.userId, userId));
     expect(mine.map((order) => order.status)).toEqual(['paid']); // no second order, no second charge
     expect(await wallet.balance(userId)).toBe(49);
+  });
+
+  /** POST /api/wallet/checkout as this user, with the lock on. */
+  async function checkoutAs(userId: string, fake: FakeGateway, body: object) {
+    const { handle, chargeFailed } = paymentsFor(fake);
+    const REAL = config.compat;
+    config.compat = { lockEnabled: true, unlockFree: false };
+    const spy = signedInAs(userId);
+    try {
+      const response = await walletRoutes(wallet, fake, handle, chargeFailed).handle(
+        new Request('http://localhost/api/wallet/checkout', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+      );
+      return { status: response.status, body: await response.json() };
+    } finally {
+      spy.mockRestore();
+      config.compat = REAL;
+    }
+  }
+
+  test('ขอ QR ใหม่ (replaceOrderId): cancels the old charge and expires the old order, then starts the new one', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const old = await fakeOrder(fake, userId);
+    const other = await fakeOrder(fake, userId); // a second tab: left alone
+    const response = await checkoutAs(userId, fake, { packId: 'p49', replaceOrderId: old.id });
+    expect(response.status).toBe(200);
+    expect(response.body.orderId).not.toBe(old.id);
+    expect(await orderRow(old.id)).toMatchObject({ status: 'expired' });
+    expect((await fake.lookupCharge(old.providerRef!)).status).toBe('canceled');
+    expect((await orderRow(other.id)).status).toBe('pending');
+    expect((await fake.lookupCharge(other.providerRef!)).status).toBe('pending');
+    expect((await orderRow(response.body.orderId)).status).toBe('pending');
+  });
+
+  test('replaceOrderId of another user is 404; of an expired order 409; nothing is created', async () => {
+    const userId = await newUser();
+    const stranger = await newUser();
+    const fake = createFakeGateway();
+    const theirs = await fakeOrder(fake, stranger);
+    expect(await checkoutAs(userId, fake, { packId: 'p49', replaceOrderId: theirs.id })).toMatchObject({ status: 404 });
+    expect((await fake.lookupCharge(theirs.providerRef!)).status).toBe('pending');
+    const mine = await fakeOrder(fake, userId);
+    await db.update(orders).set({ status: 'expired' }).where(eq(orders.id, mine.id));
+    expect(await checkoutAs(userId, fake, { packId: 'p49', replaceOrderId: mine.id })).toMatchObject({
+      status: 409,
+      body: { error: 'order_not_pending', status: 'expired' },
+    });
+    expect(await db.select().from(orders).where(eq(orders.userId, userId))).toHaveLength(1);
+  });
+
+  test('replaceOrderId of a paid order is 409 already_paid, no new order', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const { handle } = paymentsFor(fake);
+    const old = await fakeOrder(fake, userId);
+    await handle(webhook(fake, old.providerRef!, 'succeeded'));
+    expect(await checkoutAs(userId, fake, { packId: 'p49', replaceOrderId: old.id })).toEqual({
+      status: 409,
+      body: { error: 'already_paid', orderId: old.id },
+    });
+    expect(await db.select().from(orders).where(eq(orders.userId, userId))).toHaveLength(1);
+  });
+
+  test('replaceOrderId whose charge already succeeded (cancel says succeeded): pays and credits it, 409 already_paid', async () => {
+    const userId = await newUser();
+    const fake = createFakeGateway();
+    const old = await fakeOrder(fake, userId, 'p99');
+    fake.simulate(old.providerRef!, 'succeeded'); // scanned; no webhook yet
+    expect(await checkoutAs(userId, fake, { packId: 'p49', replaceOrderId: old.id })).toEqual({
+      status: 409,
+      body: { error: 'already_paid', orderId: old.id },
+    });
+    expect(await orderRow(old.id)).toMatchObject({ status: 'paid', expiredAt: null });
+    expect(await wallet.balance(userId)).toBe(109);
+    expect(await db.select().from(orders).where(eq(orders.userId, userId))).toHaveLength(1);
   });
 
   test('startCharge that fails leaves no pending order: failed, with charge_failed recorded, and the error rethrown', async () => {

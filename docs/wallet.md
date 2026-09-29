@@ -193,7 +193,9 @@ The fake (`fake.ts`) keeps charges in memory: `providerRef` is `fake_<orderId>`,
 (`fake_evt_<providerRef>_<outcome>`). It accepts a canceled charge too, which models a payment that landed just before
 the cancel. A restart empties the map. Canceling an unknown charge is then a no-op, but looking it up throws.
 
-**QR TTL.** `QR_TTL_MINUTES = 15` (`src/lib/pricing.ts`). The adapter sets `expiresAt` = start + 15 min. It is Horo's
+**QR TTL.** `QR_TTL_MINUTES = 15` (`src/lib/pricing.ts`). Outside production, env `QR_TTL_MINUTES` (a positive number,
+e.g. `1` to watch the countdown reach 0) overrides it via `resolveQrTtlMinutes`; production always uses 15. Startup
+logs the value in effect. The adapter sets `expiresAt` = start + 15 min. It is Horo's
 own timer, because Stripe returns no expiry time for the PromptPay QR. A scan after it still pays (below).
 
 **Customer text.** `describeOrder(order)` in `src/lib/pricing.ts` gives "Horo เติม ฿99 (109 มู)", the PaymentIntent's
@@ -227,6 +229,14 @@ Expiry is lazy. There is no cron: `GET /api/wallet/orders/:id` expires that one 
 canceling each charge. A late payment on the old order still credits its pack. If an old charge had already
 succeeded, that order is paid and fulfilled (credit, then unlock the row) and the checkout answers 409
 `{ error: 'already_paid', orderId }` with no new order or charge.
+
+**"ขอ QR ใหม่" (`replaceOrderId`).** The client names the pending order whose QR it replaces. Checkout cancels that
+order's charge first (no lock), then expires it if it is still pending: the expiry path. If the charge had already
+succeeded, or a webhook paid the order meanwhile, it is paid and fulfilled and checkout answers 409 `already_paid`
+with that order id instead of starting a second charge. An order of another user is 404; an expired, failed or
+refunded one is 409 `order_not_pending`. Only the named order is replaced: other pending orders of the user are left
+alone on purpose, so a second tab never loses a QR its user is about to pay. Without `replaceOrderId`, an old QR stays
+payable until its own expiry.
 
 ### payment_events
 
@@ -322,6 +332,7 @@ a row once, so a replay does neither twice. The webhook never calls `adjust`.
 | `PAYMENT_PROVIDER` | all | `none` (the default when unset), `stripe` or `fake` (refused in production). `none`: checkout answers `unavailable`, no webhook route |
 | `STRIPE_SECRET_KEY` | stripe | `sk_live_…`/`rk_live_…` in production only; `sk_test_…`/`rk_test_…` everywhere else. Anything else, or missing, stops startup |
 | `STRIPE_WEBHOOK_SECRET` | stripe | `whsec_…`. Unset: `/webhooks/stripe` is not mounted; in production with `stripe` it stops startup |
+| `QR_TTL_MINUTES` | dev only | Overrides the 15-minute QR TTL outside production; ignored in production; not a positive number stops startup |
 
 **Local webhook testing.** Run the backend with the local database (`horo-be-dev-localdb`, port 3001; see
 `.claude/launch.json`) and `PAYMENT_PROVIDER=stripe` with the sandbox key. Then:
@@ -344,7 +355,7 @@ All `/api/wallet` routes need a session. `POST /webhooks/stripe` needs a valid S
 |---|---|
 | `GET /api/wallet` | lock off: `{ enabled: false }` (no session or DB work, no gift). Lock on: grants the welcome gift, then `{ enabled: true, balance, cap, packs, prices, ledger }` (the newest 20 rows; a ดวงคู่ spend or refund carries `refName`, the partner's name, from one left join on `ref_id`, or null once the reading is gone; each row carries `by` and `amountBaht`) |
 | `GET /api/wallet/history?cursor=&limit=&kind=` | `{ entries: LedgerEntry[], nextCursor }`, the session user's rows only, newest first. `limit` 1–50 (default 20), `cursor` a row id, `kind` one of `topup` (purchase, bonus), `spend`, `refund`, `adjust` (admin_adjust), `welcome`. 400 on an invalid query, 404 while the lock is off |
-| `POST /api/wallet/checkout { packId, unlockRef? }` | `{ orderId, status: 'pending', payment: 'qr', qr: { data, pngUrl, svgUrl }, expiresAt, amountBaht }` (Stripe fills both image URLs; the fake neither); 409 `balance_cap`; 409 `email_required` (Stripe, account without email; the order is marked failed); 409 `already_paid` `{ orderId }` (the row's previous charge had succeeded; that order is now paid and fulfilled); 404 while the lock is off. With `PAYMENT_PROVIDER` none: `{ payment: 'unavailable', message }` and no order |
+| `POST /api/wallet/checkout { packId, unlockRef?, replaceOrderId? }` | `{ orderId, status: 'pending', payment: 'qr', qr: { data, pngUrl, svgUrl }, expiresAt, amountBaht }` (Stripe fills both image URLs; the fake neither); 409 `balance_cap`; 409 `email_required` (Stripe, account without email; the order is marked failed); 409 `already_paid` `{ orderId }` (the row's previous charge, or the replaced order's, had succeeded; that order is now paid and fulfilled); `replaceOrderId` not the user's → 404, not pending → 409 `order_not_pending`; 404 while the lock is off. With `PAYMENT_PROVIDER` none: `{ payment: 'unavailable', message }` and no order |
 | `GET /api/wallet/orders/:id?verify=1` | the owner's order: `{ orderId, packId, status, amountSatang, units, createdAt, paidAt, expiresAt, balance }`, after lazy expiry and recovery (Payments); 429 on a second `verify` within 5 s; 404 when not the owner's |
 | `POST /api/wallet/dev/grant { delta, note }` | dev only; see below |
 | `POST /api/wallet/dev/pay { orderId, outcome? }` | dev only: settle the fake charge (`outcome` `succeeded`, the default, or `failed`), then run `handleProviderEvent` on its webhook event. 409 unless `PAYMENT_PROVIDER` is `fake` and the order has a fake charge |

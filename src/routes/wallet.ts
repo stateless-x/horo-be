@@ -10,7 +10,14 @@ import { paymentGateway } from '../lib/payments';
 import { EmailRequired, type PaymentGateway } from '../lib/payments/gateway';
 import type { FakeGateway } from '../lib/payments/fake';
 import { handleProviderEvent, recordChargeFailed } from '../lib/payments/events';
-import { AlreadyPaid, refreshOrder, startCheckout, type CheckoutDeps } from '../lib/payments/checkout';
+import {
+  AlreadyPaid,
+  ReplacedOrderNotFound,
+  ReplacedOrderNotPending,
+  refreshOrder,
+  startCheckout,
+  type CheckoutDeps,
+} from '../lib/payments/checkout';
 import {
   CheckoutRequestSchema,
   HISTORY_KINDS,
@@ -103,7 +110,7 @@ export function walletRoutes(
       }
       try {
         const order = await startCheckout(
-          { userId: session.userId, email: session.email, packId: parsed.data.packId, unlockRef: parsed.data.unlockRef },
+          { ...parsed.data, userId: session.userId, email: session.email },
           deps,
         );
         return {
@@ -124,10 +131,18 @@ export function walletRoutes(
           set.status = 409;
           return { error: 'email_required' };
         }
-        // The row's previous order turned out paid (and was fulfilled): no second charge.
+        // The row's previous order, or the replaced one, turned out paid (and was fulfilled): no second charge.
         if (error instanceof AlreadyPaid) {
           set.status = 409;
           return { error: 'already_paid', orderId: error.orderId };
+        }
+        if (error instanceof ReplacedOrderNotFound) {
+          set.status = 404;
+          return { error: 'Order not found' };
+        }
+        if (error instanceof ReplacedOrderNotPending) {
+          set.status = 409;
+          return { error: 'order_not_pending', orderId: error.orderId, status: error.status };
         }
         throw error;
       }
