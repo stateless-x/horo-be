@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
 import { normalizeMbtiType } from '../../../lib/astrology';
@@ -18,6 +19,21 @@ import { compatCacheKey, unlockForUser } from './unlock';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
+}
+
+/**
+ * A 500 on the check or the unlock: a short id for the 500 body, logged on one
+ * line with the same id and the error's class and message head (never the
+ * prompt or the person's data), so support can grep the Railway logs for the
+ * id a person quotes from the failure notice.
+ */
+export function failureReference(error: unknown): string {
+  const reference = randomUUID().replace(/-/g, '').slice(0, 8);
+  const cause = error instanceof Error
+    ? `${error.name}: ${error.message.split('\n')[0].slice(0, 120)}`
+    : typeof error;
+  console.error(`[compat] failure reference=${reference} cause=${cause}`);
+  return reference;
 }
 
 
@@ -230,7 +246,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       }
       console.error('Compatibility error:', error);
       set.status = 500;
-      return { error: 'ตอนนี้เขียนดวงคู่ไม่สำเร็จ ลองอีกครั้งนะ' };
+      return { error: 'ตอนนี้เขียนดวงคู่ไม่สำเร็จ ลองอีกครั้งนะ', reference: failureReference(error) };
     }
   }, {
     body: t.Object({
@@ -400,7 +416,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
     } catch (error) {
       console.error('Compatibility unlock error:', error);
       set.status = 500;
-      return { error: 'ตอนนี้เขียนฉบับเต็มไม่สำเร็จ ลองอีกครั้งนะ' };
+      return { error: 'ตอนนี้เขียนฉบับเต็มไม่สำเร็จ ลองอีกครั้งนะ', reference: failureReference(error) };
     }
   })
 
