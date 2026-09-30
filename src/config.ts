@@ -73,6 +73,19 @@ export const config = {
     secret: process.env.ADMIN_API_SECRET || '',
   },
 
+  /**
+   * Stripe PromptPay (docs/wallet.md, Payments). Used only when
+   * PAYMENT_PROVIDER=stripe; src/lib/payments/index.ts refuses to start
+   * without them there, or with a key of the wrong mode (live outside
+   * production, test in production). Never logged. Must NEVER join
+   * `authRequired` below — see the scar comment on that list.
+   */
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    // Signs Stripe's webhooks ("whsec_..."). When unset, /webhooks/stripe is not mounted (index.ts).
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+  },
+
   cors: {
     allowedOrigins: (() => {
       const origins = process.env.CORS_ALLOWED_ORIGINS

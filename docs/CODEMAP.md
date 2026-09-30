@@ -31,6 +31,8 @@ Auth/profile is verified end-to-end; the broader LLM generation domain was not r
 - fortune routes -> session validator — cookie authentication. [V] `src/systems/fortune/routes.ts:215-230`
 - fortune routes -> Drizzle transaction — profile and derived astrology writes. [V] `src/systems/fortune/routes.ts:231-313`
 - schema -> PostgreSQL — users/accounts plus birth profiles and chart tables. [V] `lib/db/schema/users.ts:12-66`, `lib/db/schema/profiles.ts:4-58`
+- compatibility routes -> `readFlags()` — `compat_lock` decides teaser-first or full; every read filters `content_version = 4` (legacy rows 404). [V] `src/systems/compatibility/routes.ts`, `src/lib/compatibility-content.ts` (2026-09-30)
+- `/internal/flags` (horo-admin, `x-admin-secret`) -> `feature_flags` table — product switches; no env var sets them. [V] `src/routes/internal-flags.ts`, `src/lib/feature-flags.ts`, `docs/feature-flags.md` (2026-09-30)
 
 ## Domain core
 - Provider ID plus provider account ID is the login identity; real email is reporting data, not a merge key. [V] `src/lib/auth.ts:26-46`, `lib/db/schema/users.ts:16-26`

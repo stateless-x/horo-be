@@ -57,21 +57,26 @@ export type FortuneTabKey = (typeof FORTUNE_TABS)[number];
  * its own event. This is for "left this surface for that one".
  */
 export const TRACKED_CTAS = [
-  /** /dashboard/today → /dashboard/fortune, the monthly-reading band. */
+  /** /dashboard/fortune/daily → /dashboard/fortune/monthly, the monthly-reading band. */
   'today_monthly_chart',
-  /** /dashboard/fortune → /dashboard/compatibility, from the read-next block. */
+  /** /dashboard/fortune/monthly → /dashboard/compatibility, from the read-next block. */
   'fortune_compatibility',
-  /** /dashboard/fortune → /dashboard/today, from the read-next block. */
+  /** /dashboard/fortune/monthly → /dashboard/fortune/daily, from the read-next block. */
   'fortune_today',
 ] as const;
 
 export type TrackedCta = (typeof TRACKED_CTAS)[number];
 
-/** Where an outbound Shopee affiliate tab was triggered. */
-export const AFFILIATE_PLACEMENTS = [
-  'donation_modal_close',
-  'fortune_compatibility_cta',
-] as const;
+/**
+ * Where an outbound Shopee affiliate tab was triggered.
+ *
+ * Empty on purpose until T12 (opt-in element picks) adds its placement, so
+ * `AffiliatePlacement` is `never` and nothing can emit the event meanwhile.
+ * The two forced openers that used to live here, `donation_modal_close` and
+ * `fortune_compatibility_cta`, were removed in T2 (2026-09-27); their
+ * historical product_events rows stay readable in horo-admin.
+ */
+export const AFFILIATE_PLACEMENTS = [] as const;
 
 export type AffiliatePlacement = (typeof AFFILIATE_PLACEMENTS)[number];
 

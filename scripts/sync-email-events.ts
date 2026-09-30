@@ -46,7 +46,7 @@
  * limits in the first place — hitting one anyway should slow down, not quit.
  */
 
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { eq, and, isNotNull, count } from 'drizzle-orm';
 import { db } from '../src/lib/db';
 import { emailSends, emailEvents } from '../lib/db/schema';
 import { config } from '../src/config';
@@ -236,6 +236,56 @@ async function main() {
   if (errored > 0) {
     console.log(`${errored} row(s) failed to sync — re-run the script to retry them; onConflictDoNothing makes re-running safe.`);
   }
+
+  await printSummary();
+}
+
+/**
+ * What the sync actually found, grouped by outcome.
+ *
+ * Printed after every run because the run's own counters ("synced=500") say
+ * only that we recorded something for each row — not WHAT. "500 synced" and
+ * "500 bounced" look equally successful from the loop's point of view, and
+ * the whole reason to run this script is to learn which.
+ *
+ * Read-only: a SELECT over what was just written.
+ */
+async function printSummary(): Promise<void> {
+  const rows = await db
+    .select({ eventType: emailEvents.eventType, n: count() })
+    .from(emailEvents)
+    .groupBy(emailEvents.eventType);
+
+  if (rows.length === 0) {
+    console.log('\nNo events recorded yet.');
+    return;
+  }
+
+  const total = rows.reduce((sum, r) => sum + Number(r.n), 0);
+  const get = (type: string) => Number(rows.find((r) => r.eventType === type)?.n ?? 0);
+  const delivered = get('delivered');
+  const bounced = get('bounced');
+  const complained = get('complained');
+
+  console.log('\nOutcomes recorded:');
+  for (const row of [...rows].sort((a, b) => Number(b.n) - Number(a.n))) {
+    const n = Number(row.n);
+    console.log(`  ${row.eventType.padEnd(18)} ${String(n).padStart(5)}  (${((n / total) * 100).toFixed(1)}%)`);
+  }
+
+  // The two numbers that decide "did this land or did it hurt us". Complaints
+  // divide by DELIVERED: a bounced message never reached an inbox, so it never
+  // had the chance to be reported.
+  if (delivered > 0) {
+    console.log(
+      `\n  complaint rate ${((complained / delivered) * 100).toFixed(2)}% of delivered (danger ≥0.1%)` +
+        `\n  bounce rate    ${((bounced / total) * 100).toFixed(2)}% of sent (danger ≥2%)`,
+    );
+  }
+  // A "delivered" from Resend means the receiving server ACCEPTED the message.
+  // Gmail marks spam-foldered mail delivered too, so this is not proof of
+  // inbox placement and the summary must not imply that it is.
+  console.log('\n  Note: "delivered" = the receiving server accepted it, not that it reached the inbox.');
 }
 
 main()

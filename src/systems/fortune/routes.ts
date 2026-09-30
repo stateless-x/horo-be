@@ -1,13 +1,12 @@
 import { Elysia } from 'elysia';
 import { db } from '../../lib/db';
-import { generateStructuredFortuneReading, generateEnhancedDailyReading, generateTeaserReading } from '../../lib/llm';
+import { generateStructuredFortuneReading, generateEnhancedDailyReading } from '../../lib/llm';
 import { normalizeSignupSource } from '../../lib/analytics-events';
-import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyScoresForChart, selectFocusArea, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, buildTraitChips, normalizeMbtiType, type DailyCategory } from '../../../lib/astrology';
+import { calculateBazi, calculateEnrichedBazi, calculateElementProfile, calculatePillarInteractions, calculateThaiAstrology, calculateTodayThaiAstrology, getDailyScoresForChart, calculateOverallScore, calculateChartCategoryScores, applyChartScores, normalizeLegacyChartScore, normalizeLegacyDailyScore, type DailyCategory } from '../../../lib/astrology';
 import { birthProfiles, baziCharts, thaiAstrologyData, dailyReadings, chartNarratives, user } from '../../../lib/db';
 import { BirthProfileSchema, type StructuredChartResponse } from '../../../lib/shared';
 import { eq, and, desc, lt, isNull, sql } from 'drizzle-orm';
 import {
-  buildTeaserPrompt,
   buildStructuredChartPrompt,
   SYSTEM_PROMPT_STRUCTURED,
 } from '../../lib/prompts';
@@ -18,6 +17,7 @@ import { validateSessionFromRequest } from '../../lib/session';
 import { getTodayBangkokString, getBangkokDate, getBangkokYearMonth, getYearMonthInBangkok, getReadingPeriod } from '../../../lib/shared/utils/date';
 import { getCachedProfile } from '../shared';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
+import { generateTeaser } from './teaser';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
@@ -71,13 +71,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
       if (rateLimitResult.limited) {
         set.status = 429;
-        set.headers = {
-          ...set.headers,  // Preserve existing headers (including CORS)
+        Object.assign(set.headers, {  // Preserve existing headers (including CORS)
           'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
           'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-        };
+        });
         return {
           error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
           code: 'RATE_LIMIT_EXCEEDED',
@@ -87,66 +86,15 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       }
 
       // Add rate limit headers to successful requests
-      set.headers = {
-        ...set.headers,  // Preserve existing headers (including CORS)
+      Object.assign(set.headers, {  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.teaser.maxRequests.toString(),
         'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-      };
+      });
 
       try {
-        const name = profile.name || 'ผู้มาเยือน';
-        const birthDate = new Date(profile.birthDate);
-        const birthHour = profile.birthTime?.isUnknown ? undefined : profile.birthTime?.chineseHour;
-        const mbtiType = normalizeMbtiType(profile.mbtiType);
-
-        // Calculate astrology
-        const baziChart = calculateBazi(birthDate, birthHour, profile.gender);
-        const thaiAstrology = calculateThaiAstrology(birthDate);
-
-        // Same shared helper /daily calls — identical birth data + Bangkok day
-        // always yields identical scores on both endpoints.
-        const todayBangkok = getBangkokDate();
-        const { scores } = getDailyScoresForChart(baziChart, todayBangkok);
-        const focusArea = selectFocusArea(scores);
-
-        // Deterministic trait chips, no LLM — thai + bazi always, mbti only
-        // when a valid type was given.
-        const traitChips = buildTraitChips(thaiAstrology.day, baziChart.element, mbtiType);
-
-        // Generate AI reading using comprehensive prompt
-        const prompt = buildTeaserPrompt(
-          name,
-          birthDate,
-          baziChart,
-          thaiAstrology,
-          mbtiType,
-          focusArea,
-          scores[focusArea],
-          traitChips,
-        );
-
-        const { threeWay, reading } = await generateTeaserReading(prompt, name);
-
-        return {
-          contentVersion: 2,
-          elementType: baziChart.element,
-          luckyColor: thaiAstrology.color,
-          luckyNumber: thaiAstrology.luckyNumber,
-          personality: thaiAstrology.personality,
-          todaySnippet: reading,
-          threeWay,
-          reading,
-          focusArea,
-          traitChips,
-          scores: {
-            date: getTodayBangkokString(),
-            love: scores.love,
-            career: scores.career,
-            finance: scores.finance,
-            health: scores.health,
-          },
-        };
+        const { result } = await generateTeaser(profile);
+        return result;
       } catch (error) {
         console.error('Teaser generation error:', error);
 
@@ -182,13 +130,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
     if (rateLimitResult.limited) {
       set.status = 429;
-      set.headers = {
-        ...set.headers,  // Preserve existing headers (including CORS)
+      Object.assign(set.headers, {  // Preserve existing headers (including CORS)
         'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
         'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
+      });
       return {
         error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
         code: 'RATE_LIMIT_EXCEEDED',
@@ -198,12 +145,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
     }
 
     // Add rate limit headers
-    set.headers = {
-      ...set.headers,  // Preserve existing headers (including CORS)
+    Object.assign(set.headers, {  // Preserve existing headers (including CORS)
       'X-RateLimit-Limit': RATE_LIMITS.profileSave.maxRequests.toString(),
       'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
       'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-    };
+    });
 
     try {
       const profile = BirthProfileSchema.parse(body);
@@ -410,13 +356,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
           if (rateLimitResult.limited) {
             set.status = 429;
-            set.headers = {
-              ...set.headers,  // Preserve existing headers (including CORS)
+            Object.assign(set.headers, {  // Preserve existing headers (including CORS)
               'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
               'X-RateLimit-Remaining': '0',
               'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
               'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-            };
+            });
             return {
               error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
               code: 'RATE_LIMIT_EXCEEDED',
@@ -426,12 +371,11 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           }
 
           // Add rate limit headers
-          set.headers = {
-            ...set.headers,  // Preserve existing headers (including CORS)
+          Object.assign(set.headers, {  // Preserve existing headers (including CORS)
             'X-RateLimit-Limit': RATE_LIMITS.daily.maxRequests.toString(),
             'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
             'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
-          };
+          });
 
           // Generate new structured daily reading
           const baziChart = calculateBazi(
@@ -604,13 +548,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
     if (rateLimitResult.limited) {
       set.status = 429;
-      set.headers = {
-        ...set.headers,
+      Object.assign(set.headers, {
         'X-RateLimit-Limit': RATE_LIMITS.chartRegenerate.maxRequests.toString(),
         'X-RateLimit-Remaining': '0',
         'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
         'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-      };
+      });
       return {
         error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
         code: 'RATE_LIMIT_EXCEEDED',
@@ -751,10 +694,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
       if (cachedChart) {
         console.log('[Fortune] GET /chart - Cache hit (not counted toward rate limit) for profile:', profile.id);
         // Return cached data without consuming rate limit
-        set.headers = {
-          ...set.headers,
+        Object.assign(set.headers, {
           'X-Cache-Status': 'HIT',
-        };
+        });
         return cachedChart;
       }
 
@@ -775,10 +717,9 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
           // Skip rate limit for system-initiated expiry (month boundary)
           if (monthBoundaryExpired) {
             console.log('[Fortune] GET /chart - Auto-expiry detected, bypassing rate limit for profile:', profile.id);
-            set.headers = {
-              ...set.headers,
+            Object.assign(set.headers, {
               'X-Cache-Status': 'EXPIRED_MONTHLY',
-            };
+            });
           } else {
             // Rate limit check is inside the promise so no gap between guard check and set
             console.log('[Fortune] GET /chart - No in-flight generation, checking rate limit for LLM generation');
@@ -786,13 +727,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
 
             if (rateLimitResult.limited) {
               set.status = 429;
-              set.headers = {
-                ...set.headers,
+              Object.assign(set.headers, {
                 'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
                 'X-RateLimit-Remaining': '0',
                 'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
                 'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString(),
-              };
+              });
               return {
                 error: 'คำขอมากเกินไป กรุณาลองใหม่อีกครั้งในภายหลัง',
                 code: 'RATE_LIMIT_EXCEEDED',
@@ -802,13 +742,12 @@ export const fortuneRoutes = new Elysia({ prefix: '/api/fortune' })
             }
 
             // Add rate limit headers for LLM generation
-            set.headers = {
-              ...set.headers,
+            Object.assign(set.headers, {
               'X-RateLimit-Limit': RATE_LIMITS.chart.maxRequests.toString(),
               'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
               'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
               'X-Cache-Status': 'MISS',
-            };
+            });
           }
 
           // ---- Step 1: Deterministic calculation + parallel DB fetch ----

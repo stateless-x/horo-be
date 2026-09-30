@@ -6,3 +6,5 @@ export * from './daily';
 export * from './daily-scores';
 export * from './chart-scores';
 export * from './trait-chips';
+export * from './compatibility-archetypes';
+export * from './compatibility-report';

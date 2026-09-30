@@ -36,7 +36,7 @@ export function normalizeMbtiType(raw: string | null | undefined): MbtiType | nu
  * wednesday_day and wednesday_night as distinct entries, matching how the rest
  * of the codebase — see lib/astrology/thai.ts — already splits Wednesday).
  */
-const THAI_DAY_LABELS: Record<ThaiDay, string> = {
+export const THAI_DAY_LABELS: Record<ThaiDay, string> = {
   sunday: 'เกิดวันอาทิตย์',
   monday: 'เกิดวันจันทร์',
   tuesday: 'เกิดวันอังคาร',
@@ -59,7 +59,7 @@ const THAI_DAY_TRAITS: Record<ThaiDay, string> = {
 };
 
 /** Bazi day-master element trait. */
-const BAZI_ELEMENT_LABELS: Record<Element, string> = {
+export const BAZI_ELEMENT_LABELS: Record<Element, string> = {
   wood: 'ธาตุไม้',
   fire: 'ธาตุไฟ',
   earth: 'ธาตุดิน',
