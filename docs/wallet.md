@@ -593,9 +593,21 @@ All behind `INTERNAL_API_SECRET`; horo-admin renders them and offers the CSV dow
 
 ## Deferred
 
-- **Stripe go-live:** set `STRIPE_SECRET_KEY` (live) and `STRIPE_WEBHOOK_SECRET` in Railway, then
-  `PAYMENT_PROVIDER=stripe`; with the variable set and a secret missing, the server refuses to start. Register the
-  endpoint `https://<api>/webhooks/stripe` for the three `payment_intent.*` events.
+- **Stripe go-live (checklist, 2026-09-30).** Production has no `stripe listen`: Stripe posts to an endpoint registered
+  in the Stripe dashboard, and on 2026-09-30 none was registered (test mode checked; live not visible from here).
+  1. Stripe dashboard (live mode; repeat in test mode for a staging deploy) → Developers → Webhooks → add endpoint
+     `https://api.xn--y3cbx6azb.com/webhooks/stripe` (api.สายมู.com), events `payment_intent.succeeded`,
+     `payment_intent.payment_failed`, `payment_intent.canceled`.
+  2. Copy **that endpoint's** signing secret into Railway `STRIPE_WEBHOOK_SECRET`. The `whsec_` that `stripe listen`
+     prints is a different secret and fails every production signature (400).
+  3. Railway: `STRIPE_SECRET_KEY` (live `sk_live_`), `PAYMENT_PROVIDER=stripe`. A missing secret stops startup.
+  4. After the deploy: the log says `Stripe webhook route mounted at /webhooks/stripe`, and an unsigned
+     `curl -X POST https://api.xn--y3cbx6azb.com/webhooks/stripe` answers **400** (404 means not mounted).
+  5. Dashboard → the endpoint → "Send test event" (`payment_intent.succeeded`) answers 200, then one real ฿49 top-up
+     shows `paid` without tapping anything.
+  - Safety net: while a QR is open the sheet asks Stripe itself (`?verify=1`) every 15 s
+    (`ORDER_VERIFY_EVERY_MS`, horo-fe `use-order-status.ts`), so a lost or late webhook costs about 15 s, not the QR
+    lifetime. It is a fallback; the webhook stays the path that works with the tab closed.
 - **Users without an account email can't top up (known limitation):** checkout answers 409 `email_required`, because
   Stripe PromptPay needs the billing email, and the settings page has no email field yet.
 - **Re-scan of a paid QR (known gap).** Stripe's PromptPay doc ("Repeated payments", docs.stripe.com/payments/promptpay)
