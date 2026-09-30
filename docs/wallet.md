@@ -62,8 +62,8 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
   | `p399` | ฿399 | 399 | 80 | 479 | 20% |
 - Welcome gift: 49 once per account, on the first wallet touch while ดวงคู่ locked mode is on (`GET /api/wallet` or an
   unlock). **Not sellable, not shown:** with the lock off there is no gift, `GET /api/wallet` returns
-  `{ enabled: false }`, and the frontend shows no wallet (owner decision, 2026-09-27). One flag gates both:
-  `COMPAT_LOCK_ENABLED`.
+  `{ enabled: false }`, and the frontend shows no wallet (owner decision, 2026-09-27). One flag gates both: the
+  `compat_lock` feature flag, set in horo-admin (`docs/feature-flags.md`; env vars retired 2026-09-30).
 - Closed loop: never cashed out, never transferred between users, never spent outside Horo. Balance cap 2,000.
 - **Approved target before launch (owner 2026-09-30): every มู is permanent.** Base, bonus, welcome and adjustment rows
   have `expires_at = null`. The current branch still assigns 180 days to bonus rows through `BONUS_TTL_DAYS`; remove
@@ -139,7 +139,7 @@ from their caller.
 The unlock pays atomically with delivery. The seam is in `src/lib/entitlements.ts`:
 
 1. **`checkUnlock(userId, rowId)`**, before generating.
-   - Lock off, or `COMPAT_UNLOCK_FREE=1` (dev): ok, with no wallet access.
+   - `compat_lock` off, or its `compat_unlock_free` sub-flag on (testing): ok, with no wallet access.
    - Row already paid for (`hasPaid`): ok, see below.
    - Otherwise it runs `ensureWelcome`, then `canAfford(userId, 49)`. This is a read-only pre-check and takes no lock.
    - Short → `{ ok: false, body: { error: INSUFFICIENT_BALANCE, balance, price } }`, sent as the 402 body.

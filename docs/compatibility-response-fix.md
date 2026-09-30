@@ -1,14 +1,36 @@
 ---
 type: DECISION
-status: active — synchronous response budget (2026-09-08), v4 live budget and locked mode (2026-09-27)
+status: active — synchronous response budget (2026-09-08), v4 live budget and locked mode (2026-09-27), canon v1 only and admin flags (2026-09-30)
 scope: the compatibility POST and unlock responses: timeouts, the v4 model budget, teaser-first locked mode
-last_reviewed: 2026-09-27
+last_reviewed: 2026-09-30
 owner: backend
 supersedes: []
 superseded_by: null
 ---
 
 # Compatibility response and reading voice
+
+## Canon v1 (2026-09-30)
+
+One ดวงคู่ report exists: the teaser-first report below, called **canon v1** in product and UI. In data it is
+`contentVersion: 4` (the number is historical and stays, so stored rows need no rewrite).
+
+- **Legacy rows are hidden, not deleted.** The `compatibility.content_version` column is `4` for a current row and
+  NULL for a legacy one (v1 markdown, v2 cards). History, its count, `GET /:id`, unlock and the share link all filter on
+  `content_version = 4`, so a legacy row answers 404 everywhere. No frontend code renders v1 or v2 any more.
+  - At the decision, production held 502 v1 and 30 v2 rows (about 310 profiles), and 5 canon rows on one profile.
+  - The unique index is partial (`compatibility_user_partner_type_v4_idx`, current rows only), so checking a partner
+    again writes a new canon row beside the hidden legacy one.
+  - **After the deploy that adds the column,** run this once on production, or the 5 canon rows stay hidden:
+    `UPDATE compatibility SET content_version = 4 WHERE content_version IS NULL AND analysis LIKE '{%' AND analysis::jsonb->>'contentVersion' = '4' AND analysis::jsonb ? 'teaser';`
+- **MBTI steers, never shows.** Both people's MBTI feed the prompt as plain behaviour ("…เป็นคนที่มักจะ…",
+  `compatibilityPersonalityContext` in `src/lib/prompts.ts`); the type label never enters the prompt. Every prose
+  field is rejected with a repair if it names a type, a code or the framework (`personalityFrameworkJargon`), and
+  English is not allowed at all. MBTI lives only in the stored `inputs`. The client shapes (`teaser`, `full`, `share`)
+  carry no `mbti`, no insight plan and no dimension `basis`.
+- **Paid door.** Spending มู from balance asks first (`SpendConfirmSheet` in horo-fe `features/wallet`): what it opens,
+  the balance before and after, and `49 มู เท่ากับ ฿49`. A top-up's QR payment is its own consent and unlocks with no
+  second tap.
 
 ## Decision (2026-09-08)
 
@@ -93,26 +115,26 @@ When the deadline arrives:
 - **Rule failure** (schema or a hard pair check): the reading fails with a 500 and the page asks the user to try again. The daily check is already counted; the rate-limit behavior is unchanged.
 - **During a quality repair:** the valid reply from before the repair is kept, and its issues are logged as quality flags. A quality flag never fails a reading.
 
-Measured with `scripts/prototype-compat-v3/run.ts --live` (5 fixtures × 2, real DeepSeek, 2026-09-27):
+Measured with the prototype harness (5 fixtures × 2, real DeepSeek, 2026-09-27; the harness was removed on 2026-09-30):
 - **Result:** 10/10 passed.
 - **Wall time:** 15.6 to 25.1 s, typically about 21 s.
 - **Slowest single call:** 12.2 s.
 
 A first run failed 2/10 in the plan call: the plan left a chapter without an insight, and the one repair got back the same plan. The repair message only said "every chapter needs one". The plan schema now names the missing chapter.
 
-The public share link (`GET /compatibility/share/:token`) returns only the free fields for a v4 row: names, elements, score, archetype, verdict and dimension numbers. It never returns `analysis`. v2 share responses are unchanged: they still return the stored reading.
+The public share link (`GET /compatibility/share/:token`) returns only the free fields for a v4 row: names, elements, score, archetype, verdict and dimension numbers. It never returns `analysis`. A legacy row's share link answers 404.
 
 ## Locked mode (2026-09-27)
 
 Locked mode writes only the free teaser when the user checks a pair, and writes the paid detail when they unlock it. The model cost of the detail is only spent on unlocks.
 
-| | Flag off (default) | `COMPAT_LOCK_ENABLED=1` |
+| | `compat_lock` off (default) | `compat_lock` on |
 |---|---|---|
 | `POST /api/fortune/compatibility` | plan, then cover ∥ 3 detail calls; stores the detail | plan, then cover; stores `detail: null` |
 | Response | `locked: false`, full report | `locked: true`, teaser view |
-| `POST /compatibility/:id/unlock` | free (`assertCanUnlock` is ok) | spends 49 มู once per row; 402 `{ error: 'insufficient_balance', balance, price }` below that; free with `COMPAT_UNLOCK_FREE=1` (dev) |
+| `POST /compatibility/:id/unlock` | free (`assertCanUnlock` is ok) | spends 49 มู once per row; 402 `{ error: 'insufficient_balance', balance, price }` below that; free while the `compat_unlock_free` sub-flag is on |
 
-The flags are read once at startup (`config.compat` in `src/config.ts`), and only the exact value `1` turns them on.
+The flags are set in horo-admin (สวิตช์ฟีเจอร์) and stored in the `feature_flags` table, not in env vars; see `docs/feature-flags.md`. A change applies within 5 seconds, without a redeploy.
 
 **Paid with delivery.** With the lock on, `checkUnlock` in `src/lib/entitlements.ts` checks whether the reader may unlock from the มู wallet (`docs/wallet.md`). It does not debit first. The detail generates before one transaction runs `chargeUnlockWithin` and patches the detail on the same row.
 
@@ -122,7 +144,7 @@ The one-flow top-up path is implemented separately in `docs/wallet.md`; producti
 
 ### Stored shape
 
-The `analysis` column holds `CompatibilityV4StoredSchema` (`lib/shared/types/compatibility.ts`). There is no schema change.
+The `analysis` column holds `CompatibilityV4StoredSchema` (`lib/shared/types/compatibility.ts`); `content_version` is 4.
 
 ```
 { contentVersion: 4,
@@ -137,7 +159,7 @@ The `analysis` column holds `CompatibilityV4StoredSchema` (`lib/shared/types/com
 - **`inputs`** is one field beyond the shape first decided. A reader can edit their birth date, hour, gender or MBTI after the check, and the detail must describe the same charts the teaser shows.
 - **`plan`** is paid substance. The teaser's hints point at it.
 - **Locked means `detail === null`,** whatever the flag says. A row written while the lock was on stays locked after the flag goes off; unlocking it is then free.
-- **Older rows.** Rows written before locked mode store the flat `CompatibilityV4Content`. Only dev databases have them, since v4 never shipped flat. They parse as full and are never locked. v1 and v2 rows are unchanged.
+- **Every current row has this shape,** full or locked. The flat form some dev rows had is no longer read; those rows are legacy.
 
 ### What leaves the server
 
@@ -149,9 +171,9 @@ All four reading responses are built in `src/systems/compatibility/reading.ts`:
 
 Rules for a v4 row:
 - **No `analysis` field.** The stored JSON carries the plan and the input snapshot.
-- **`structuredContent` comes from `shapeCompatibilityView`,** the teaser view when locked. The teaser view has no overview, chapters, calendar, week plan, palace, insights or inputs.
+- **`structuredContent` comes from `shapeCompatibilityView`,** the teaser view when locked. The teaser view has no overview, chapters, calendar, week plan or palace; neither view has the insight plan, the inputs or MBTI.
 - **The share link returns the free fields only,** locked or not.
-- **History returns no reading text,** and it has no `locked` field. It does carry `lockEnabled`, the flag rather than any row's state, so the wait screen can say what a new check writes: about 10 s for the teaser alone, 20 to 30 s and six chapters for the full report.
+- **History returns no reading text,** and it has no `locked` field. It does carry `lockEnabled`, the `compat_lock` flag rather than any row's state, so the wait screen can say what a new check writes: about 10 s for the teaser alone, 20 to 30 s and six chapters for the full report.
 
 A locked teaser has no detail to count its reading time from. The door shows `V4_LOCKED_READING_MINUTES` (11), an estimate: six written reports measured 9 to 12 minutes, median 11. After the unlock, the report's own minutes replace it.
 
@@ -217,4 +239,5 @@ Three unlocks on the local stack the same day took 16.5, 18.5 and 32.6 s end to 
   - a row whose detail exists opens without touching the wallet (the wallet is stubbed; `tests/wallet.test.ts` covers the ledger itself);
   - partners called ดาว, ดาวใจ, น้ำ, ไฟ and ทอง pass without a repair, and a real jargon hint is still repaired or rejected.
 - To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`. A relocked row that was already paid for is not charged again. Once the route pre-checks with `checkUnlock`, a balance of 0 gets a 402 for it first (see `docs/wallet.md`).
-- To run locally, start the backend with `COMPAT_LOCK_ENABLED=1 COMPAT_UNLOCK_FREE=1`. Never set `COMPAT_UNLOCK_FREE` in production.
+- To run locally, turn `compat_lock` (and, for free unlocks, `compat_unlock_free`) on in the local database, as in `docs/feature-flags.md`, "Local development". Never leave `compat_unlock_free` on in production.
+- Legacy rows: `a legacy row is not found` and `a legacy row (no content_version) never parses as a report` in `tests/compatibility-v4.test.ts`; the full view test checks no `insights`, `inputs`, `mbti` or `basis` reach a client.

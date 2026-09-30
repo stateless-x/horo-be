@@ -2,7 +2,7 @@
 type: REFERENCE
 status: active
 scope: compatibility-v2 score, report v4 dimensions, archetype, calendar and how they are worded for the model
-last_reviewed: 2026-09-27
+last_reviewed: 2026-09-30
 owner: backend
 supersedes: []
 superseded_by: null
@@ -36,7 +36,7 @@ The current score bands are:
 - Scores and sub-scores remain within 0–100.
 - Ordinary fixture dates produce a non-constant distribution.
 - This is a transparent entertainment heuristic based on the product's astrology model, not a scientific prediction of relationship outcomes.
-- Existing database rows retain the historical placeholder score. API readers mark them as `contentVersion: 1`, while newly calculated results are `contentVersion: 2`; never infer the score version from `score === 75`, because v2 can legitimately produce 75.
+- Rows written before this formula kept the historical placeholder score. They are legacy rows (`content_version` NULL) and are no longer served (`docs/compatibility-response-fix.md`, "Canon v1"); never infer the score version from `score === 75`, because v2 can legitimately produce 75.
 
 ## Verification
 
@@ -44,15 +44,9 @@ Run `bun test tests/compatibility.test.ts`. The focused suite checks determinism
 
 ## Narrative payload
 
-New readings store a compact JSON object in the existing `analysis` text column and expose its parsed form as `structuredContent`. This avoids a schema migration for the content rollout while preserving old markdown rows.
-
-- `scoreExplanation` is deterministic and cannot be changed by the LLM.
-- `verdict` is one shareable sentence.
-- `chemistry`, `caution`, and `advice` are each capped at 500 characters and prompted to remain within three sentences.
-- API responses use `contentVersion: 2` with parsed content, or `contentVersion: 1` and `structuredContent: null` for legacy markdown.
-- Deployment order is tolerant frontend reader first, then backend writer. A separate score-version database column is not required for this rollout because the validated content version distinguishes old and new rows at the API boundary.
-
-Run `bun test tests/compatibility-content.test.ts` for schema, legacy parsing, and prompt-contract coverage.
+The v2 narrative payload (`scoreExplanation`, `verdict`, `chemistry`, `caution`, `advice`) was retired on 2026-09-30,
+with its schema, parser and tests. The only report is canon v1 (`contentVersion: 4`), described in
+`docs/compatibility-response-fix.md`.
 
 ## Report v4: dimensions, archetype, calendar
 
