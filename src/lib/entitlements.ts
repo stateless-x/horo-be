@@ -1,4 +1,4 @@
-import { config } from '../config';
+import { readFlags } from './feature-flags';
 import { INSUFFICIENT_BALANCE, type InsufficientBalanceBody } from '../../lib/shared/types/wallet';
 import { PRODUCT_PRICES } from './pricing';
 import { InsufficientBalance, wallet as appWallet, type Wallet, type WalletTx } from './wallet';
@@ -17,8 +17,11 @@ export type UnlockDecision = { ok: true } | { ok: false; body: InsufficientBalan
 
 export type UnlockWallet = Pick<Wallet, 'ensureWelcome' | 'canAfford' | 'hasPaid' | 'spendWithin'>;
 
-/** Nothing is sold while locked mode is off (a row locked earlier opens free), nor with COMPAT_UNLOCK_FREE (dev). */
-const unlockIsFree = () => !config.compat.lockEnabled || config.compat.unlockFree;
+/** Nothing is sold while the compat_lock flag is off (a row locked earlier opens free), nor under its compat_unlock_free sub-flag. */
+async function unlockIsFree(): Promise<boolean> {
+  const flags = await readFlags();
+  return !flags.compat_lock || flags.compat_unlock_free;
+}
 
 const refused = (balance: number, price: number): UnlockDecision => ({
   ok: false,
@@ -33,7 +36,7 @@ const refused = (balance: number, price: number): UnlockDecision => ({
  * Read-only apart from the gift.
  */
 export async function checkUnlock(userId: string, compatibilityId: string, wallet: UnlockWallet = appWallet): Promise<UnlockDecision> {
-  if (unlockIsFree()) return { ok: true };
+  if (await unlockIsFree()) return { ok: true };
   if (await wallet.hasPaid(userId, 'compat_unlock', compatibilityId)) return { ok: true };
   await wallet.ensureWelcome(userId);
   const check = await wallet.canAfford(userId, PRODUCT_PRICES.compat_unlock);
@@ -51,7 +54,7 @@ export async function chargeUnlockWithin(
   compatibilityId: string,
   wallet: UnlockWallet = appWallet,
 ): Promise<UnlockDecision> {
-  if (unlockIsFree()) return { ok: true };
+  if (await unlockIsFree()) return { ok: true };
   try {
     await wallet.spendWithin(tx, userId, 'compat_unlock', compatibilityId);
     return { ok: true };

@@ -6,8 +6,11 @@ import { generationSingleFlight } from '../../lib/generation-singleflight';
 import { getCachedProfile } from '../shared';
 import { unlockReading, type UnlockResult, type UnlockStore } from './reading';
 
-/** The cache entry GET /compatibility/:id serves a row from. */
-export const compatCacheKey = (userId: string, id: string) => `compat:${userId}:${id}`;
+/**
+ * The cache entry GET /compatibility/:id serves a row from. `v4` in the key:
+ * entries written before content_version existed are never read.
+ */
+export const compatCacheKey = (userId: string, id: string) => `compat:v4:${userId}:${id}`;
 
 /** The unlock's database side: load a row; charge and patch the detail in one transaction. */
 export function dbUnlockStore(userId: string): UnlockStore {

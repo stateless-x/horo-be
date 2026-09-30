@@ -7,7 +7,7 @@ import {
   BirthProfileSchema,
   DevCompatibilityRequestSchema,
   shapeCompatibilityView,
-  type CompatibilityV4Content,
+  type CompatibilityV4Stored,
   type DevCompatibilityOutput,
   type DevCompatibilityRequest,
   type DevGenerateError,
@@ -177,7 +177,7 @@ export const devRoutes = new Elysia({ prefix: '/api/dev' })
     devGenerator<
       DevCompatibilityRequest,
       DevCompatibilityOutput,
-      CompatibilityV4Content
+      CompatibilityV4Stored
     >(
       DevCompatibilityRequestSchema,
       async (request, onModelCall) => {
@@ -200,15 +200,16 @@ export const devRoutes = new Elysia({ prefix: '/api/dev' })
 
         const names = { readerName: request.reader.name ?? null, partnerName: request.partner.name };
 
-        const { content, charts, prompt, timings, qualityFlags } = await generateCompatibilityV4(input);
+        const { stored, charts, prompt, timings, qualityFlags } = await generateCompatibilityV4(input);
         const output: DevCompatibilityOutput = {
           score: charts.score.score,
           relationshipType: request.relationshipType,
           ...names,
-          structuredContent: shapeCompatibilityView(content, request.view),
+          structuredContent: shapeCompatibilityView(stored, request.view),
           qualityFlags,
         };
-        return { output, content, prompt, timings };
+        // `content` is the stored form, so the panel can re-shape it per view like the server does.
+        return { output, content: stored, prompt, timings };
       },
     ),
   )

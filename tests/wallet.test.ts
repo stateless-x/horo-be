@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { overrideFlags } from '../src/lib/feature-flags';
 import { and, asc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { config } from '../src/config';
 import { chargeUnlockWithin, checkUnlock } from '../src/lib/entitlements';
@@ -79,9 +80,8 @@ describe('pricing', () => {
 });
 
 describe('unlock seam (entitlements)', () => {
-  const REAL = config.compat;
   afterEach(() => {
-    config.compat = REAL;
+    overrideFlags(null);
   });
 
   const walletThat = (spend: Wallet['spend']) => ({
@@ -96,20 +96,20 @@ describe('unlock seam (entitlements)', () => {
   });
   const tx = {} as Parameters<Wallet['spendWithin']>[0];
 
-  test('lock off or COMPAT_UNLOCK_FREE never touches the wallet', async () => {
+  test('compat_lock off, or compat_unlock_free on, never touches the wallet', async () => {
     const untouchable = walletThat(async () => {
       throw new Error('wallet touched');
     });
-    config.compat = { lockEnabled: false, unlockFree: false };
+    overrideFlags({ compat_lock: false, compat_unlock_free: false });
     expect(await checkUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
     expect(await chargeUnlockWithin(tx, 'u1', 'row1', untouchable)).toEqual({ ok: true });
-    config.compat = { lockEnabled: true, unlockFree: true };
+    overrideFlags({ compat_lock: true, compat_unlock_free: true });
     expect(await checkUnlock('u1', 'row1', untouchable)).toEqual({ ok: true });
     expect(await chargeUnlockWithin(tx, 'u1', 'row1', untouchable)).toEqual({ ok: true });
   });
 
   test('checkUnlock grants the welcome gift, then only reads the balance', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const calls: string[] = [];
     const reader = (balance: number, paid = false) => ({
       ensureWelcome: async () => void calls.push('welcome'),
@@ -125,7 +125,7 @@ describe('unlock seam (entitlements)', () => {
   });
 
   test('checkUnlock skips the balance for a row already paid for', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const calls: string[] = [];
     const paidAtZero = {
       ensureWelcome: async () => void calls.push('welcome'),
@@ -140,7 +140,7 @@ describe('unlock seam (entitlements)', () => {
   });
 
   test('chargeUnlockWithin maps a short balance to the 402 body and throws anything else', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const short = walletThat(async () => {
       throw new InsufficientBalance(0, 49);
     });
@@ -156,20 +156,19 @@ describe('unlock seam (entitlements)', () => {
 });
 
 describe('wallet routes while nothing is sellable', () => {
-  const REAL = config.compat;
   afterEach(() => {
-    config.compat = REAL;
+    overrideFlags(null);
   });
 
   test('with locked mode off, GET /api/wallet says disabled before any session or database work', async () => {
-    config.compat = { lockEnabled: false, unlockFree: false };
+    overrideFlags({ compat_lock: false, compat_unlock_free: false });
     const response = await walletRoutes().handle(new Request('http://localhost/api/wallet/'));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ enabled: false });
   });
 
   test('with locked mode off, checkout is not available', async () => {
-    config.compat = { lockEnabled: false, unlockFree: false };
+    overrideFlags({ compat_lock: false, compat_unlock_free: false });
     const response = await walletRoutes().handle(
       new Request('http://localhost/api/wallet/checkout', {
         method: 'POST',
@@ -181,7 +180,7 @@ describe('wallet routes while nothing is sellable', () => {
   });
 
   test('with no payment provider, checkout answers unavailable and creates no order', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const created: string[] = [];
     const wallet = { createOrder: async (userId: string) => (created.push(userId), null) } as unknown as Wallet;
     const spy = spyOn(session, 'validateSessionFromRequest').mockResolvedValue({
@@ -207,20 +206,19 @@ describe('wallet routes while nothing is sellable', () => {
 });
 
 describe('GET /api/wallet/history guards', () => {
-  const REAL = config.compat;
   afterEach(() => {
-    config.compat = REAL;
+    overrideFlags(null);
   });
 
   const history = () => walletRoutes().handle(new Request('http://localhost/api/wallet/history?limit=5'));
 
   test('404 while locked mode is off, before any session work', async () => {
-    config.compat = { lockEnabled: false, unlockFree: false };
+    overrideFlags({ compat_lock: false, compat_unlock_free: false });
     expect((await history()).status).toBe(404);
   });
 
   test('401 without a session', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     expect((await history()).status).toBe(401);
   });
 });
@@ -726,8 +724,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     const userId = await newUser();
     const fake = createFakeGateway();
     const { handle } = paymentsFor(fake);
-    const REAL = config.compat;
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const spy = signedInAs(userId);
     try {
       const before = Date.now();
@@ -766,7 +763,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
       ]);
     } finally {
       spy.mockRestore();
-      config.compat = REAL;
+      overrideFlags(null);
     }
   });
 
@@ -841,8 +838,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
     const row = crypto.randomUUID();
     const first = await fakeOrder(fake, userId, 'p49', row);
     fake.simulate(first.providerRef!, 'succeeded'); // paid; the webhook isn't in yet
-    const REAL = config.compat;
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const spy = signedInAs(userId);
     try {
       const response = await walletRoutes(wallet, fake, handle, chargeFailed).handle(
@@ -856,7 +852,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
       expect(await response.json()).toEqual({ error: 'already_paid', orderId: first.id });
     } finally {
       spy.mockRestore();
-      config.compat = REAL;
+      overrideFlags(null);
     }
     expect((await orderRow(first.id)).status).toBe('paid');
     expect(unlocks).toEqual([row]); // fulfilled: credited, then the row unlocked
@@ -868,8 +864,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
   /** POST /api/wallet/checkout as this user, with the lock on. */
   async function checkoutAs(userId: string, fake: FakeGateway, body: object) {
     const { handle, chargeFailed } = paymentsFor(fake);
-    const REAL = config.compat;
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const spy = signedInAs(userId);
     try {
       const response = await walletRoutes(wallet, fake, handle, chargeFailed).handle(
@@ -882,7 +877,7 @@ describe.skipIf(!TEST_DB_URL)('ledger on a local Postgres', () => {
       return { status: response.status, body: await response.json() };
     } finally {
       spy.mockRestore();
-      config.compat = REAL;
+      overrideFlags(null);
     }
   }
 

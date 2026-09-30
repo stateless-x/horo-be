@@ -1,6 +1,6 @@
 import type { compatibility } from '../../../lib/db';
 import { RelationshipTypeSchema, shapeCompatibilityView, shareCompatibilityV4, spaceLatinNames, type CompatibilityV4Stored } from '../../../lib/shared';
-import { parseCompatibilityContent } from '../../lib/compatibility-content';
+import { isCurrentCompatibility, parseCompatibilityContent } from '../../lib/compatibility-content';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Detail } from '../../lib/compatibility-generation';
 import { mapStrings } from '../../lib/compatibility-text';
 import { chargeUnlockWithin, checkUnlock, type UnlockDecision, type UnlockWallet } from '../../lib/entitlements';
@@ -10,21 +10,21 @@ import { generationKey, type GenerationSingleFlight } from '../../lib/generation
 
 /**
  * What a client may see of a stored compatibility row, and the unlock of a
- * locked v4 report. Every response that carries a reading is built here, so a
+ * locked report. Every response that carries a reading is built here, so a
  * locked report's detail, its insight plan and its input snapshot never leave
  * through one route and not another.
  */
 
 export type CompatibilityRow = typeof compatibility.$inferSelect;
 
-/** A v4 row whose detail is not written yet. Locked is a property of the row, not of the flag. */
-function lockedStored(analysis: string): CompatibilityV4Stored | null {
-  const content = parseCompatibilityContent(analysis);
-  return content?.contentVersion === 4 && 'inputs' in content && content.detail === null ? content : null;
+/** A current row whose detail is not written yet. Locked is a property of the row, not of the flag. */
+function lockedStored(row: Pick<CompatibilityRow, 'id' | 'analysis' | 'contentVersion'>): CompatibilityV4Stored | null {
+  const content = parseCompatibilityContent(row);
+  return content.detail === null ? content : null;
 }
 
 /**
- * v4 text with a Latin or digit name spaced from the Thai around it. New rows
+ * Report text with a Latin or digit name spaced from the Thai around it. New rows
  * are stored spaced (polish in compatibility-generation); this covers rows
  * written before that, and is a no-op on the rest.
  */
@@ -32,76 +32,51 @@ function spaceNames<T>(value: T, row: CompatibilityRow, readerName: string | und
   return mapStrings(value, (text) => spaceLatinNames(text, [row.partnerName, readerName]));
 }
 
-/** The owner's view of one reading (POST, GET :id, unlock). */
+/**
+ * The owner's view of one reading (POST, GET :id, unlock). Only current rows
+ * reach here: every query filters on content_version 4, so a legacy row is a 404
+ * before this runs. No `analysis`: the stored JSON holds the insight plan and
+ * the input snapshot, MBTI included, and none of it leaves the server.
+ */
 export function readingResponse(row: CompatibilityRow) {
-  const content = parseCompatibilityContent(row.analysis);
-  const base = {
+  const content = parseCompatibilityContent(row);
+  const locked = content.detail === null;
+  return {
     id: row.id,
     profileAId: row.profileAId,
     partnerName: row.partnerName,
     partnerBirthDate: row.partnerBirthDate,
     relationshipType: row.relationshipType,
     score: row.score,
-    elementHarmony: row.elementHarmony,
-    branchHarmony: row.branchHarmony,
-    strengths: row.strengths ? (JSON.parse(row.strengths) as string[]) : [],
-    challenges: row.challenges ? (JSON.parse(row.challenges) as string[]) : [],
     userElement: row.userElement,
     userDayMaster: row.userDayMaster,
     partnerElement: row.partnerElement,
     partnerDayMaster: row.partnerDayMaster,
     shareToken: row.shareToken,
     createdAt: row.createdAt.toISOString(),
+    contentVersion: 4 as const,
+    locked,
+    structuredContent: spaceNames(shapeCompatibilityView(content, locked ? 'teaser' : 'full'), row, content.inputs.reader.name),
   };
-  if (content?.contentVersion === 4) {
-    // No `analysis` for v4: the stored JSON holds the insight plan and the input snapshot.
-    const locked = 'inputs' in content && content.detail === null;
-    const readerName = 'inputs' in content ? content.inputs.reader.name : undefined;
-    const structuredContent = spaceNames(shapeCompatibilityView(content, locked ? 'teaser' : 'full'), row, readerName);
-    return { ...base, contentVersion: 4, locked, structuredContent };
-  }
-  return { ...base, analysis: row.analysis, contentVersion: content?.contentVersion ?? 1, structuredContent: content, locked: false };
 }
 
-/** The public share link: no session. v4 shows the free fields only, locked or not. */
+/** The public share link: no session, the free fields only, locked or not. No profileAId for privacy. */
 export function shareResponse(row: CompatibilityRow) {
-  const content = parseCompatibilityContent(row.analysis);
-  if (content?.contentVersion === 4) {
-    return {
-      partnerName: row.partnerName,
-      relationshipType: row.relationshipType,
-      score: row.score,
-      contentVersion: 4,
-      structuredContent: spaceNames(
-        shareCompatibilityV4('inputs' in content ? content.teaser : content),
-        row,
-        'inputs' in content ? content.inputs.reader.name : undefined,
-      ),
-      userElement: row.userElement,
-      partnerElement: row.partnerElement,
-      createdAt: row.createdAt.toISOString(),
-    };
-  }
-  // v2 rows keep today's response (their text was never paid). No profileAId for privacy.
+  const content = parseCompatibilityContent(row);
   return {
     partnerName: row.partnerName,
     relationshipType: row.relationshipType,
     score: row.score,
-    analysis: row.analysis,
-    contentVersion: content?.contentVersion ?? 1,
-    structuredContent: content,
-    strengths: row.strengths ? (JSON.parse(row.strengths) as string[]) : [],
-    challenges: row.challenges ? (JSON.parse(row.challenges) as string[]) : [],
+    contentVersion: 4 as const,
+    structuredContent: spaceNames(shareCompatibilityV4(content.teaser), row, content.inputs.reader.name),
     userElement: row.userElement,
     partnerElement: row.partnerElement,
-    userDayMaster: row.userDayMaster,
-    partnerDayMaster: row.partnerDayMaster,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
 /** One history list entry: names, score and elements, never reading text. */
-export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | 'partnerBirthDate' | 'relationshipType' | 'score' | 'userElement' | 'partnerElement' | 'createdAt' | 'analysis'>) {
+export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | 'partnerBirthDate' | 'relationshipType' | 'score' | 'userElement' | 'partnerElement' | 'createdAt' | 'analysis' | 'contentVersion'>) {
   return {
     id: row.id,
     partnerName: row.partnerName,
@@ -110,7 +85,7 @@ export function historyItem(row: Pick<CompatibilityRow, 'id' | 'partnerName' | '
     score: row.score,
     userElement: row.userElement,
     partnerElement: row.partnerElement,
-    locked: lockedStored(row.analysis) !== null,
+    locked: lockedStored(row) !== null,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -135,9 +110,9 @@ export type UnlockResult =
   | { status: 404; body: { error: string } };
 
 /**
- * Unlock a locked v4 report: write its detail from the stored insight plan and
+ * Unlock a locked report: write its detail from the stored insight plan and
  * patch it into the same row. Owner only. Idempotent: an unlocked row (or any
- * row that is not a locked v4 report) comes back as it is, with no model call
+ * row that is not locked) comes back as it is, with no model call
  * and no wallet access. One generation per row across concurrent taps and
  * processes (the single-flight lock; a waiter gets the owner's result).
  *
@@ -164,8 +139,8 @@ export async function unlockReading(args: {
   const { userId, profileId, id, store } = args;
   const notFound = { status: 404, body: { error: 'Compatibility reading not found' } } as const;
   const row = await store.load(id);
-  if (!row || row.profileAId !== profileId) return notFound;
-  if (!lockedStored(row.analysis)) return { status: 200, body: readingResponse(row) };
+  if (!row || row.profileAId !== profileId || !isCurrentCompatibility(row)) return notFound;
+  if (!lockedStored(row)) return { status: 200, body: readingResponse(row) };
 
   const decision = await checkUnlock(userId, id, args.wallet);
   if (!decision.ok) return { status: 402, body: decision.body };
@@ -181,7 +156,7 @@ export async function unlockReading(args: {
       // Re-read inside the lock: another process may have written the detail since.
       const current = await store.load(id);
       if (!current) throw new Error(`Compatibility ${id} disappeared during unlock`);
-      const stored = lockedStored(current.analysis);
+      const stored = lockedStored(current);
       if (!stored) return { status: 200, body: readingResponse(current) };
       const generation = await generateCompatibilityV4Detail(stored, {
         partner: { name: current.partnerName },

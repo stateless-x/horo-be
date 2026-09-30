@@ -57,11 +57,11 @@ export type FortuneTabKey = (typeof FORTUNE_TABS)[number];
  * its own event. This is for "left this surface for that one".
  */
 export const TRACKED_CTAS = [
-  /** /dashboard/today → /dashboard/fortune, the monthly-reading band. */
+  /** /dashboard/fortune/daily → /dashboard/fortune/monthly, the monthly-reading band. */
   'today_monthly_chart',
-  /** /dashboard/fortune → /dashboard/compatibility, from the read-next block. */
+  /** /dashboard/fortune/monthly → /dashboard/compatibility, from the read-next block. */
   'fortune_compatibility',
-  /** /dashboard/fortune → /dashboard/today, from the read-next block. */
+  /** /dashboard/fortune/monthly → /dashboard/fortune/daily, from the read-next block. */
   'fortune_today',
 ] as const;
 

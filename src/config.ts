@@ -86,17 +86,6 @@ export const config = {
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
   },
 
-  /**
-   * ดวงคู่ locked mode (docs/compatibility-response-fix.md, "Locked mode").
-   * Off: a new check writes the full report, as before. On: it writes only the
-   * free teaser, and the detail is written on unlock. `unlockFree` lets every
-   * unlock through while the credit ledger does not exist yet (dev only).
-   */
-  compat: {
-    lockEnabled: process.env.COMPAT_LOCK_ENABLED === '1',
-    unlockFree: process.env.COMPAT_UNLOCK_FREE === '1',
-  },
-
   cors: {
     allowedOrigins: (() => {
       const origins = process.env.CORS_ALLOWED_ORIGINS

@@ -307,7 +307,7 @@ async function generateValidatedCompatibilityJson<T>(
 const issueLine = (issue: z.ZodIssue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`;
 
 function describeInvalid(problems: string[]): string {
-  return `Your JSON above failed validation: ${problems.join('; ')}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai; 4-letter MBTI codes are the only English allowed.`;
+  return `Your JSON above failed validation: ${problems.join('; ')}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai with no English at all, and never name a personality type or its letter code.`;
 }
 
 // ---------------------------------------------------------------- report generation

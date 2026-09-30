@@ -24,7 +24,7 @@ export const TOKEN_LIMITS: Record<RelationshipType, number> = {
   family: 2000,
 };
 
-/** Shared prose bounds for the current contract and the historical reader. */
+/** Shared prose bounds for the report sections. */
 export const thaiProse = (min: number, max: number) => z.string().trim().min(min).max(max);
 
 export const COMPATIBILITY_VIEWS = ['teaser', 'full'] as const;
@@ -235,10 +235,14 @@ export const V4DimensionSchema = z.object({
 export type V4Dimension = z.infer<typeof V4DimensionSchema>;
 
 const ELEMENTS = ['wood', 'fire', 'earth', 'metal', 'water'] as const;
+/**
+ * One person on the cover. MBTI is deliberately absent: it steers the prose as
+ * behaviour ("มักจะ...") and is never shown or sent to a client; it lives only in
+ * the stored input snapshot. Older stored teasers carry `mbti` here; parsing drops it.
+ */
 const PersonSchema = z.object({
   element: z.enum(ELEMENTS),
   yinYang: z.enum(['yin', 'yang']),
-  mbti: z.string().nullable(),
 });
 const PalaceSchema = z.object({
   naksat: z.string(),
@@ -251,13 +255,14 @@ export const CompatibilityV4ContentSchema = z.object({
   /** Bangkok date the report was written (YYYY-MM-DD); the week plan counts days from it. */
   generatedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   archetype: z.object({ key: z.string(), name: z.string(), tagline: z.string() }),
-  /** Both people's day masters and MBTI, for the cover. Free. */
+  /** Both people's day masters, for the cover. Free. */
   people: z.object({ reader: PersonSchema, partner: PersonSchema }),
   /** Both spouse palaces, the computed basis of the attraction chapter. Paid. */
   palace: z.object({ reader: PalaceSchema, partner: PalaceSchema }),
   /** Estimated minutes to read the paid report, computed from its text. */
   readingMinutes: z.number().int().min(1),
-  dimensions: z.array(V4DimensionSchema).length(V4_DIMENSION_KEYS.length),
+  /** Scores only: which inputs fed each score (MBTI among them) steers the prompt and is not kept. */
+  dimensions: z.array(V4DimensionSchema.omit({ basis: true })).length(V4_DIMENSION_KEYS.length),
   cover: V4SectionSchemas.cover,
   overview: V4SectionSchemas.overview,
   chapters: z.array(ChapterSchema).length(V4_CHAPTER_KEYS.length),
@@ -271,8 +276,6 @@ export const CompatibilityV4ContentSchema = z.object({
     )
     .length(3),
   plan: V4SectionSchemas.plan,
-  /** The insight plan the chapters were written from; kept for audit, not rendered. */
-  insights: V4InsightPlanSchema.shape.insights,
 });
 export type CompatibilityV4Content = z.infer<typeof CompatibilityV4ContentSchema>;
 
@@ -295,7 +298,7 @@ export function shareCompatibilityV4(content: Pick<CompatibilityV4Content, 'arch
   return {
     contentVersion: 4,
     archetype: content.archetype,
-    people: content.people,
+    people: coverPeople(content.people),
     verdict: content.cover.verdict,
     dimensions: content.dimensions.map(({ key, label, score }) => ({ key, label, score })),
   };
@@ -305,10 +308,10 @@ export type CompatibilityV4Shaped = CompatibilityV4Content | CompatibilityV4Teas
 // ---------------------------------------------------------------- teaser-first storage
 
 /**
- * Locked mode stores the report in two parts (horo-be docs/compatibility-response-fix.md,
+ * The report is stored in two parts (horo-be docs/compatibility-response-fix.md,
  * "Locked mode"). The teaser is written at check time; the detail is written on unlock
- * and patched into the same row. Together with the insight plan they are exactly
- * CompatibilityV4Content.
+ * (or at check time while the lock flag is off) and patched into the same row.
+ * Together they are exactly CompatibilityV4Content, the full view.
  */
 export const V4TeaserPartSchema = CompatibilityV4ContentSchema.pick({
   generatedOn: true,
@@ -346,7 +349,7 @@ export const V4InputsSnapshotSchema = z.object({
 });
 export type V4InputsSnapshot = z.infer<typeof V4InputsSnapshotSchema>;
 
-/** The stored `analysis` JSON for a v4 report written since locked mode. Never sent to a client. */
+/** The stored `analysis` JSON of every current row (content_version 4). Never sent to a client. */
 export const CompatibilityV4StoredSchema = z.object({
   contentVersion: z.literal(4),
   /** The insight plan both parts are written from. */
@@ -363,22 +366,23 @@ export type CompatibilityV4Stored = z.infer<typeof CompatibilityV4StoredSchema>;
 export const COMPATIBILITY_LOCKED_READING_MINUTES = 11;
 
 /**
- * The one place that decides which fields a current report may expose. The
- * teaser is an allowlist, so paid text cannot leak when the contract grows.
+ * The one place that decides which fields a report may expose. Both views are
+ * allowlists, so neither the insight plan, the input snapshot (with both
+ * people's MBTI) nor unwritten paid text can leak when the contract grows.
  */
-export function shapeCompatibilityView(
-  content: CompatibilityV4Content | CompatibilityV4Stored,
-  view: CompatibilityView,
-): CompatibilityV4Shaped {
-  if ('inputs' in content) {
-    if (view === 'teaser') {
-      return teaserView(content.teaser, content.detail?.readingMinutes ?? COMPATIBILITY_LOCKED_READING_MINUTES);
-    }
-    if (!content.detail) throw new Error('A locked compatibility report has no full view');
-    return { contentVersion: 4, ...content.teaser, ...content.detail, insights: content.plan.insights };
+export function shapeCompatibilityView(content: CompatibilityV4Stored, view: CompatibilityView): CompatibilityV4Shaped {
+  if (view === 'teaser') {
+    return teaserView(content.teaser, content.detail?.readingMinutes ?? COMPATIBILITY_LOCKED_READING_MINUTES);
   }
-  if (view === 'full') return content;
-  return teaserView(content, content.readingMinutes);
+  if (!content.detail) throw new Error('A locked compatibility report has no full view');
+  const { people, ...teaser } = content.teaser;
+  return { contentVersion: 4, ...teaser, people: coverPeople(people), ...content.detail };
+}
+
+/** The cover's people, rebuilt field by field: a stored teaser may still carry `mbti`. */
+function coverPeople(people: V4TeaserPart['people']): V4TeaserPart['people'] {
+  const person = ({ element, yinYang }: V4TeaserPart['people']['reader']) => ({ element, yinYang });
+  return { reader: person(people.reader), partner: person(people.partner) };
 }
 
 function teaserView(teaser: V4TeaserPart, readingMinutes: number): CompatibilityV4Shaped {
@@ -387,7 +391,7 @@ function teaserView(teaser: V4TeaserPart, readingMinutes: number): Compatibility
     generatedOn: teaser.generatedOn,
     archetype: teaser.archetype,
     cover: teaser.cover,
-    people: teaser.people,
+    people: coverPeople(teaser.people),
     readingMinutes,
     dimensions: teaser.dimensions.map(({ key, label, score }) => ({ key, label, score })),
   };

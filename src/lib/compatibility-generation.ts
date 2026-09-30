@@ -72,13 +72,11 @@ import {
   wrongGenderWords,
 } from './compatibility-text';
 
-const LATIN_RUN = /[A-Za-z]+/g;
-const ALLOWED_LATIN_WORD = /^(?:[IE][NS][TF][JP]|MBTI)$/;
 const FOREIGN_RUN = /[^\u0E00-\u0E7F0-9\s.,:;!?()"'%/]+/;
 
+/** The first non-Thai run in report prose (names are masked first). No English at all, MBTI codes included. */
 function foreignTokenIn(text: string): string | null {
-  const stripped = text.replace(LATIN_RUN, (word) => (ALLOWED_LATIN_WORD.test(word) ? '' : word));
-  const match = stripped.match(FOREIGN_RUN);
+  const match = text.match(FOREIGN_RUN);
   return match ? match[0] : null;
 }
 
@@ -160,7 +158,7 @@ interface GenerateCompatibilityInput {
 }
 
 /**
- * Every prose field is Thai (MBTI codes aside). `view` is the reading with the
+ * Every prose field is Thai. `view` is the reading with the
  * names masked (maskNames), so a partner or reader called Mind or A+ is not
  * English. The model drops stray foreign words into long Thai output; one
  * costs a repair.
@@ -276,6 +274,8 @@ export function verdictIssues(verdict: string, partnerName: string, pairElements
 
 export interface CompatibilityV4Generation {
   content: CompatibilityV4Content;
+  /** What a live check would store; shapeCompatibilityView takes this. */
+  stored: CompatibilityV4Stored;
   charts: CompatibilityCharts;
   prompt: string;
   timings: { calcMs: number; llmMs: number; planMs: number; partsMs: number };
@@ -583,10 +583,10 @@ export async function generateCompatibilityV4Stored(input: V4Input & { withDetai
   };
 }
 
-/** The full v4 report in one go (the dev tools and the harness): generateCompatibilityV4Stored with the detail, assembled. */
+/** The full v4 report in one go (the dev tools): generateCompatibilityV4Stored with the detail, assembled. */
 export async function generateCompatibilityV4(input: V4Input): Promise<CompatibilityV4Generation> {
-  const { stored, ...generation } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
-  return { ...generation, content: CompatibilityV4ContentSchema.parse(shapeCompatibilityView(stored, 'full')) };
+  const generation = await generateCompatibilityV4Stored({ ...input, withDetail: true });
+  return { ...generation, content: CompatibilityV4ContentSchema.parse(shapeCompatibilityView(generation.stored, 'full')) };
 }
 
 /**

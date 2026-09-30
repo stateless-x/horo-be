@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { z } from 'zod';
 import { config } from '../config';
+import { readFlags } from '../lib/feature-flags';
 import { validateSessionFromRequest } from '../lib/session';
 import { isLocalDatabaseUrl } from '../lib/dev-regenerate';
 import { BALANCE_CAP, PACKS, PRODUCT_PRICES, bonusPercent } from '../lib/pricing';
@@ -51,8 +52,8 @@ export function walletRoutes(
   const deps: CheckoutDeps | null = gateway ? { wallet, gateway, handle, chargeFailed } : null;
   return new Elysia({ prefix: '/api/wallet' })
     .get('/', async ({ request, set }) => {
-      // Nothing is sellable while ดวงคู่ locked mode is off: no wallet, no welcome gift.
-      if (!config.compat.lockEnabled) return { enabled: false } satisfies WalletResponse;
+      // Nothing is sellable while the compat_lock flag is off: no wallet, no welcome gift.
+      if (!(await readFlags()).compat_lock) return { enabled: false } satisfies WalletResponse;
       const session = await validateSessionFromRequest(request);
       if (!session) {
         set.status = 401;
@@ -71,7 +72,7 @@ export function walletRoutes(
       } satisfies WalletResponse;
     })
     .get('/history', async ({ request, query, set }) => {
-      if (!config.compat.lockEnabled) {
+      if (!(await readFlags()).compat_lock) {
         set.status = 404;
         return { error: 'Wallet not enabled' };
       }
@@ -91,7 +92,7 @@ export function walletRoutes(
       return (await wallet.history(session.userId, parsed.data)) satisfies WalletHistoryResponse;
     })
     .post('/checkout', async ({ request, body, set }) => {
-      if (!config.compat.lockEnabled) {
+      if (!(await readFlags()).compat_lock) {
         set.status = 404;
         return { error: 'Wallet not enabled' };
       }

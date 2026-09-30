@@ -30,6 +30,7 @@ let onboardingRoutes: any;
 let analyticsRoutes: any;
 let unsubscribeRoutes: any;
 let internalCampaignRoutes: any;
+let internalFlagRoutes: any;
 let resendWebhookRoutes: any;
 let stripeWebhookRoutes: any;
 let walletRoutes: any;
@@ -103,8 +104,9 @@ if (configErrors.length === 0) {
     if (config.adminApi.secret) {
       const internalModule = await import('./routes/internal-campaigns');
       internalCampaignRoutes = internalModule.internalCampaignRoutes;
+      internalFlagRoutes = (await import('./routes/internal-flags')).internalFlagRoutes;
     } else {
-      console.log('[STARTUP] ADMIN_API_SECRET not set — internal campaign routes not mounted');
+      console.log('[STARTUP] ADMIN_API_SECRET not set — internal campaign and flag routes not mounted');
     }
 
     // Only mounted when the signing secret exists, so a deploy that forgets
@@ -138,6 +140,9 @@ if (configErrors.length === 0) {
       .use(unsubscribeRoutes)
       .use(walletRoutes());
 
+    if (internalFlagRoutes) {
+      app = app.use(internalFlagRoutes);
+    }
     if (internalCampaignRoutes) {
       app = app.use(internalCampaignRoutes);
       console.log('[STARTUP] Internal campaign routes mounted at /internal/campaigns');

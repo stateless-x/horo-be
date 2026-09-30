@@ -1,35 +1,23 @@
-import {
-  CompatibilityStructuredContentSchema,
-  CompatibilityV4ContentSchema,
-  CompatibilityV4StoredSchema,
-  type CompatibilityStructuredContent,
-  type CompatibilityV4Content,
-  type CompatibilityV4Stored,
-} from '../../lib/shared';
+import { CompatibilityV4StoredSchema, type CompatibilityV4Stored } from '../../lib/shared';
+import type { compatibility } from '../../lib/db';
+
+/** 4: the canonical report. Rows with any other content_version (NULL) are legacy and never served. */
+export const COMPATIBILITY_CONTENT_VERSION = 4;
 
 /**
- * The stored `analysis` column as content: v4 reports and v2 readings are
- * JSON; v1 rows are markdown and come back null (the page renders them as
- * markdown). v3 was never stored by the live route. A v4 row is the stored
- * two-part form (teaser, and detail once written), or the full content for
- * rows written before locked mode (dev databases only; v4 never shipped flat).
+ * The stored `analysis` of a current row: the two-part report (teaser, and
+ * detail once unlocked). Call it only on a row whose content_version is 4; a
+ * row that says 4 and does not parse is corrupt, so this throws instead of
+ * guessing.
  */
-export function parseCompatibilityContent(
-  analysis: string,
-): CompatibilityStructuredContent | CompatibilityV4Content | CompatibilityV4Stored | null {
-  let json: unknown;
-  try {
-    json = JSON.parse(analysis);
-  } catch {
-    return null; // v1: markdown, not JSON
+export function parseCompatibilityContent(row: Pick<typeof compatibility.$inferSelect, 'id' | 'analysis' | 'contentVersion'>): CompatibilityV4Stored {
+  if (row.contentVersion !== COMPATIBILITY_CONTENT_VERSION) {
+    throw new Error(`Compatibility ${row.id} is a legacy row (content_version ${row.contentVersion}) and is not served`);
   }
-  const version = typeof json === 'object' && json !== null && 'contentVersion' in json ? json.contentVersion : undefined;
-  const schema =
-    version !== 4
-      ? CompatibilityStructuredContentSchema
-      : typeof json === 'object' && json !== null && 'teaser' in json
-        ? CompatibilityV4StoredSchema
-        : CompatibilityV4ContentSchema;
-  const result = schema.safeParse(json);
-  return result.success ? result.data : null;
+  return CompatibilityV4StoredSchema.parse(JSON.parse(row.analysis));
+}
+
+/** A row the app may serve. Legacy rows are kept in the table and treated as not found. */
+export function isCurrentCompatibility(row: Pick<typeof compatibility.$inferSelect, 'contentVersion'>): boolean {
+  return row.contentVersion === COMPATIBILITY_CONTENT_VERSION;
 }

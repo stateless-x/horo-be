@@ -1,17 +1,18 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from './db';
 import { invalidateCache } from './redis';
 import { RATE_LIMITS, resetRateLimit } from './rate-limit';
 import { generationKey } from './generation-singleflight';
-import { parseCompatibilityContent } from './compatibility-content';
+import { COMPATIBILITY_CONTENT_VERSION, parseCompatibilityContent } from './compatibility-content';
+import { compatCacheKey } from '../systems/compatibility/unlock';
 import {
   COMPATIBILITY_V4_LIVE_BUDGET,
   generateCompatibilityV4Stored,
   readerGender,
 } from './compatibility-generation';
-import { config } from '../config';
+import { readFlags } from './feature-flags';
 import { getCachedProfile } from '../systems/shared';
 import { normalizeMbtiType } from '../../lib/astrology';
 import { birthProfiles, chartNarratives, compatibility, dailyReadings, user } from '../../lib/db';
@@ -129,19 +130,6 @@ export const DevRegenerateCompatibilitySchema = z.object({
 });
 export type DevRegenerateCompatibility = z.infer<typeof DevRegenerateCompatibilitySchema>;
 
-/** MBTI sits in a full v4 report's people, or in a locked report's input snapshot. */
-const StoredPartnerMbtiSchema = z.union([
-  z.object({ people: z.object({ partner: z.object({ mbti: z.string().nullable() }) }) }).transform((v) => v.people.partner.mbti),
-  z.object({ inputs: z.object({ partner: z.object({ mbti: z.string().nullable() }) }) }).transform((v) => v.inputs.partner.mbti),
-]);
-
-/** The partner MBTI a stored reading was written with; null for v1/v2 rows, which never kept it. */
-function storedPartnerMbti(analysis: string): string | null {
-  if (parseCompatibilityContent(analysis)?.contentVersion !== 4) return null;
-  const parsed = StoredPartnerMbtiSchema.safeParse(JSON.parse(analysis));
-  return parsed.success ? parsed.data : null;
-}
-
 /**
  * Writes a new compatibility reading for the user with the same generation
  * functions and inputs as the live POST /api/fortune/compatibility, then
@@ -149,12 +137,11 @@ function storedPartnerMbti(analysis: string): string | null {
  * existing row keeps its id and share token.
  *
  * "full" writes what the live route writes: generateCompatibilityV4Stored with
- * the live budget, the detail included unless locked mode is on
- * (config.compat.lockEnabled), so a locked row can be made from the panel.
+ * the live budget, the detail included unless the compat_lock flag is on, so a locked row can be made from the panel.
  *
- * Partner MBTI is not a column: for an existing row it comes from a stored
- * current report and is unknown for a historical row. A "new" target
- * with the same birth date and relationship replaces that row with any MBTI.
+ * Partner MBTI is not a column: for an existing row it comes from the stored
+ * input snapshot. A "new" target with the same birth date and relationship
+ * replaces that row with any MBTI. Legacy rows are never targets.
  */
 export async function regenerateCompatibility(userId: string, input: DevRegenerateCompatibility, startedAt: number) {
   const profile = await requireProfile(userId);
@@ -171,10 +158,10 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
     const [row] = await db
       .select()
       .from(compatibility)
-      .where(and(eq(compatibility.id, input.target.id), eq(compatibility.profileAId, profile.id)))
+      .where(and(eq(compatibility.id, input.target.id), eq(compatibility.profileAId, profile.id), eq(compatibility.contentVersion, COMPATIBILITY_CONTENT_VERSION)))
       .limit(1);
     if (!row) throw new DevRequestError(404, 'ไม่พบดวงคู่นี้ในประวัติของผู้ใช้นี้');
-    partner = { name: row.partnerName, birthDate: row.partnerBirthDate, mbti: storedPartnerMbti(row.analysis) };
+    partner = { name: row.partnerName, birthDate: row.partnerBirthDate, mbti: parseCompatibilityContent(row).inputs.partner.mbti };
     relationshipType = RelationshipTypeSchema.parse(row.relationshipType);
   } else {
     partner = { name: input.target.name, birthDate: input.target.birthDate, mbti: input.target.mbti ?? null };
@@ -195,7 +182,7 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
   };
   const { stored: content, charts, qualityFlags } = await generateCompatibilityV4Stored({
     ...generationInput,
-    withDetail: !config.compat.lockEnabled,
+    withDetail: !(await readFlags()).compat_lock,
     maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
     deadlineAt: startedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
   });
@@ -217,6 +204,7 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
     .insert(compatibility)
     .values({
       ...values,
+      contentVersion: COMPATIBILITY_CONTENT_VERSION,
       profileAId: profile.id,
       partnerBirthDate: partner.birthDate,
       relationshipType,
@@ -224,13 +212,15 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
     })
     .onConflictDoUpdate({
       target: [compatibility.profileAId, compatibility.partnerBirthDate, compatibility.relationshipType],
+      // The unique index is partial (current rows only); the conflict target must name the same predicate.
+      targetWhere: sql`${compatibility.contentVersion} = ${sql.raw(String(COMPATIBILITY_CONTENT_VERSION))}`,
       set: values,
     })
     .returning({ id: compatibility.id });
 
   await forgetCompatibilityRow(userId, saved.id);
 
-  const locked = content.contentVersion === 4 && content.detail === null;
+  const locked = content.detail === null;
   return { id: saved.id, partnerName: partner.name, relationshipType, score: values.score, partnerMbti: partner.mbti, locked, qualityFlags };
 }
 
@@ -241,7 +231,7 @@ export async function regenerateCompatibility(userId: string, input: DevRegenera
  * and never write the new detail.
  */
 async function forgetCompatibilityRow(userId: string, rowId: string): Promise<void> {
-  await invalidateCache(`compat:${userId}:${rowId}`, flightResultKey(generationKey('compatibility', 'unlock', rowId)));
+  await invalidateCache(compatCacheKey(userId, rowId), flightResultKey(generationKey('compatibility', 'unlock', rowId)));
 }
 
 export const DevRelockCompatibilitySchema = z.object({ id: z.string().uuid() });
@@ -256,7 +246,7 @@ export async function relockCompatibility(userId: string, input: z.infer<typeof 
   const [row] = await db
     .select({ id: compatibility.id, analysis: compatibility.analysis })
     .from(compatibility)
-    .where(and(eq(compatibility.id, input.id), eq(compatibility.profileAId, profile.id)))
+    .where(and(eq(compatibility.id, input.id), eq(compatibility.profileAId, profile.id), eq(compatibility.contentVersion, COMPATIBILITY_CONTENT_VERSION)))
     .limit(1);
   if (!row) throw new DevRequestError(404, 'ไม่พบดวงคู่นี้ในประวัติของผู้ใช้นี้');
   const stored = CompatibilityV4StoredSchema.safeParse(JSON.parse(row.analysis));

@@ -11,8 +11,9 @@ import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
 import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Stored, readerGender } from '../../lib/compatibility-generation';
-import { config } from '../../config';
+import { readFlags } from '../../lib/feature-flags';
 import { historyItem, readingResponse, shareResponse } from './reading';
+import { COMPATIBILITY_CONTENT_VERSION, isCurrentCompatibility } from '../../lib/compatibility-content';
 import { historyCursorBefore } from './history-cursor';
 import { refundChecksOnFailure } from './check-limit';
 import { compatCacheKey, unlockForUser } from './unlock';
@@ -36,6 +37,9 @@ export function failureReference(error: unknown): string {
   return reference;
 }
 
+
+/** Every read serves current rows only; legacy (v1/v2) rows stay in the table, unseen. */
+const CURRENT = eq(compatibility.contentVersion, COMPATIBILITY_CONTENT_VERSION);
 
 /**
  * Compatibility system: relationship-type-aware compatibility readings
@@ -96,10 +100,12 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
             eq(compatibility.profileAId, userProfile.id),
             eq(compatibility.partnerBirthDate, partnerBirthDateStr),
             eq(compatibility.relationshipType, relationshipType),
+            CURRENT,
           )
         )
         .limit(1);
 
+      // A legacy row for this partner is not found: the check writes a new current row beside it.
       if (existing) {
         // Return cached result without consuming rate limit
         return { ...readingResponse(existing), cached: true };
@@ -164,7 +170,8 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         // written by the model within the live budget (one repair per call and a
         // deadline, so the synchronous response fits the socket and client
         // timeouts; see docs/compatibility-response-fix.md, "v4 live budget").
-        // Locked mode writes only the free teaser; the detail is written on unlock.
+        // With the compat_lock flag on, only the free teaser is written; the detail is written on unlock.
+        const withDetail = !(await readFlags()).compat_lock;
         const generation = await generateCompatibilityV4Stored({
           reader: {
             name: readerName,
@@ -175,14 +182,14 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           },
           partner: { name: partnerName, birthDate: partnerBirthDateObj, mbtiType: normalizeMbtiType(partnerMbtiType) },
           relationshipType,
-          withDetail: !config.compat.lockEnabled,
+          withDetail,
           maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
           deadlineAt: requestStartedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
         });
         if (generation.qualityFlags.length) {
           console.warn('[compatibility v4] quality flags', { flags: generation.qualityFlags });
         }
-        console.log('[compatibility v4] generated', { withDetail: !config.compat.lockEnabled, timings: generation.timings });
+        console.log('[compatibility v4] generated', { withDetail, timings: generation.timings });
         const { stored, charts } = generation;
         const userBaziChart = charts.readerBazi;
         const partnerBaziChart = charts.partnerBazi;
@@ -192,6 +199,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
 
         // Save to DB
         const [saved] = await db.insert(compatibility).values({
+          contentVersion: COMPATIBILITY_CONTENT_VERSION,
           profileAId: userProfile.id,
           partnerName,
           partnerBirthDate: partnerBirthDateStr,
@@ -236,6 +244,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
                 eq(compatibility.profileAId, userProfile.id),
                 eq(compatibility.partnerBirthDate, partnerBirthDateStr),
                 eq(compatibility.relationshipType, relationshipType),
+                CURRENT,
               )
             )
             .limit(1);
@@ -279,7 +288,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const typeFilter = query.relationshipType || null;
 
       // Build conditions
-      const conditions = [eq(compatibility.profileAId, userProfile.id)];
+      const conditions = [eq(compatibility.profileAId, userProfile.id), CURRENT];
 
       if (typeFilter && RELATIONSHIP_TYPES.includes(typeFilter as any)) {
         conditions.push(eq(compatibility.relationshipType, typeFilter));
@@ -306,6 +315,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           userElement: compatibility.userElement,
           partnerElement: compatibility.partnerElement,
           analysis: compatibility.analysis,
+          contentVersion: compatibility.contentVersion,
           createdAt: compatibility.createdAt,
         })
         .from(compatibility)
@@ -329,7 +339,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       // Get total count (only on first page for efficiency)
       let total = 0;
       if (!cursor) {
-        const countConditions = [eq(compatibility.profileAId, userProfile.id)];
+        const countConditions = [eq(compatibility.profileAId, userProfile.id), CURRENT];
         if (typeFilter && RELATIONSHIP_TYPES.includes(typeFilter as any)) {
           countConditions.push(eq(compatibility.relationshipType, typeFilter));
         }
@@ -345,8 +355,8 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         nextCursor,
         total,
         // The page reads it before a new check, so the wait screen can say
-        // what the POST will write: the teaser alone (lock on) or the full report.
-        lockEnabled: config.compat.lockEnabled,
+        // what the POST will write: the teaser alone (compat_lock on) or the full report.
+        lockEnabled: (await readFlags()).compat_lock,
       };
     } catch (error) {
       console.error('Compatibility history error:', error);
@@ -381,13 +391,14 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
             and(
               eq(compatibility.id, readingId),
               eq(compatibility.profileAId, userProfile.id),
+              CURRENT,
             )
           )
           .limit(1);
         return record ?? null;
       });
 
-      if (!cached) {
+      if (!cached || !isCurrentCompatibility(cached)) {
         set.status = 404;
         return { error: 'Compatibility reading not found' };
       }
@@ -400,7 +411,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
     }
   })
 
-  // Unlock a locked v4 report: write its detail and patch it into the row (owner only, idempotent)
+  // Unlock a locked report: write its detail and patch it into the row (owner only, idempotent)
   .post('/compatibility/:id/unlock', async ({ params, set, request }) => {
     const requestStartedAt = Date.now();
     const session = await validateSessionFromRequest(request);
@@ -428,7 +439,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const [result] = await db
         .select()
         .from(compatibility)
-        .where(eq(compatibility.shareToken, token))
+        .where(and(eq(compatibility.shareToken, token), CURRENT))
         .limit(1);
 
       if (!result) {

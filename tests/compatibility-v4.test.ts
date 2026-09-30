@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { overrideFlags } from '../src/lib/feature-flags';
 import {
   COMPATIBILITY_DEV_FIXTURES,
   type CompatibilityV4Content,
@@ -12,8 +13,10 @@ import {
   type V4SectionKey,
 } from '../lib/shared';
 import { bestMonth, ELEMENT_CONTROLLING, ELEMENT_PRODUCING, relationshipCalendar } from '../lib/astrology';
-import { config } from '../src/config';
 import { parseCompatibilityContent } from '../src/lib/compatibility-content';
+
+/** A current row carrying `stored`, as the read path sees it. */
+const currentRow = (stored: unknown) => ({ id: 'row-t', analysis: JSON.stringify(stored), contentVersion: 4 });
 import {
   calculateCompatibilityCharts,
   generateCompatibilityV4,
@@ -141,7 +144,10 @@ describe('generateCompatibilityV4', () => {
     expect(content.calendar.map((m) => m.month)).toEqual(['2026-10', '2026-11', '2026-12']);
     expect(result.qualityFlags).toEqual([]);
     // Computed, not written: the cover's people, the attraction basis, the reading time.
-    expect(content.people.reader).toEqual({ element: 'metal', yinYang: expect.any(String), mbti: 'INFP' });
+    // MBTI steers the prose but is never part of what a client can receive.
+    expect(content.people.reader).toEqual({ element: 'metal', yinYang: expect.any(String) });
+    expect(JSON.stringify(content)).not.toContain(fixture.reader.mbti);
+    expect(JSON.stringify(content)).not.toContain(fixture.partner.mbti);
     expect(content.people.partner.element).toBe('fire');
     expect(content.palace.reader.naksat).toBeString();
     // Nine parts (overview, six chapters, calendar, plan), at least a minute each.
@@ -410,7 +416,7 @@ describe('partner names that are ordinary words', () => {
       const { stored } = await generateCompatibilityV4Stored({ ...named(partner), withDetail: false });
       expect(stored.teaser.cover.lockedHints[0].text).toContain(partner);
       // The read path parses the stored row with the same schema.
-      expect(parseCompatibilityContent(JSON.stringify(stored))?.contentVersion).toBe(4);
+      expect(parseCompatibilityContent(currentRow(stored)).contentVersion).toBe(4);
     });
   }
 
@@ -444,8 +450,8 @@ describe('partner names that are ordinary words', () => {
       expect(full.qualityFlags).toEqual([]);
 
       const { stored } = await generateCompatibilityV4Stored({ ...named(partner), withDetail: true });
-      const parsed = parseCompatibilityContent(JSON.stringify(stored));
-      expect(parsed?.contentVersion).toBe(4);
+      const parsed = parseCompatibilityContent(currentRow(stored));
+      expect(parsed.contentVersion).toBe(4);
       expect(JSON.stringify(parsed)).toContain(JSON.stringify(partner).slice(1, -1));
     });
   }
@@ -642,8 +648,8 @@ describe('v4 live budget', () => {
 describe('shapeCompatibilityView for v4', () => {
   test('the teaser carries the cover and the score bars and no paid text', async () => {
     mockModel(() => sections());
-    const { content } = await generateCompatibilityV4(input);
-    const teaser = shapeCompatibilityView(content, 'teaser');
+    const { content, stored } = await generateCompatibilityV4(input);
+    const teaser = shapeCompatibilityView(stored, 'teaser');
     expect(Object.keys(teaser).sort()).toEqual(['archetype', 'contentVersion', 'cover', 'dimensions', 'generatedOn', 'people', 'readingMinutes']);
     expect(teaser.dimensions[0]).toEqual({ key: 'chemistry', label: 'เคมี', score: content.dimensions[0].score });
 
@@ -657,6 +663,7 @@ describe('shapeCompatibilityView for v4', () => {
     expect(json).not.toContain('"basis"');
     expect(json).not.toContain('"palace"');
     expect(json).not.toContain('"pullQuote"');
+    expect(json).not.toContain('"mbti"');
   });
 
   test('the share view is the free cover and the score numbers, nothing paid', async () => {
@@ -665,6 +672,7 @@ describe('shapeCompatibilityView for v4', () => {
     const share = shareCompatibilityV4(content);
     expect(Object.keys(share).sort()).toEqual(['archetype', 'contentVersion', 'dimensions', 'people', 'verdict']);
     const json = JSON.stringify(share);
+    expect(json).not.toContain('"mbti"');
     for (const chapterContent of content.chapters) {
       expect(json).not.toContain(chapterContent.detail);
       expect(json).not.toContain(chapterContent.summary);
@@ -675,16 +683,23 @@ describe('shapeCompatibilityView for v4', () => {
     expect(json).not.toContain(content.plan[0].action);
   });
 
-  test('a stored v4 report parses back to the same content', async () => {
+  test('a stored report parses back to the same stored form', async () => {
     mockModel(() => sections());
-    const { content } = await generateCompatibilityV4(input);
-    expect(parseCompatibilityContent(JSON.stringify(content))).toEqual(content);
+    const { stored } = await generateCompatibilityV4(input);
+    expect(parseCompatibilityContent(currentRow(stored))).toEqual(stored);
   });
 
-  test('the full view is the stored content', async () => {
+  test('the full view is the report without the plan or the input snapshot', async () => {
     mockModel(() => sections());
-    const { content } = await generateCompatibilityV4(input);
-    expect(shapeCompatibilityView(content, 'full')).toEqual(content);
+    const { content, stored } = await generateCompatibilityV4(input);
+    const full = shapeCompatibilityView(stored, 'full');
+    expect(full).toEqual(content);
+    const json = JSON.stringify(full);
+    for (const key of ['"insights"', '"inputs"', '"mbti"', '"basis"']) expect(json).not.toContain(key);
+  });
+
+  test('a legacy row (no content_version) never parses as a report', () => {
+    expect(() => parseCompatibilityContent({ id: 'legacy', analysis: '## ภาพรวม\nคำทำนายแบบเดิม', contentVersion: null })).toThrow('legacy row');
   });
 });
 
@@ -725,6 +740,7 @@ function row(analysis: string): CompatibilityRow {
     elementHarmony: 60,
     branchHarmony: 62,
     analysis,
+    contentVersion: 4,
     strengths: '[]',
     challenges: '[]',
     userElement: 'metal',
@@ -784,9 +800,8 @@ const unlockArgs = (store: ReturnType<typeof memoryStore>['store'], flight = new
 });
 
 describe('locked mode (teaser-first)', () => {
-  const REAL_COMPAT = { ...config.compat };
   afterEach(() => {
-    config.compat = { ...REAL_COMPAT };
+    overrideFlags(null);
   });
 
   test('the teaser stage writes the plan and the cover only, and stores no detail', async () => {
@@ -809,8 +824,8 @@ describe('locked mode (teaser-first)', () => {
     expect(counter.calls).toBe(3); // the three detail calls, no plan and no cover
     const { stored: full } = await generateCompatibilityV4Stored({ ...input, withDetail: true });
     expect(full.detail).not.toBeNull();
-    expect(parseCompatibilityContent(JSON.stringify({ ...stored, detail }))).toEqual({ ...stored, detail });
-    expect({ contentVersion: 4, ...stored.teaser, ...detail, insights: stored.plan.insights }).toEqual(oneGo);
+    expect(parseCompatibilityContent(currentRow({ ...stored, detail }))).toEqual({ ...stored, detail });
+    expect({ contentVersion: 4, ...stored.teaser, ...detail }).toEqual(oneGo);
   });
 
   test('the detail counts its months from the day the teaser was written, not from today', async () => {
@@ -923,7 +938,7 @@ describe('locked mode (teaser-first)', () => {
     async () => {
       const url = process.env.WALLET_TEST_DATABASE_URL!;
       if (!isLocalDatabaseUrl(url)) throw new Error('WALLET_TEST_DATABASE_URL must point at a database on this machine');
-      config.compat = { lockEnabled: true, unlockFree: false };
+      overrideFlags({ compat_lock: true, compat_unlock_free: false });
       const db = createDbClient(url);
       const testWallet = createWallet(db);
       const userId = `one-flow-${crypto.randomUUID().slice(0, 8)}`;
@@ -975,7 +990,7 @@ describe('locked mode (teaser-first)', () => {
   );
 
   test('with locking on and a balance of 0, unlock answers 402 with the wallet contract before any model call', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(0);
     try {
       const { store, state } = await locked();
@@ -991,7 +1006,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('a row whose detail exists opens without touching the wallet, even at a balance of 0', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(0);
     try {
       countingModel();
@@ -1011,7 +1026,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('a paid unlock charges once, in the same transaction that writes the detail', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(49);
     try {
       const { store, state } = await locked();
@@ -1027,7 +1042,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('a generation that fails leaves the ledger untouched', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(49);
     try {
       const { store, state } = await locked();
@@ -1042,7 +1057,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('a balance spent elsewhere during generation: 402, the detail discarded, one charge only', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(49);
     try {
       const { store, state } = await locked();
@@ -1067,7 +1082,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('two concurrent paid unlocks of one row charge once', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(98);
     try {
       const { store, state } = await locked();
@@ -1084,7 +1099,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('a row already paid for (relocked, or a patch that failed) opens at a balance of 0 with no second charge', async () => {
-    config.compat = { lockEnabled: true, unlockFree: false };
+    overrideFlags({ compat_lock: true, compat_unlock_free: false });
     const fake = fakeLedger(0, ['row-1']);
     try {
       const { store, state } = await locked();
@@ -1101,7 +1116,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('unlock writes the detail once and is idempotent after', async () => {
-    config.compat = { lockEnabled: true, unlockFree: true };
+    overrideFlags({ compat_lock: true, compat_unlock_free: true });
     countingModel();
     const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
     const { store, state } = memoryStore(row(JSON.stringify(stored)));
@@ -1122,7 +1137,7 @@ describe('locked mode (teaser-first)', () => {
   });
 
   test('two concurrent unlocks write the detail once', async () => {
-    config.compat = { lockEnabled: true, unlockFree: true };
+    overrideFlags({ compat_lock: true, compat_unlock_free: true });
     countingModel();
     const { stored } = await generateCompatibilityV4Stored({ ...input, withDetail: false });
     const { store, state } = memoryStore(row(JSON.stringify(stored)));
@@ -1136,16 +1151,11 @@ describe('locked mode (teaser-first)', () => {
     expect(b).toEqual(a);
   });
 
-  test('a row written before locked mode (full content, flat) is already unlocked', async () => {
-    countingModel();
-    const { content } = await generateCompatibilityV4(input);
-    const { store, state } = memoryStore(row(JSON.stringify(content)));
+  test('a legacy row is not found: no model call, no charge, no write', async () => {
     const counter = countingModel();
+    const { store, state } = memoryStore({ ...row('## ภาพรวม\nคำทำนายแบบเดิม'), contentVersion: null });
     const result = await unlockReading(unlockArgs(store));
-    expect(result.status).toBe(200);
-    if (result.status !== 200) throw new Error('unreachable');
-    expect(result.body.locked).toBe(false);
-    expect(result.body.structuredContent).toEqual(content);
+    expect(result.status).toBe(404);
     expect(counter.calls).toBe(0);
     expect(state.saves).toBe(0);
   });
@@ -1153,5 +1163,5 @@ describe('locked mode (teaser-first)', () => {
 
 function fullContent(stored: CompatibilityV4Stored): CompatibilityV4Content {
   if (!stored.detail) throw new Error('needs the detail');
-  return { contentVersion: 4, ...stored.teaser, ...stored.detail, insights: stored.plan.insights };
+  return { contentVersion: 4, ...stored.teaser, ...stored.detail };
 }
