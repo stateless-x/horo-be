@@ -114,14 +114,11 @@ Locked mode writes only the free teaser when the user checks a pair, and writes 
 
 The flags are read once at startup (`config.compat` in `src/config.ts`), and only the exact value `1` turns them on.
 
-**Paid in มู (2026-09-27).** With the lock on, `assertCanUnlock` in `src/lib/entitlements.ts` pays for the unlock from the มู wallet (`docs/wallet.md`):
-- The first wallet touch grants the 49 มู welcome gift.
-- The unlock then spends `compat_unlock` (49 มู) once per row.
-- The door reads the balance: "ใช้ 49 มู ปลดล็อก (มี 49 มู)". On a 402 it turns into "เติมมู".
+**Paid with delivery.** With the lock on, `checkUnlock` in `src/lib/entitlements.ts` checks whether the reader may unlock from the มู wallet (`docs/wallet.md`). It does not debit first. The detail generates before one transaction runs `chargeUnlockWithin` and patches the detail on the same row.
 
-The spend commits **before** the detail is generated. A failed generation is not refunded. The spend is keyed to the row, so a retry is never charged again. A failure that repeats on every attempt leaves the user paid with no report and needs a manual refund. The long-term fix is to insert the spend in the same transaction as the detail patch.
+This is the automatic protection for a failed generation: no spend row is written, so there is no balance to refund. If the database patch fails, the same transaction rolls back the spend. A retry after either failure remains safe. The spend is keyed to the row, so a delivered report is never charged twice.
 
-Payment (T5) is not built, so a balance can't be topped up yet. Don't turn the lock on in production before T5.
+The one-flow top-up path is implemented separately in `docs/wallet.md`; production payment enablement remains governed by its provider configuration and launch checks.
 
 ### Stored shape
 
@@ -216,6 +213,7 @@ Three unlocks on the local stack the same day took 16.5, 18.5 and 32.6 s end to 
   - the detail's months follow `generatedOn`;
   - locked responses carry no paid string on the reading, share and history routes;
   - unlock is owner-only, answers 402 `insufficient_balance` at a balance of 0, is idempotent, and writes once under two concurrent taps;
+  - a failed detail generation leaves the wallet balance and spend ledger untouched;
   - a row whose detail exists opens without touching the wallet (the wallet is stubbed; `tests/wallet.test.ts` covers the ledger itself);
   - partners called ดาว, ดาวใจ, น้ำ, ไฟ and ทอง pass without a repair, and a real jargon hint is still repaired or rejected.
 - To try the lock again on one row without a new check, use the devtools ดวงคู่ tab. ล็อกใหม่ (`POST /api/dev/relock/compatibility`, local database only) sets the row's `detail` back to null. ปลดล็อก calls the real unlock route. Both open `/dashboard/compatibility?id=<rowId>`. A relocked row that was already paid for is not charged again. Once the route pre-checks with `checkUnlock`, a balance of 0 gets a 402 for it first (see `docs/wallet.md`).

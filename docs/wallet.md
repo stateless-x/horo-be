@@ -1,8 +1,8 @@
 ---
 type: SPEC
-status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29); payment seam with a fake provider, order state machine, payment_events and the ฿399 pack built (I2, 2026-09-29); Stripe PromptPay adapter and webhook built, tested against the sandbox, not live (I3, 2026-09-29); PAYMENT_PROVIDER defaults to none, failed charges and already-paid rows handled, cancel outside the row lock (I3b)
-scope: มู currency: pricing, orders and payments, the append-only ledger, spend/refund/credit rules, wallet routes
-last_reviewed: 2026-09-29
+status: active — ledger, wallet routes and the ดวงคู่ spend built on feat/monetization-prep, not merged; ledger actors and the history route built, product passes, the history page and admin writes planned (2026-09-29); payment seam with a fake provider, order state machine, payment_events and the ฿399 pack built (I2, 2026-09-29); Stripe PromptPay adapter and webhook built, tested against the sandbox, not live (I3, 2026-09-29); PAYMENT_PROVIDER defaults to none, failed charges and already-paid rows handled, cancel outside the row lock (I3b); owner decision 2026-09-30 makes all มู permanent and separates 90-day feature credits, implementation pending
+scope: มู currency: pricing, orders and payments, the append-only ledger, spend/refund/credit rules, wallet routes; planned feature-credit boundary
+last_reviewed: 2026-09-30
 owner: backend
 decision_log: ~/product-decisions/horo/2026-09-27-monetize.md ("Credit-model run"); product passes: ~/product-decisions/horo/2026-09-29-monetize.md
 ---
@@ -44,7 +44,8 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
 
 **Contents.**
 - Built: Prices and rules · Ledger invariants (with actors) · Operations · The ดวงคู่ unlock · One-flow purchase · Payments · Routes.
-- Planned: Product passes (T15) · The rest of the audit trail: history page, admin views, admin writes (T16).
+- Planned: Product passes (T15) · The rest of the audit trail: history page, admin views, admin writes (T16) · permanent
+  bonus มู migration and separate 90-day feature credits (T19).
 - Deferred · Testing.
 
 ## Prices and rules
@@ -64,7 +65,11 @@ the baht beside it. When this doc and the code disagree, the code wins; fix this
   `{ enabled: false }`, and the frontend shows no wallet (owner decision, 2026-09-27). One flag gates both:
   `COMPAT_LOCK_ENABLED`.
 - Closed loop: never cashed out, never transferred between users, never spent outside Horo. Balance cap 2,000.
-- Base units never expire. Bonus rows carry `expires_at` = purchase + 180 days.
+- **Approved target before launch (owner 2026-09-30): every มู is permanent.** Base, bonus, welcome and adjustment rows
+  have `expires_at = null`. The current branch still assigns 180 days to bonus rows through `BONUS_TTL_DAYS`; remove
+  that constant, response wording and assertions before merging. No production wallet rows exist, so this is a
+  pre-launch simplification rather than a user-balance migration.
+- Feature credits are separate 90-day use rights, never wallet rows or มู. See “Feature credits (T19)” below.
 
 ## Ledger invariants
 
@@ -120,7 +125,8 @@ from their caller.
 - `creditOrder(orderId, actor)`: the purchase and bonus rows carry `actor`, whoever confirmed the payment:
   `{ type: 'system', label: '<provider>:<event id>' }` from a webhook, `'<provider>:<providerRef>'` from a lookup
   (Payments). Only for `status = 'paid'` (else `OrderNotPaid`). Writes a `purchase` row, plus a `bonus` row
-  with `expires_at` when the pack has bonus. Idempotent. A credit past the cap throws `BalanceCapExceeded`;
+  with `expires_at = null` under the approved permanent-Mู rule (the branch still writes the retired 180-day value;
+  T19 removes it). Idempotent. A credit past the cap throws `BalanceCapExceeded`;
   `handleProviderEvent` then flags the paid order `needs_review` for the admin page.
 - `adjust(user, delta, note, actor)`: `admin_adjust`, never below 0 or above the cap. Throws `InvalidAdjustment`
   when `note` (the reason) is empty after trim or the actor is not `admin` or `dev`.
@@ -370,58 +376,77 @@ Both dev routes are mounted only outside production (`devGuard`). Each request c
 The grant writes an `admin_adjust` row noted `dev: …`, actor `dev` with the same label. The pay route takes the
 webhook path, so its credit is actor `system`, label `fake:fake_evt_…`.
 
-## Product passes (planned, not built)
+## Feature credits (T19, planned, not built)
+
+Owner decision 2026-09-30: a counted right to use one named feature is a **feature credit**, separate from มู. Every
+grant expires exactly 90 days after issuance. This one model owns promotional uses, purchased multi-use passes and any
+future generation credits; do not build a second per-feature balance.
+
+```
+feature_credit_grants  id uuid pk · user_id · feature_id · uses_total · source_type · source_ref
+                       granted_at · expires_at (= granted_at + 90 days) · actor fields
+
+feature_credit_uses    id uuid pk · grant_id → feature_credit_grants.id · user_id · feature_id
+                       ref_id · created_at · unique (user_id, feature_id, ref_id)
+```
+
+- Uses left = `uses_total − count(feature_credit_uses)`. The grant is append-only; uses are inserted, never decremented.
+- Select the live grant with the earliest `expires_at`; refuse expired or exhausted grants.
+- A failed generation/delivery rolls the use back with the content transaction.
+- Feature credits never enter `wallet_ledger`, never affect the มู balance or cap, and are excluded from outstanding-Mู
+  accounting. Buying a grant with มู writes one normal spend row that references the grant.
+- `GET /api/wallet` adds `featureCredits` only after a real feature ships: grouped feature label, uses left, soonest
+  expiry, status and destination. The frontend shows these in the wallet's `คูปอง` tab with a dedicated clay ticket
+  asset and the exact Bangkok expiry date; `ประวัติ` remains the wallet-ledger panel. The selected panel is preserved in
+  `?tab=history|coupons`.
+- Refund and replacement semantics belong to the feature that creates the grant and must be recorded before that feature
+  ships. Expiry is not a marketing countdown.
+
+## Product passes (T15, planned through feature credits)
 
 Owner decision 2026-09-29: a promo like "ดวงคู่ 3 คน ราคา 2" is sold as a **product pass**. It is bought with มู and
 holds a count of uses for one product. Buying singles never adds up to a pass: three ฿49 unlocks are 147 มู.
-Nothing in this section exists in code yet. When it is built, move the rules into the sections above.
+Nothing in this section exists in code yet. The pass is the first planned `feature_credit_grants` use case; the older
+`product_passes`/`pass_uses` names in the 2026-09-29 decision log are superseded and must not be implemented.
 
 **Proposed defaults. The owner has not confirmed these numbers yet.**
 
 | Pass | Product | Uses | Price | Expires |
 |---|---|---|---|---|
-| `compat_pass_3` | `compat_unlock` | 3 | 98 มู | 180 days after purchase |
+| `compat_pass_3` | `compat_unlock` | 3 | 98 มู | 90 days after purchase |
 
 Only one pass type per product at a time.
 
-**Scope.** A pass is the one allowed exception to "one unit". It is counted uses of one product, bought with มู only,
-never sold for baht directly, never transferable, and never converted back to มู except by the refund below.
-`product_passes` (a count of uses) is separate from the planned `entitlements` table (a time scope, month pass and
-year reading, T9 and T10). Don't merge them.
+**Scope.** A pass is a feature-credit grant: counted uses of one product, bought with มู only, never sold for baht
+directly, never transferable, and never converted back to มู except by the refund below. Feature credits remain separate
+from the planned `entitlements` table (a time scope, month pass and year reading, T9 and T10). Don't merge them.
 
-### Tables (additive)
+### Storage
 
-```
-product_passes  id uuid pk · user_id · pass_id ('compat_pass_3') · product_id ('compat_unlock')
-                uses_total int · spend_ledger_id (the −98 spend row) · expires_at · created_at
-
-pass_uses       id uuid pk · pass_row_id → product_passes.id · user_id · product_id · ref_id · created_at
-                unique (user_id, product_id, ref_id)
-```
-
-- Uses left = `uses_total − count(pass_uses)`. Nothing is ever updated.
-- The unique index is on the thing unlocked, not on the pass. So one row can't be opened by two passes.
+Use the T19 `feature_credit_grants` and `feature_credit_uses` tables above. `feature_id = 'compat_unlock'`,
+`uses_total = 3`, and `source_type = 'product_pass'`; `source_ref` identifies `compat_pass_3`. The spend ledger row
+references the grant. The unique use index is on the thing unlocked, so one row cannot be opened by two grants.
 - Pass prices live in `src/lib/pricing.ts` beside `PRODUCT_PRICES` (e.g. `PASSES`). `ProductId` and
   `SpendableProductId` gain `compat_pass_3`, the product id the buy-pass spend carries.
 
 ### Buying a pass
 
 In one transaction under the per-user advisory lock:
-1. `spendWithin(tx, user, 'compat_pass_3', passRowId)`.
-2. Insert the `product_passes` row.
-3. If the buyer is at a locked door, insert the first `pass_uses` row for that row.
+1. `spendWithin(tx, user, 'compat_pass_3', grantId)`.
+2. Insert the `feature_credit_grants` row with a 90-day expiry.
+3. If the buyer is at a locked door, insert the first `feature_credit_uses` row for that row.
 
 The existing spend index already makes the buy idempotent per pass row.
 
 ### Unlocking with a pass
 
 Changes to `src/lib/entitlements.ts`:
-- **`hasPaid`** also returns true when a `pass_uses` row exists for (user, product, ref). This stops a row opened by a
+- **`hasPaid`** also returns true when a `feature_credit_uses` row exists for (user, feature, ref). This stops a row opened by a
   pass from later being charged 49 มู, and the reverse.
 - **`checkUnlock`** returns ok when the user holds a live pass for the product (not expired, not refunded, uses left).
   It checks this before `canAfford`.
 - **`chargeUnlockWithin`**, under the same lock and in the caller's transaction, does this:
-  - A live pass exists: insert a `pass_uses` row and charge 0 มู. When several passes are live, take the one that
+  - A live grant exists: insert a `feature_credit_uses` row and charge 0 มู. When several grants are live, take the one that
     expires first.
   - Otherwise: `spendWithin` at the full price, as today.
 
@@ -446,8 +471,8 @@ This will be decided when the pass is built.
 
 ### Routes and UI
 
-- **`GET /api/wallet`** gains `passes: [{ id, passId, productId, usesLeft, expiresAt }]`. Pass uses never appear in
-  `wallet_ledger`, so the wallet page needs this list. The buy-pass spend does appear in the ledger.
+- **`GET /api/wallet`** gains the T19 `featureCredits` shape. Uses never appear in `wallet_ledger`, so the wallet page
+  needs this list. The buy-pass spend does appear in the ledger.
 - **The door** offers "เปิดคนนี้ · 49 มู" and "ชุด 3 คน · 98 มู". With a live pass it offers
   "ใช้สิทธิ์ (เหลือ N คน)" instead.
 
@@ -461,7 +486,7 @@ Owner request 2026-09-29: every change to a balance must show what happened and 
 `adjust`'s note and actor rule, and `GET /api/wallet/history` are built (Ledger invariants, Operations, Routes). Still
 planned:
 
-- **`product_passes`** gets the same three actor columns when passes are built. **Pass uses** (`pass_uses`) are always
+- **`feature_credit_grants`** gets the same three actor columns when credits are built. **Credit uses** are always
   done by the user; their actor is `user_id`, already on the row.
 - **Manual slip paid by an admin:** `creditOrder` with an `admin` actor, through the internal route below.
 - **Orders** keep their status timestamps (`paid_at`, `refunded_at`). The ledger row written when an order is paid or
@@ -581,8 +606,10 @@ All behind `INTERNAL_API_SECRET`; horo-admin renders them and offers the CSV dow
   is paid.
 - **Excess payments and cap failures (I2b):** the admin route that credits `excess_payment` and resolves
   `needs_review` orders.
-- **Bonus expiry (later ticket):** `expires_at` is stored but not enforced. No `expire` rows are written, and the balance
-  counts bonus rows past expiry. When it lands, spend bonus first (decision log).
+- **Permanent bonus มู (before launch):** remove `BONUS_TTL_DAYS`, stop setting `wallet_ledger.expires_at` on bonus
+  rows, update the shared comments/frontend trust copy/tests, and reset any local-only expiry values. Keep the nullable
+  column and historical `expire` kind for compatibility; all new มู rows use null. Feature-credit expiry belongs only to
+  T19's separate grants.
 - **Admin page (T13):** grants, refunds and outstanding balance in horo-admin. Refund UX for a refunded spend
   (`SpendRefunded`).
 - **Legal:** confirmation of the single-purpose e-money bucket is a launch gate.
@@ -607,3 +634,11 @@ with `sk_test_`. Production runs Bun 1.1.38: `bunx bun@1.1.38 test` reproduces i
 
 The ledger block refuses any database that is not on this machine. It warms the connection pool first, so concurrent
 calls really overlap. With a cold pool, a missing lock goes unnoticed.
+
+## Documentation health
+
+FRESH before → after: F 2→2 (descriptive filename and contents list; still no docs index entry) · R 3→3 (freshness
+metadata updated and the still-live 180-day implementation is explicitly separated from the approved permanent-Mู
+target) · E 2→2 (large spec remains section-retrievable but has no compact full TOC) · S 3→3 (one wallet/entitlement
+spec) · H 3→3 (T19 adds concrete tables, boundaries and concurrency acceptance without weakening existing handoff
+detail). Total: 13/15 (A) → 13/15 (A).
