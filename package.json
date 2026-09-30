@@ -25,6 +25,7 @@
     "elysia": "^1.1.31",
     "ioredis": "^5.9.3",
     "postgres": "^3.4.5",
+    "stripe": "18.5.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {

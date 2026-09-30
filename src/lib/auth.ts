@@ -50,8 +50,8 @@ export const auth = betterAuth({
     useSecureCookies: config.env === 'production',
     // SameSite=None required for OAuth cookies to survive provider redirect chain
     defaultCookieAttributes: {
-      sameSite: 'none' as const,
-      secure: true,
+      sameSite: config.env === 'production' ? 'none' as const : 'lax' as const,
+      secure: config.env === 'production',
     },
     crossSubDomainCookies: {
       enabled: false,

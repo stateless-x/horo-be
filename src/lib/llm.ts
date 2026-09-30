@@ -2,9 +2,14 @@ import { z } from "zod";
 import { config } from "../config";
 import { SYSTEM_PROMPT } from "./prompts";
 import {
-  CompatibilityStructuredContentSchema,
-  type CompatibilityStructuredContent,
+  V4InsightPlanSchema,
+  V4AllSectionsSchema,
+  V4_HINT_MAX,
+  type V4InsightPlan,
+  type V4SectionKey,
+  type V4Sections,
 } from "../../lib/shared";
+
 import { CHART_BUDGET, DAILY_BUDGET } from "../../lib/shared/types/generation-budget";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
@@ -45,7 +50,7 @@ function clampMaxTokens(requested: number): number {
 }
 
 interface ChatMessage {
-  role: "system" | "user";
+  role: "system" | "user" | "assistant";
   content: string;
 }
 
@@ -161,82 +166,298 @@ export async function generateFortuneReading(
   );
 }
 
-const STRUCTURED_COMPATIBILITY_SHAPE = `
-Return valid JSON matching exactly this shape (all fields required):
-{
-  "verdict": string,
-  "chemistry": string,
-  "caution": string,
-  "advice": string,
-  "nextSteps": {
-    "action": string,
-    "conversationStarter": string,
-    "watchFor": string
-  }
-}
-Length limits: action 1 to 180 characters, conversationStarter 1 to 220 characters, watchFor 1 to 180 characters.
-Do not include the score, markdown, or any text outside this JSON object.`;
+/** Called once per model request, retries included. Lets a caller count calls without changing the result. */
+export type OnModelCall = () => void;
 
-type GeneratedCompatibilityContent = Pick<
-  CompatibilityStructuredContent,
-  'verdict' | 'chemistry' | 'caution' | 'advice'
-> & {
-  nextSteps: NonNullable<CompatibilityStructuredContent['nextSteps']>;
-};
+/**
+ * The compatibility generation loop: JSON mode, 60 s per call, up to two
+ * transport retries with backoff, and a validation repair that re-asks with a
+ * short correction appended.
+ */
+const CALL_TIMEOUT_MS = 60_000;
+/** A section call measured 9 to 20 s; starting one with less time left would only time out. */
+const MIN_CALL_MS = 15_000;
 
-const GeneratedCompatibilityContentSchema = CompatibilityStructuredContentSchema.pick({
-  verdict: true,
-  chemistry: true,
-  caution: true,
-  advice: true,
-  nextSteps: true,
-}).required();
-
-/** Generate the compact narrative portion of compatibility v2. */
-export async function generateStructuredCompatibilityReading(
+async function generateValidatedCompatibilityJson<T>(
   prompt: string,
-  maxTokens: number = 1000,
-): Promise<GeneratedCompatibilityContent> {
-  let effectivePrompt = `${prompt}\n${STRUCTURED_COMPATIBILITY_SHAPE}`;
-  let validationRetryUsed = false;
+  schema: z.ZodType<T>,
+  maxTokens: number,
+  /**
+   * Describes what failed for the repair turn: the model sees its own reply
+   * and this description, and corrects that reply. Regenerating from scratch
+   * repeated the same slips.
+   */
+  describeInvalid: (problems: string[]) => string,
+  onModelCall?: OnModelCall,
+  /**
+   * Quality checks that are worth one repair but not worth failing the
+   * reading over: they get the first repair turn, and whatever still fails
+   * after it is returned as `softIssues`, not thrown. A quality repair can
+   * break a rule the reply had passed (a stray Chinese word); if the repairs
+   * run out on that, the reply before the quality repair is returned with its
+   * issues, so a quality repair never costs a valid reading.
+   */
+  softCheck?: (data: T) => string[],
+  /**
+   * Repair turns allowed for rule failures. Section calls allow two, because
+   * a long reply that fixes one slip
+   * sometimes makes another (a stray Chinese word in a fixed plan step).
+   */
+  maxRepairs = 1,
+  /**
+   * Epoch ms by which this call must have finished, or undefined for no
+   * limit. Each model call gets min(60 s, time left); none starts with less
+   * than MIN_CALL_MS left, and a call cut off by the deadline is not retried.
+   * The live route uses it to keep a synchronous request inside its budget.
+   */
+  deadlineAt?: number,
+  /**
+   * A targeted fix tried once, before the whole-reply repair, for failures a
+   * small call can mend (a locked hint over its length cap). It returns the
+   * patched reply, which is validated again, or null when it does not apply.
+   */
+  patch?: (data: unknown, issues: z.ZodIssue[]) => Promise<unknown | null>,
+): Promise<{ data: T; softIssues: string[] }> {
+  let effectivePrompt = prompt;
+  let repairTurn: ChatMessage[] = [];
+  let repairsUsed = 0;
   let transportFailures = 0;
+  let patchUsed = false;
+  /** The valid reply a quality repair was asked of, returned if that repair breaks the schema on the last try. */
+  let beforeQualityRepair: { data: T; softIssues: string[] } | null = null;
 
   while (true) {
     let text: string;
+    const timeLeft = deadlineAt === undefined ? CALL_TIMEOUT_MS : deadlineAt - Date.now();
+    if (timeLeft < MIN_CALL_MS) {
+      // Out of time before the next turn: a quality repair never costs a valid reading.
+      if (beforeQualityRepair) return beforeQualityRepair;
+      throw new Error('Compatibility generation ran out of time');
+    }
     try {
+      onModelCall?.();
       text = await callDeepSeek(
         [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: effectivePrompt },
+          ...repairTurn,
         ],
         {
           maxTokens,
           temperature: 0.7,
-          timeoutMs: 60_000,
+          timeoutMs: Math.min(CALL_TIMEOUT_MS, timeLeft),
           jsonMode: true,
         },
       );
     } catch (error) {
+      if (beforeQualityRepair) return beforeQualityRepair;
       if (!isRetryableError(error) || transportFailures >= 2) throw error;
       transportFailures += 1;
       await new Promise(resolve => setTimeout(resolve, 1000 * transportFailures));
       continue;
     }
 
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(text) as Record<string, unknown>;
-      const result = GeneratedCompatibilityContentSchema.safeParse(parsed);
-      if (result.success) return result.data;
-
-      if (validationRetryUsed) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
-      validationRetryUsed = true;
-      effectivePrompt = `${effectivePrompt}\n\nYour previous response did not match the required fields or length limits. Return all fields, including the complete nextSteps object, as valid JSON.`;
+      parsed = JSON.parse(text);
     } catch (error) {
-      if (validationRetryUsed) throw error;
-      validationRetryUsed = true;
+      if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
+      if (repairsUsed >= maxRepairs) throw error;
+      repairsUsed += 1;
       effectivePrompt = `${effectivePrompt}\n\nYour previous response was not valid JSON. Return only the complete JSON object.`;
+      continue;
     }
+
+    let result = schema.safeParse(parsed);
+    if (!result.success && patch && !patchUsed) {
+      patchUsed = true;
+      const patched = await patch(parsed, result.error.issues);
+      if (patched !== null) {
+        text = JSON.stringify(patched);
+        result = schema.safeParse(patched);
+      }
+    }
+    if (result.success) {
+      const softIssues = softCheck?.(result.data) ?? [];
+      // Quality issues get one repair, and only as the first one.
+      if (softIssues.length === 0 || repairsUsed > 0) return { data: result.data, softIssues };
+      beforeQualityRepair = { data: result.data, softIssues };
+      repairsUsed += 1;
+      repairTurn = [
+        { role: "assistant", content: text },
+        { role: "user", content: describeInvalid(softIssues) },
+      ];
+      continue;
+    }
+
+    if (repairsUsed >= maxRepairs && beforeQualityRepair) return beforeQualityRepair;
+    if (repairsUsed >= maxRepairs) throw new Error(`Invalid compatibility JSON: ${result.error.message}`);
+    repairsUsed += 1;
+    repairTurn = [
+      { role: "assistant", content: text },
+      { role: "user", content: describeInvalid(result.error.issues.map(issueLine)) },
+    ];
   }
+}
+
+/**
+ * The repair turn names each failed field, so the model fixes that instead of
+ * guessing.
+ */
+const issueLine = (issue: z.ZodIssue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`;
+
+function describeInvalid(problems: string[]): string {
+  return `Your JSON above failed validation: ${problems.join('; ')}. Return the complete corrected JSON object with every field of the required shape, changing only what these problems need. Write all prose in Thai with no English at all, and never name a personality type or its letter code.`;
+}
+
+// ---------------------------------------------------------------- report generation
+
+const V4_PLAN_SHAPE = `
+Return valid JSON matching exactly this shape:
+{ "insights": [ { "text": string, "basis": [string], "chapter": string } ] }
+insights has 6 to 8 items. Do not include markdown or any text outside this JSON object.`;
+
+/** The JSON each section contributes to a call's shape, plus its count rules. */
+const V4_SECTION_SHAPES: Record<V4SectionKey, { json: string; rules?: string }> = {
+  cover: {
+    json: '"cover": { "verdict": string, "lockedHints": [ { "text": string, "chapter": string } ] }',
+    rules: `lockedHints has exactly 3 items, each chapter a different one of: partner, you, communication, friction; each text is at most ${V4_HINT_MAX} characters.`,
+  },
+  overview: {
+    json: '"overview": { "story": string, "dimensionLines": { "chemistry": string, "communication": string, "trust": string, "rhythm": string } }',
+  },
+  attraction: { json: '"attraction": { "summary": string, "pullQuote": string, "detail": string, "move": string }' },
+  partner: { json: '"partner": { "summary": string, "pullQuote": string, "detail": string, "move": string }' },
+  you: { json: '"you": { "summary": string, "pullQuote": string, "detail": string, "move": string }' },
+  communication: {
+    json: '"communication": { "summary": string, "pullQuote": string, "detail": string, "move": string, "pairs": [ { "do": string, "avoid": string } ], "lines": [string] }',
+    rules: 'communication.pairs has exactly 3 items and communication.lines exactly 3.',
+  },
+  friction: {
+    json: '"friction": { "summary": string, "pullQuote": string, "detail": string, "move": string, "scenarios": [ { "scenario": string, "repair": string } ] }',
+    rules: 'friction.scenarios has 2 or 3 items and every scenario starts with "ถ้า".',
+  },
+  future: {
+    json: '"future": { "summary": string, "pullQuote": string, "detail": string, "move": string, "goSignals": [string], "slowSignals": [string], "nextStep": { "month": "YYYY-MM", "step": string } }',
+    rules: 'future.goSignals and future.slowSignals have 2 or 3 items each.',
+  },
+  calendar: {
+    json: '"calendar": [ { "month": "YYYY-MM", "text": string } ]',
+    rules: 'calendar has exactly 3 items, one per given month, in order.',
+  },
+  plan: {
+    json: '"plan": [ { "day": number, "action": string, "conversationStarter": string, "watchFor": string } ]',
+    rules: 'plan has exactly 3 items with day from 1 to 7 in increasing order.',
+  },
+};
+
+function v4Shape(sections: readonly V4SectionKey[]): string {
+  const rules = sections.map((key) => V4_SECTION_SHAPES[key].rules).filter(Boolean);
+  return `
+Return valid JSON matching exactly this shape (all fields required):
+{
+${sections.map((key) => `  ${V4_SECTION_SHAPES[key].json}`).join(',\n')}
+}
+${rules.join('\n')}
+Do not include the score, markdown, comments, or any text outside this JSON object.`;
+}
+
+export interface V4PartOptions<T> {
+  onModelCall?: OnModelCall;
+  /** Repair turns for rule failures: 2 in the dev tools, 1 on the live route (see the budget in docs). */
+  maxRepairs?: number;
+  /** See generateValidatedCompatibilityJson. */
+  deadlineAt?: number;
+  /** Pair-specific rules that must hold (they fail the reading if the repair doesn't fix them). */
+  pairCheck?: (content: T, ctx: z.RefinementCtx) => void;
+  /** Quality rules worth one repair; see generateValidatedCompatibilityJson. */
+  softCheck?: (content: T) => string[];
+  /** A targeted fix tried before the whole-reply repair; see generateValidatedCompatibilityJson. */
+  patch?: (data: unknown, issues: z.ZodIssue[]) => Promise<unknown | null>;
+}
+
+/**
+ * How the report's sections are split across calls, after the insight plan.
+ * The cover (verdict and locked hints) is the free teaser, its own small call,
+ * so locked mode can write it alone at check time. The detail sections are
+ * three calls in parallel: measured on the five fixtures (see the report
+ * samples), calls of about 1,500 to 1,900 output tokens each finish together
+ * in about the time one 2,300-token half took. Unlocked, the cover call runs
+ * alongside the three.
+ */
+export const V4_TEASER_SECTIONS: readonly V4SectionKey[] = ['cover'];
+export const V4_DETAIL_SPLIT: ReadonlyArray<readonly V4SectionKey[]> = [
+  ['partner', 'you', 'plan'],
+  ['communication', 'friction'],
+  ['overview', 'attraction', 'future', 'calendar'],
+];
+
+/**
+ * Output ceilings: the plan measured about 900 tokens and each section call
+ * up to about 2,300. The ceilings leave room without letting a runaway reply
+ * eat the 60 s per-call budget.
+ */
+const V4_MAX_TOKENS = { plan: 1500, sections: 3500, hints: 600 } as const;
+
+export function generateCompatibilityV4Plan(prompt: string, options: V4PartOptions<V4InsightPlan>) {
+  return generateValidatedCompatibilityJson(
+    `${prompt}\n${V4_PLAN_SHAPE}`,
+    options.pairCheck ? V4InsightPlanSchema.superRefine(options.pairCheck) : V4InsightPlanSchema,
+    V4_MAX_TOKENS.plan,
+    describeInvalid,
+    options.onModelCall,
+    options.softCheck,
+    options.maxRepairs ?? 2,
+    options.deadlineAt,
+  );
+}
+
+export function generateCompatibilityV4Sections(
+  prompt: string,
+  sections: readonly V4SectionKey[],
+  options: V4PartOptions<Partial<V4Sections>>,
+) {
+  const mask: Partial<Record<V4SectionKey, true>> = Object.fromEntries(sections.map((key) => [key, true]));
+  const schema: z.ZodType<Partial<V4Sections>> = V4AllSectionsSchema.pick(mask);
+  return generateValidatedCompatibilityJson(
+    `${prompt}\n${v4Shape(sections)}`,
+    options.pairCheck ? schema.superRefine(options.pairCheck) : schema,
+    V4_MAX_TOKENS.sections,
+    describeInvalid,
+    options.onModelCall,
+    options.softCheck,
+    options.maxRepairs ?? 2,
+    options.deadlineAt,
+    options.patch,
+  );
+}
+
+const V4_HINT_REWRITE_SHAPE = `
+Return valid JSON matching exactly this shape: { "texts": [string] }, one text per numbered line above, in the same order.
+Do not include markdown or any text outside this JSON object.`;
+
+/**
+ * Rewrites only the locked hints that ran over their cap: a small call
+ * (about 2 s) in place of rewriting the whole cover. Its reply is checked by
+ * the cover's own schema and pair check once patched in, so it gets no repair
+ * of its own.
+ */
+export async function rewriteV4Hints(
+  prompt: string,
+  count: number,
+  options: { onModelCall?: OnModelCall; deadlineAt?: number },
+): Promise<string[]> {
+  const { data } = await generateValidatedCompatibilityJson(
+    `${prompt}\n${V4_HINT_REWRITE_SHAPE}`,
+    z.object({ texts: z.array(z.string().trim().min(1)).length(count) }),
+    V4_MAX_TOKENS.hints,
+    describeInvalid,
+    options.onModelCall,
+    undefined,
+    0,
+    options.deadlineAt,
+  );
+  return data.texts;
 }
 
 const TEASER_SHAPE = `
@@ -282,6 +503,7 @@ export type TeaserContent = z.infer<typeof TeaserContentSchema>;
 export async function generateTeaserReading(
   prompt: string,
   userName: string,
+  onModelCall?: OnModelCall,
 ): Promise<TeaserContent> {
   let effectivePrompt = `${prompt}\n${TEASER_SHAPE}`;
   let validationRetryUsed = false;
@@ -290,6 +512,7 @@ export async function generateTeaserReading(
   while (true) {
     let text: string;
     try {
+      onModelCall?.();
       text = await callDeepSeek(
         [
           { role: "system", content: SYSTEM_PROMPT },

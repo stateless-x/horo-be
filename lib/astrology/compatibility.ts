@@ -1,7 +1,7 @@
 import type { BaziChart, EarthlyBranch, Element } from '../shared';
 import { ELEMENT_PRODUCING, ELEMENT_CONTROLLING } from './constants';
 
-type BranchRelation = 'combine' | 'trine' | 'clash' | 'harm' | 'same' | 'neutral';
+export type BranchRelation = 'combine' | 'trine' | 'clash' | 'harm' | 'same' | 'neutral';
 
 const BRANCH_COMBINATIONS: [EarthlyBranch, EarthlyBranch][] = [
   ['zi', 'chou'], ['yin', 'hai'], ['mao', 'xu'],
@@ -43,7 +43,7 @@ function hasPair(
   );
 }
 
-function getBranchRelation(branchA: EarthlyBranch, branchB: EarthlyBranch): BranchRelation {
+export function getBranchRelation(branchA: EarthlyBranch, branchB: EarthlyBranch): BranchRelation {
   if (branchA === branchB) return 'same';
   if (hasPair(BRANCH_COMBINATIONS, branchA, branchB)) return 'combine';
   if (hasPair(BRANCH_CLASHES, branchA, branchB)) return 'clash';

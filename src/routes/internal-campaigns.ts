@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
-import { timingSafeEqual } from 'crypto';
 import { eq, count } from 'drizzle-orm';
 import { config } from '../config';
+import { adminSecretMatches } from '../lib/admin-secret';
 import { planSend, executeSend, missingSendConfig } from '../lib/campaign-sender';
 import { loadCampaignAsync, listCampaignsAsync, listCampaignIds, renderBody, toHtml, toText } from '../lib/campaigns';
 import { lintCampaign } from '../lib/campaign-lint';
@@ -25,22 +25,11 @@ import { campaigns, emailSends } from '../../lib/db/schema';
  * they do on the CLI. There is no "just send" path.
  */
 
-/** Constant-time compare so the secret cannot be guessed a byte at a time. */
-function secretMatches(provided: string | undefined): boolean {
-  const expected = config.adminApi.secret;
-  if (!expected || !provided) return false;
-
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
 export const internalCampaignRoutes = new Elysia({ prefix: '/internal/campaigns' })
   // One guard for every route below: no valid secret, no access.
   .onBeforeHandle(({ request, set }) => {
     const header = request.headers.get('x-admin-secret') ?? undefined;
-    if (!secretMatches(header)) {
+    if (!adminSecretMatches(header)) {
       set.status = 401;
       return { error: 'Unauthorized' };
     }

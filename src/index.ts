@@ -3,8 +3,13 @@ import { cors } from '@elysiajs/cors';
 import { config, configErrors, llmConfigErrors } from './config';
 import { getRedisClient } from './lib/redis';
 import { HTTP_SERVER_OPTIONS } from './lib/http-server-options';
+// Chosen at import: PAYMENT_PROVIDER=fake in production throws here and the server never starts.
+import { paymentGateway } from './lib/payments';
+import { qrTtlMinutes } from './lib/pricing';
 
 console.log('[STARTUP] Starting Horo API...');
+console.log('[STARTUP] Payment provider:', paymentGateway?.provider ?? 'none (checkout answers unavailable)');
+console.log('[STARTUP] QR TTL minutes:', qrTtlMinutes);
 console.log('[STARTUP] Attempting to listen on port:', config.port);
 console.log('[STARTUP] CORS allowed origins:');
 config.cors.allowedOrigins.forEach(origin => console.log('[STARTUP]   -', origin));
@@ -25,7 +30,10 @@ let onboardingRoutes: any;
 let analyticsRoutes: any;
 let unsubscribeRoutes: any;
 let internalCampaignRoutes: any;
+let internalFlagRoutes: any;
 let resendWebhookRoutes: any;
+let stripeWebhookRoutes: any;
+let walletRoutes: any;
 
 let app = new Elysia({ serve: HTTP_SERVER_OPTIONS })
   .use(cors({
@@ -88,13 +96,17 @@ if (configErrors.length === 0) {
     const unsubscribeModule = await import('./routes/unsubscribe');
     unsubscribeRoutes = unsubscribeModule.unsubscribeRoutes;
 
+    const walletModule = await import('./routes/wallet');
+    walletRoutes = walletModule.walletRoutes;
+
     // Only mounted when the shared secret exists, so a deploy that forgets it
     // has no send endpoint at all rather than an unauthenticated one.
     if (config.adminApi.secret) {
       const internalModule = await import('./routes/internal-campaigns');
       internalCampaignRoutes = internalModule.internalCampaignRoutes;
+      internalFlagRoutes = (await import('./routes/internal-flags')).internalFlagRoutes;
     } else {
-      console.log('[STARTUP] ADMIN_API_SECRET not set — internal campaign routes not mounted');
+      console.log('[STARTUP] ADMIN_API_SECRET not set — internal campaign and flag routes not mounted');
     }
 
     // Only mounted when the signing secret exists, so a deploy that forgets
@@ -107,85 +119,30 @@ if (configErrors.length === 0) {
       console.log('[STARTUP] RESEND_WEBHOOK_SECRET not set — Resend webhook route not mounted');
     }
 
+    // Mounted only for the Stripe provider with its signing secret: no secret, no endpoint.
+    // In production with PAYMENT_PROVIDER=stripe a missing secret already stopped startup (src/lib/payments).
+    if (paymentGateway?.provider === 'stripe' && config.stripe.webhookSecret) {
+      const stripeWebhookModule = await import('./routes/stripe-webhook');
+      stripeWebhookRoutes = stripeWebhookModule.stripeWebhookRoutes();
+    } else {
+      console.log('[STARTUP] Stripe webhook route not mounted (needs PAYMENT_PROVIDER=stripe and STRIPE_WEBHOOK_SECRET)');
+    }
+
     // IMPORTANT: Reassign app to capture the chained routes
     // Mount Better Auth handler using .mount() instead of .all()
     // This is the recommended approach per Better Auth Elysia integration docs
     // The basePath is configured in auth.ts, so we mount at root and let Better Auth handle routing
     app = app
       .mount(auth.handler)
-      // Debug endpoint to test session validation
-      .get('/api/debug/session', async ({ request, set }) => {
-        const { validateSessionFromRequest } = await import('./lib/session');
-        const session = await validateSessionFromRequest(request);
-
-        if (!session) {
-          set.status = 401;
-          return {
-            authenticated: false,
-            message: 'No valid session found',
-            cookieHeader: request.headers.get('cookie')?.substring(0, 50) + '...' || 'No cookie header'
-          };
-        }
-
-        return {
-          authenticated: true,
-          userId: session.userId,
-          expiresAt: session.expiresAt,
-        };
-      })
-      // Debug endpoint to reset rate limit (supports both Redis and in-memory)
-      .post('/api/debug/reset-rate-limit', async ({ request, set }) => {
-        const { validateSessionFromRequest } = await import('./lib/session');
-        const { resetRateLimit } = await import('./lib/rate-limit');
-        const { getRedisClient } = await import('./lib/redis');
-
-        const session = await validateSessionFromRequest(request);
-
-        if (!session) {
-          set.status = 401;
-          return { error: 'Not authenticated' };
-        }
-
-        const userId = session.userId;
-        let redisDeleted = 0;
-        let memoryDeleted = false;
-
-        // Try to delete from Redis first. Keys are `ratelimit:<bucket>:<id>`,
-        // so the bucket sits between the prefix and the user — a
-        // `ratelimit:<userId>*` pattern would match nothing.
-        const redis = getRedisClient();
-        if (redis) {
-          try {
-            const keys = await redis.keys(`ratelimit:*:${userId}`);
-            if (keys.length > 0) {
-              redisDeleted = await redis.del(...keys);
-            }
-          } catch (err) {
-            console.error('[Debug] Redis delete error:', err);
-          }
-        }
-
-        // Also clear every in-memory bucket for this user.
-        const { RATE_LIMITS } = await import('./lib/rate-limit');
-        memoryDeleted = Object.values(RATE_LIMITS)
-          .map((limit) => resetRateLimit(userId, limit))
-          .some(Boolean);
-
-        return {
-          success: true,
-          userId,
-          redisDeleted,
-          memoryDeleted,
-          message: redisDeleted > 0 || memoryDeleted
-            ? `Rate limit cleared (Redis: ${redisDeleted} keys, Memory: ${memoryDeleted})`
-            : 'No rate limit found',
-        };
-      })
       .use(systemsRoutes)
       .use(onboardingRoutes)
       .use(analyticsRoutes)
-      .use(unsubscribeRoutes);
+      .use(unsubscribeRoutes)
+      .use(walletRoutes());
 
+    if (internalFlagRoutes) {
+      app = app.use(internalFlagRoutes);
+    }
     if (internalCampaignRoutes) {
       app = app.use(internalCampaignRoutes);
       console.log('[STARTUP] Internal campaign routes mounted at /internal/campaigns');
@@ -196,10 +153,91 @@ if (configErrors.length === 0) {
       console.log('[STARTUP] Resend webhook route mounted at /webhooks/resend');
     }
 
+    if (stripeWebhookRoutes) {
+      app = app.use(stripeWebhookRoutes);
+      console.log('[STARTUP] Stripe webhook route mounted at /webhooks/stripe');
+    }
+
+    // Dev-only surfaces. The two debug routes used to be chained above with the
+    // always-mounted routes, so production exposed them: any signed-in user
+    // could clear their own LLM rate caps, and the session probe echoed cookie headers.
     if (config.env !== 'production') {
       const devModule = await import('./routes/dev');
-      app = app.use(devModule.devRoutes);
-      console.log('[STARTUP] Dev login route mounted at /api/dev/login');
+      // Elysia registers plugins and routes on this instance. Keep the enriched
+      // builder type local instead of assigning it back to `app`, whose inferred
+      // type describes the always-mounted routes above.
+      app
+        .use(devModule.devRoutes)
+        .use(walletModule.walletDevRoutes())
+        // Debug endpoint to test session validation
+        .get('/api/debug/session', async ({ request, set }) => {
+          const { validateSessionFromRequest } = await import('./lib/session');
+          const session = await validateSessionFromRequest(request);
+
+          if (!session) {
+            set.status = 401;
+            return {
+              authenticated: false,
+              message: 'No valid session found',
+              cookieHeader: request.headers.get('cookie')?.substring(0, 50) + '...' || 'No cookie header'
+            };
+          }
+
+          return {
+            authenticated: true,
+            userId: session.userId,
+            expiresAt: session.expiresAt,
+          };
+        })
+        // Debug endpoint to reset rate limit (supports both Redis and in-memory)
+        .post('/api/debug/reset-rate-limit', async ({ request, set }) => {
+          const { validateSessionFromRequest } = await import('./lib/session');
+          const { resetRateLimit } = await import('./lib/rate-limit');
+          const { getRedisClient } = await import('./lib/redis');
+
+          const session = await validateSessionFromRequest(request);
+
+          if (!session) {
+            set.status = 401;
+            return { error: 'Not authenticated' };
+          }
+
+          const userId = session.userId;
+          let redisDeleted = 0;
+          let memoryDeleted = false;
+
+          // Try to delete from Redis first. Keys are `ratelimit:<bucket>:<id>`,
+          // so the bucket sits between the prefix and the user — a
+          // `ratelimit:<userId>*` pattern would match nothing.
+          const redis = getRedisClient();
+          if (redis) {
+            try {
+              const keys = await redis.keys(`ratelimit:*:${userId}`);
+              if (keys.length > 0) {
+                redisDeleted = await redis.del(...keys);
+              }
+            } catch (err) {
+              console.error('[Debug] Redis delete error:', err);
+            }
+          }
+
+          // Also clear every in-memory bucket for this user.
+          const { RATE_LIMITS } = await import('./lib/rate-limit');
+          memoryDeleted = Object.values(RATE_LIMITS)
+            .map((limit) => resetRateLimit(userId, limit))
+            .some(Boolean);
+
+          return {
+            success: true,
+            userId,
+            redisDeleted,
+            memoryDeleted,
+            message: redisDeleted > 0 || memoryDeleted
+              ? `Rate limit cleared (Redis: ${redisDeleted} keys, Memory: ${memoryDeleted})`
+              : 'No rate limit found',
+          };
+        });
+      console.log('[STARTUP] Dev routes mounted: /api/dev (login, generate/*, regenerate/*, relock/compatibility), /api/wallet/dev/grant, /api/wallet/dev/pay, /api/debug/session, /api/debug/reset-rate-limit');
     }
 
     console.log('[STARTUP] Auth and routes loaded successfully');

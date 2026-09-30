@@ -1,29 +1,45 @@
+import { randomUUID } from 'node:crypto';
 import { Elysia, t } from 'elysia';
 import { db } from '../../lib/db';
-import { generateStructuredCompatibilityReading } from '../../lib/llm';
-import { calculateBazi, calculateThaiAstrology, calculateCompatibility } from '../../../lib/astrology';
-import { compatibility } from '../../../lib/db';
-import { CompatibilityStructuredContentSchema, MBTI_TYPES, RELATIONSHIP_TYPES, TOKEN_LIMITS, type RelationshipType } from '../../../lib/shared';
-import { eq, and, desc, sql, count } from 'drizzle-orm';
-import { buildCompatibilityPrompt } from '../../lib/prompts';
+import { normalizeMbtiType } from '../../../lib/astrology';
+import { compatibility, user } from '../../../lib/db';
+import { MBTI_TYPES, RELATIONSHIP_TYPES, type RelationshipType } from '../../../lib/shared';
+import { eq, and, desc, count } from 'drizzle-orm';
 import { checkRateLimit, RATE_LIMITS } from '../../lib/rate-limit';
 import { cache } from '../../lib/redis';
 import { validateSessionFromRequest } from '../../lib/session';
 import { getCachedProfile } from '../shared';
-import { parseCompatibilityContent } from '../../lib/compatibility-content';
 import { generationKey, generationSingleFlight } from '../../lib/generation-singleflight';
+import { COMPATIBILITY_V4_LIVE_BUDGET, generateCompatibilityV4Stored, readerGender } from '../../lib/compatibility-generation';
+import { readFlags } from '../../lib/feature-flags';
+import { historyItem, readingResponse, shareResponse } from './reading';
+import { COMPATIBILITY_CONTENT_VERSION, isCurrentCompatibility } from '../../lib/compatibility-content';
+import { historyCursorBefore } from './history-cursor';
+import { refundChecksOnFailure } from './check-limit';
+import { compatCacheKey, unlockForUser } from './unlock';
 
 function isGenerationError(value: unknown): value is { error: string; code?: string } {
   return typeof value === 'object' && value !== null && 'error' in value;
 }
 
-function getContentFields(analysis: string) {
-  const structuredContent = parseCompatibilityContent(analysis);
-  return {
-    contentVersion: structuredContent?.contentVersion ?? 1,
-    structuredContent,
-  };
+/**
+ * A 500 on the check or the unlock: a short id for the 500 body, logged on one
+ * line with the same id and the error's class and message head (never the
+ * prompt or the person's data), so support can grep the Railway logs for the
+ * id a person quotes from the failure notice.
+ */
+export function failureReference(error: unknown): string {
+  const reference = randomUUID().replace(/-/g, '').slice(0, 8);
+  const cause = error instanceof Error
+    ? `${error.name}: ${error.message.split('\n')[0].slice(0, 120)}`
+    : typeof error;
+  console.error(`[compat] failure reference=${reference} cause=${cause}`);
+  return reference;
 }
+
+
+/** Every read serves current rows only; legacy (v1/v2) rows stay in the table, unseen. */
+const CURRENT = eq(compatibility.contentVersion, COMPATIBILITY_CONTENT_VERSION);
 
 /**
  * Compatibility system: relationship-type-aware compatibility readings
@@ -33,6 +49,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
 
   // Calculate compatibility between two people
   .post('/compatibility', async ({ body, set, request }) => {
+    const requestStartedAt = Date.now();
     const session = await validateSessionFromRequest(request);
     if (!session) {
       set.status = 401;
@@ -62,6 +79,13 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'User profile not found' };
       }
 
+      const [account] = await db
+        .select({ name: user.name, displayName: user.displayName })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+      const readerName = account?.displayName || account?.name || 'คุณ';
+
       // Convert partner birth date to Date object (frontend sends ISO string)
       const partnerBirthDateObj = new Date(partnerBirthDate);
       // Format as YYYY-MM-DD for DB storage
@@ -76,31 +100,15 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
             eq(compatibility.profileAId, userProfile.id),
             eq(compatibility.partnerBirthDate, partnerBirthDateStr),
             eq(compatibility.relationshipType, relationshipType),
+            CURRENT,
           )
         )
         .limit(1);
 
+      // A legacy row for this partner is not found: the check writes a new current row beside it.
       if (existing) {
         // Return cached result without consuming rate limit
-        return {
-          id: existing.id,
-          profileAId: existing.profileAId,
-          partnerName: existing.partnerName,
-          partnerBirthDate: existing.partnerBirthDate,
-          relationshipType: existing.relationshipType,
-          score: existing.score,
-          analysis: existing.analysis,
-          ...getContentFields(existing.analysis),
-          strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
-          challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
-          userElement: existing.userElement,
-          userDayMaster: existing.userDayMaster,
-          partnerElement: existing.partnerElement,
-          partnerDayMaster: existing.partnerDayMaster,
-          shareToken: existing.shareToken,
-          cached: true,
-          createdAt: existing.createdAt.toISOString(),
-        };
+        return { ...readingResponse(existing), cached: true };
       }
 
       const flight = await generationSingleFlight.run({
@@ -130,13 +138,12 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         const limitConfig = hourlyResult.limited ? RATE_LIMITS.compatibility : RATE_LIMITS.compatibilityDaily;
         const retryAfter = Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000);
         set.status = 429;
-        set.headers = {
-          ...set.headers,
+        Object.assign(set.headers, {
           'X-RateLimit-Limit': limitConfig.maxRequests.toString(),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
           'Retry-After': retryAfter.toString(),
-        };
+        });
         return {
           error: dailyResult.limited
             ? 'เจ้าส่องดวงครบ 5 คนในวันนี้แล้ว กลับมาใหม่พรุ่งนี้นะ'
@@ -150,110 +157,71 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
 
       // Use the most restrictive remaining count
       const remaining = Math.min(hourlyResult.remaining, dailyResult.remaining);
-      set.headers = {
-        ...set.headers,
+      Object.assign(set.headers, {
         'X-RateLimit-Limit': RATE_LIMITS.compatibilityDaily.maxRequests.toString(),
         'X-RateLimit-Remaining': remaining.toString(),
         'X-RateLimit-Reset': new Date(dailyResult.resetAt).toISOString(),
         'X-DailyLimit-Remaining': dailyResult.remaining.toString(),
-      };
-
-      // Calculate charts for both people
-      const userBaziChart = calculateBazi(
-        userProfile.birthDate,
-        userProfile.birthHour || undefined,
-        userProfile.gender as 'male' | 'female'
-      );
-      const userThaiAstrology = calculateThaiAstrology(userProfile.birthDate);
-
-      const partnerBaziChart = calculateBazi(
-        partnerBirthDateObj,
-        undefined,
-        'female' // default, not critical for compatibility
-      );
-      const partnerThaiAstrology = calculateThaiAstrology(partnerBirthDateObj);
-
-      // Calculate compatibility score
-      const compatibilityScore = calculateCompatibility(userBaziChart, partnerBaziChart);
-
-      // Generate LLM reading with relationship-type-aware prompt
-      const tokenLimit = TOKEN_LIMITS[relationshipType] || 1000;
-      const prompt = buildCompatibilityPrompt(
-        {
-          name: 'เจ้า',
-          birthDate: userProfile.birthDate,
-          baziChart: userBaziChart,
-          thaiAstrology: userThaiAstrology,
-          mbtiType: userProfile.mbtiType,
-        },
-        {
-          name: partnerName,
-          birthDate: partnerBirthDateObj,
-          baziChart: partnerBaziChart,
-          thaiAstrology: partnerThaiAstrology,
-          mbtiType: partnerMbtiType,
-        },
-        relationshipType,
-        {
-          score: compatibilityScore.score,
-          scoreExplanation: compatibilityScore.overallAnalysis,
-          strengths: compatibilityScore.strengths,
-          challenges: compatibilityScore.challenges,
-        },
-      );
-
-      const generatedContent = await generateStructuredCompatibilityReading(prompt, tokenLimit);
-      const structuredContent = CompatibilityStructuredContentSchema.parse({
-        contentVersion: 2,
-        scoreExplanation: compatibilityScore.overallAnalysis,
-        ...generatedContent,
       });
-      const reading = JSON.stringify(structuredContent);
-      const shareToken = Math.random().toString(36).substring(2, 15);
 
-      // Save to DB
-      const [saved] = await db.insert(compatibility).values({
-        profileAId: userProfile.id,
-        partnerName,
-        partnerBirthDate: partnerBirthDateStr,
-        relationshipType,
-        score: compatibilityScore.score,
-        elementHarmony: compatibilityScore.elementHarmony,
-        branchHarmony: compatibilityScore.branchHarmony,
-        analysis: reading,
-        strengths: JSON.stringify(compatibilityScore.strengths),
-        challenges: JSON.stringify(compatibilityScore.challenges),
-        userElement: userBaziChart.element,
-        userDayMaster: userBaziChart.dayMaster,
-        partnerElement: partnerBaziChart.element,
-        partnerDayMaster: partnerBaziChart.dayMaster,
-        shareToken,
-      }).returning();
+      // A check that fails after this point gives its hourly and daily counts back.
+      return refundChecksOnFailure(session.userId, async () => {
+        // Content v4: computed scores, archetype and calendar, then the report
+        // written by the model within the live budget (one repair per call and a
+        // deadline, so the synchronous response fits the socket and client
+        // timeouts; see docs/compatibility-response-fix.md, "v4 live budget").
+        // With the compat_lock flag on, only the free teaser is written; the detail is written on unlock.
+        const withDetail = !(await readFlags()).compat_lock;
+        const generation = await generateCompatibilityV4Stored({
+          reader: {
+            name: readerName,
+            birthDate: userProfile.birthDate,
+            birthHour: userProfile.birthHour ?? undefined,
+            gender: readerGender(userProfile.gender),
+            mbtiType: normalizeMbtiType(userProfile.mbtiType),
+          },
+          partner: { name: partnerName, birthDate: partnerBirthDateObj, mbtiType: normalizeMbtiType(partnerMbtiType) },
+          relationshipType,
+          withDetail,
+          maxRepairs: COMPATIBILITY_V4_LIVE_BUDGET.maxRepairs,
+          deadlineAt: requestStartedAt + COMPATIBILITY_V4_LIVE_BUDGET.llmMs,
+        });
+        if (generation.qualityFlags.length) {
+          console.warn('[compatibility v4] quality flags', { flags: generation.qualityFlags });
+        }
+        console.log('[compatibility v4] generated', { withDetail, timings: generation.timings });
+        const { stored, charts } = generation;
+        const userBaziChart = charts.readerBazi;
+        const partnerBaziChart = charts.partnerBazi;
+        const compatibilityScore = charts.score;
+        const reading = JSON.stringify(stored);
+        const shareToken = Math.random().toString(36).substring(2, 15);
 
-      // Cache the result
-      const resultKey = `compat:${userId}:${saved.id}`;
-      await cache(resultKey, 86400, async () => saved);
+        // Save to DB
+        const [saved] = await db.insert(compatibility).values({
+          contentVersion: COMPATIBILITY_CONTENT_VERSION,
+          profileAId: userProfile.id,
+          partnerName,
+          partnerBirthDate: partnerBirthDateStr,
+          relationshipType,
+          score: compatibilityScore.score,
+          elementHarmony: compatibilityScore.elementHarmony,
+          branchHarmony: compatibilityScore.branchHarmony,
+          analysis: reading,
+          strengths: JSON.stringify(compatibilityScore.strengths),
+          challenges: JSON.stringify(compatibilityScore.challenges),
+          userElement: userBaziChart.element,
+          userDayMaster: userBaziChart.dayMaster,
+          partnerElement: partnerBaziChart.element,
+          partnerDayMaster: partnerBaziChart.dayMaster,
+          shareToken,
+        }).returning();
 
-      return {
-        id: saved.id,
-        profileAId: saved.profileAId,
-        partnerName: saved.partnerName,
-        partnerBirthDate: saved.partnerBirthDate,
-        relationshipType: saved.relationshipType,
-        score: saved.score,
-        analysis: saved.analysis,
-        contentVersion: 2,
-        structuredContent,
-        strengths: compatibilityScore.strengths,
-        challenges: compatibilityScore.challenges,
-        userElement: saved.userElement,
-        userDayMaster: saved.userDayMaster,
-        partnerElement: saved.partnerElement,
-        partnerDayMaster: saved.partnerDayMaster,
-        shareToken: saved.shareToken,
-        cached: false,
-        createdAt: saved.createdAt.toISOString(),
-      };
+        // Cache the result
+        await cache(compatCacheKey(userId, saved.id), 86400, async () => saved);
+
+        return { ...readingResponse(saved), cached: false };
+      });
         },
       });
 
@@ -276,35 +244,18 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
                 eq(compatibility.profileAId, userProfile.id),
                 eq(compatibility.partnerBirthDate, partnerBirthDateStr),
                 eq(compatibility.relationshipType, relationshipType),
+                CURRENT,
               )
             )
             .limit(1);
           if (existing) {
-            return {
-              id: existing.id,
-              profileAId: existing.profileAId,
-              partnerName: existing.partnerName,
-              partnerBirthDate: existing.partnerBirthDate,
-              relationshipType: existing.relationshipType,
-              score: existing.score,
-              analysis: existing.analysis,
-              ...getContentFields(existing.analysis),
-              strengths: existing.strengths ? JSON.parse(existing.strengths) : [],
-              challenges: existing.challenges ? JSON.parse(existing.challenges) : [],
-              userElement: existing.userElement,
-              userDayMaster: existing.userDayMaster,
-              partnerElement: existing.partnerElement,
-              partnerDayMaster: existing.partnerDayMaster,
-              shareToken: existing.shareToken,
-              cached: true,
-              createdAt: existing.createdAt.toISOString(),
-            };
+            return { ...readingResponse(existing), cached: true };
           }
         }
       }
       console.error('Compatibility error:', error);
       set.status = 500;
-      return { error: 'Failed to calculate compatibility' };
+      return { error: 'ตอนนี้เขียนดวงคู่ไม่สำเร็จ ลองอีกครั้งนะ', reference: failureReference(error) };
     }
   }, {
     body: t.Object({
@@ -337,7 +288,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const typeFilter = query.relationshipType || null;
 
       // Build conditions
-      const conditions = [eq(compatibility.profileAId, userProfile.id)];
+      const conditions = [eq(compatibility.profileAId, userProfile.id), CURRENT];
 
       if (typeFilter && RELATIONSHIP_TYPES.includes(typeFilter as any)) {
         conditions.push(eq(compatibility.relationshipType, typeFilter));
@@ -347,9 +298,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       if (cursor) {
         try {
           const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString());
-          conditions.push(
-            sql`(${compatibility.createdAt}, ${compatibility.id}) < (${new Date(decoded.createdAt)}, ${decoded.id})`
-          );
+          conditions.push(historyCursorBefore(decoded));
         } catch {
           // Invalid cursor, ignore
         }
@@ -365,6 +314,8 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
           score: compatibility.score,
           userElement: compatibility.userElement,
           partnerElement: compatibility.partnerElement,
+          analysis: compatibility.analysis,
+          contentVersion: compatibility.contentVersion,
           createdAt: compatibility.createdAt,
         })
         .from(compatibility)
@@ -388,7 +339,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       // Get total count (only on first page for efficiency)
       let total = 0;
       if (!cursor) {
-        const countConditions = [eq(compatibility.profileAId, userProfile.id)];
+        const countConditions = [eq(compatibility.profileAId, userProfile.id), CURRENT];
         if (typeFilter && RELATIONSHIP_TYPES.includes(typeFilter as any)) {
           countConditions.push(eq(compatibility.relationshipType, typeFilter));
         }
@@ -400,18 +351,12 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       }
 
       return {
-        data: data.map(item => ({
-          id: item.id,
-          partnerName: item.partnerName,
-          partnerBirthDate: item.partnerBirthDate,
-          relationshipType: item.relationshipType,
-          score: item.score,
-          userElement: item.userElement,
-          partnerElement: item.partnerElement,
-          createdAt: item.createdAt.toISOString(),
-        })),
+        data: data.map(historyItem),
         nextCursor,
         total,
+        // The page reads it before a new check, so the wait screen can say
+        // what the POST will write: the teaser alone (compat_lock on) or the full report.
+        lockEnabled: (await readFlags()).compat_lock,
       };
     } catch (error) {
       console.error('Compatibility history error:', error);
@@ -438,7 +383,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const readingId = params.id;
 
       // Try Redis cache first
-      const cached = await cache(`compat:${session.userId}:${readingId}`, 86400, async () => {
+      const cached = await cache(compatCacheKey(session.userId, readingId), 86400, async () => {
         const [record] = await db
           .select()
           .from(compatibility)
@@ -446,41 +391,43 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
             and(
               eq(compatibility.id, readingId),
               eq(compatibility.profileAId, userProfile.id),
+              CURRENT,
             )
           )
           .limit(1);
         return record ?? null;
       });
 
-      if (!cached) {
+      if (!cached || !isCurrentCompatibility(cached)) {
         set.status = 404;
         return { error: 'Compatibility reading not found' };
       }
 
-      return {
-        id: cached.id,
-        profileAId: cached.profileAId,
-        partnerName: cached.partnerName,
-        partnerBirthDate: cached.partnerBirthDate,
-        relationshipType: cached.relationshipType,
-        score: cached.score,
-        elementHarmony: cached.elementHarmony,
-        branchHarmony: cached.branchHarmony,
-        analysis: cached.analysis,
-        ...getContentFields(cached.analysis),
-        strengths: cached.strengths ? JSON.parse(cached.strengths) : [],
-        challenges: cached.challenges ? JSON.parse(cached.challenges) : [],
-        userElement: cached.userElement,
-        userDayMaster: cached.userDayMaster,
-        partnerElement: cached.partnerElement,
-        partnerDayMaster: cached.partnerDayMaster,
-        shareToken: cached.shareToken,
-        createdAt: cached.createdAt.toISOString(),
-      };
+      return readingResponse(cached);
     } catch (error) {
       console.error('Compatibility detail error:', error);
       set.status = 500;
       return { error: 'Failed to fetch compatibility reading' };
+    }
+  })
+
+  // Unlock a locked report: write its detail and patch it into the row (owner only, idempotent)
+  .post('/compatibility/:id/unlock', async ({ params, set, request }) => {
+    const requestStartedAt = Date.now();
+    const session = await validateSessionFromRequest(request);
+    if (!session) {
+      set.status = 401;
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const result = await unlockForUser(session.userId, params.id, requestStartedAt);
+      set.status = result.status;
+      return result.body;
+    } catch (error) {
+      console.error('Compatibility unlock error:', error);
+      set.status = 500;
+      return { error: 'ตอนนี้เขียนฉบับเต็มไม่สำเร็จ ลองอีกครั้งนะ', reference: failureReference(error) };
     }
   })
 
@@ -492,7 +439,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
       const [result] = await db
         .select()
         .from(compatibility)
-        .where(eq(compatibility.shareToken, token))
+        .where(and(eq(compatibility.shareToken, token), CURRENT))
         .limit(1);
 
       if (!result) {
@@ -500,21 +447,7 @@ export const compatibilityRoutes = new Elysia({ prefix: '/api/fortune' })
         return { error: 'ไม่พบผลดวงที่ต้องการ' };
       }
 
-      // Return sanitized result (no profileAId for privacy)
-      return {
-        partnerName: result.partnerName,
-        relationshipType: result.relationshipType,
-        score: result.score,
-        analysis: result.analysis,
-        ...getContentFields(result.analysis),
-        strengths: result.strengths ? JSON.parse(result.strengths) : [],
-        challenges: result.challenges ? JSON.parse(result.challenges) : [],
-        userElement: result.userElement,
-        partnerElement: result.partnerElement,
-        userDayMaster: result.userDayMaster,
-        partnerDayMaster: result.partnerDayMaster,
-        createdAt: result.createdAt.toISOString(),
-      };
+      return shareResponse(result);
     } catch (error) {
       console.error('Compatibility share error:', error);
       set.status = 500;

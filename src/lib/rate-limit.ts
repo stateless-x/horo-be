@@ -132,6 +132,12 @@ export const RATE_LIMITS = {
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     maxRequests: 300, // 300 step pings per day per IP
   },
+  // GET /api/wallet/orders/:id?verify=1 asks the payment provider (docs/wallet.md, Payments).
+  orderVerify: {
+    name: 'orderVerify',
+    windowMs: 5 * 1000, // 5 seconds
+    maxRequests: 1, // 1 provider lookup per 5 s per user
+  },
 } as const;
 
 /**

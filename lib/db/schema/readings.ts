@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, date, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, varchar, timestamp, integer, smallint, text, date, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { birthProfiles } from './profiles';
 
 export const dailyReadings = pgTable('daily_readings', {
@@ -50,6 +51,12 @@ export const compatibility = pgTable('compatibility', {
   branchHarmony: integer('branch_harmony'),
 
   analysis: text('analysis').notNull(), // AI-generated compatibility analysis
+  /**
+   * 4 for the canonical report (docs/compatibility-response-fix.md). NULL marks a
+   * legacy v1/v2 row: kept in the table, never served (history, GET, share,
+   * unlock all filter on 4), and free to be replaced by a new check.
+   */
+  contentVersion: smallint('content_version'),
   strengths: text('strengths'), // JSON array
   challenges: text('challenges'), // JSON array
 
@@ -65,6 +72,9 @@ export const compatibility = pgTable('compatibility', {
 }, (table) => ({
   profileAIdx: index('compatibility_profile_a_idx').on(table.profileAId),
   profileCreatedIdx: index('compatibility_profile_created_idx').on(table.profileAId, table.createdAt),
-  userPartnerTypeIdx: uniqueIndex('compatibility_user_partner_type_idx').on(table.profileAId, table.partnerBirthDate, table.relationshipType),
+  // One current report per partner and relationship; legacy rows sit outside it.
+  userPartnerTypeIdx: uniqueIndex('compatibility_user_partner_type_v4_idx')
+    .on(table.profileAId, table.partnerBirthDate, table.relationshipType)
+    .where(sql`${table.contentVersion} = 4`),
   shareTokenIdx: index('compatibility_share_token_idx').on(table.shareToken),
 }));
