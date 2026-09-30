@@ -22,7 +22,8 @@ One ดวงคู่ report exists: the teaser-first report below, called **ca
   - The unique index is partial (`compatibility_user_partner_type_v4_idx`, current rows only), so checking a partner
     again writes a new canon row beside the hidden legacy one.
   - **After the deploy that adds the column,** run this once on production, or the 5 canon rows stay hidden:
-    `UPDATE compatibility SET content_version = 4 WHERE content_version IS NULL AND analysis LIKE '{%' AND analysis::jsonb->>'contentVersion' = '4' AND analysis::jsonb ? 'teaser';`
+    `UPDATE compatibility SET content_version = 4 WHERE content_version IS NULL AND analysis ~ '^\s*\{' AND analysis ~ '"contentVersion":\s*4' AND analysis ~ '"teaser"';`
+    Expect `UPDATE 5`. It never casts to jsonb, so a markdown row cannot abort it.
 - **MBTI steers, never shows.** Both people's MBTI feed the prompt as plain behaviour ("…เป็นคนที่มักจะ…",
   `compatibilityPersonalityContext` in `src/lib/prompts.ts`); the type label never enters the prompt. Every prose
   field is rejected with a repair if it names a type, a code or the framework (`personalityFrameworkJargon`), and
